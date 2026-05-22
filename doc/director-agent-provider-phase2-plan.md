@@ -55,7 +55,20 @@ Avoid modifying:
 - `src/vs/platform/agentHost/node/shared/copilotApiService.ts`
 - `src/vs/platform/agentHost/node/claude/**`, unless tests reveal a shared helper is required.
 
-## 4. Feature Gate
+## 4. Dependency Assumptions
+
+Phase 2 assumes Phase 1 has provided:
+
+- `IDirectorProviderBackendHub`;
+- `DirectorProviderBackendHub`;
+- `DirectorProviderSelection`;
+- `DirectorBackendResolution`;
+- `toAgentModelInfo(...)` or equivalent conversion helper;
+- a default fake provider with at least one model.
+
+If Phase 1 chose different names, update this plan before implementing Phase 2 rather than adapting ad hoc in code.
+
+## 5. Feature Gate
 
 Recommended constants:
 
@@ -78,7 +91,15 @@ Registration rule:
 - If setting is true, starters forward env var.
 - If neither is set, no `director` provider appears in root state.
 
-## 5. `DirectorAgent` Spec
+Env forwarding should mirror the existing Claude SDK path pattern:
+
+- workbench setting -> `electronAgentHostStarter.ts` env;
+- workbench setting -> `nodeAgentHostStarter.ts` env;
+- direct env var still wins for command-line/dev launches.
+
+Do not add a product-level default chat agent change.
+
+## 6. `DirectorAgent` Spec
 
 ### Provider Identity
 
@@ -130,6 +151,12 @@ If model loading fails:
 - publish `[]`;
 - do not throw during agent registration.
 
+Refresh rules:
+
+- Phase 2 may refresh models once in the constructor or an explicit `initialize()` path.
+- Do not add file/config watchers in Phase 2.
+- If the fake backend supports fixtures changing in tests, expose a private/test-only refresh method or construct a new agent per test.
+
 ### Session Lifecycle
 
 `createSession(config)`:
@@ -139,6 +166,13 @@ If model loading fails:
 - create a `DirectorAgentSession`;
 - store it in a `DisposableMap` or equivalent map keyed by raw session id;
 - return `IAgentCreateSessionResult` with session URI, working directory, and optional project metadata.
+
+Session metadata:
+
+- `startTime`: Date.now() at construction.
+- `modifiedTime`: update on `sendMessage`, `abortSession`, and `changeModel`.
+- `project`: optional. If `config.workingDirectory` is present, use a simple project display name based on basename; otherwise omit project in Phase 2.
+- `agent`: do not set custom markdown agent selection in Phase 2.
 
 `listSessions()`:
 
@@ -154,6 +188,14 @@ If model loading fails:
 `shutdown()`:
 
 - dispose every session.
+
+Expected in-memory maps:
+
+```ts
+private readonly _sessions = this._register(new DisposableMap<string, DirectorAgentSession>());
+```
+
+Use `AgentSession.id(session)` as the map key. Avoid `session.toString()` as the primary key because URI formatting caches can make tests more fragile.
 
 ### `sendMessage()` Fake Stream
 
@@ -194,6 +236,65 @@ For better abort testing, split the echo into two small async chunks with a dela
 
 and do not emit `SessionTurnComplete`.
 
+Rules:
+
+- If `turnId` is undefined, generate a local id only for in-memory history, but still prefer tests and AgentSideEffects paths that supply a real `turnId`.
+- Do not emit `SessionTurnStarted`; the client already did that.
+- Always emit at most one terminal action for a turn:
+  - `SessionTurnComplete`, or
+  - `SessionTurnCancelled`, or
+  - `SessionError`.
+- Store emitted response parts in session history so `getSessionMessages()` can return current-process turns.
+- Use deterministic IDs in tests by allowing an optional ID generator or by asserting on action type/content rather than exact generated IDs.
+
+## 7. `DirectorAgentSession` Spec
+
+Recommended fields:
+
+```ts
+class DirectorAgentSession extends Disposable {
+	readonly sessionUri: URI;
+	readonly createdAt: number;
+	modifiedAt: number;
+	model: ModelSelection | undefined;
+
+	private readonly _onDidSessionProgress = this._register(new Emitter<AgentSignal>());
+	readonly onDidSessionProgress = this._onDidSessionProgress.event;
+
+	private readonly _turns: Turn[] = [];
+	private _activeAbort: AbortController | undefined;
+	private _activeTurnId: string | undefined;
+}
+```
+
+Methods:
+
+- `send(prompt, attachments, turnId)`:
+  - aborts or rejects if another fake turn is active;
+  - records user message in `_turns`;
+  - emits one or two markdown response parts;
+  - emits terminal action;
+  - updates `modifiedAt`.
+- `abort()`:
+  - aborts active controller;
+  - emits cancel only if a turn is active and not already terminal.
+- `getTurns()`:
+  - returns readonly snapshot of `_turns`.
+- `changeModel(model)`:
+  - updates model and `modifiedAt`.
+- `dispose()`:
+  - aborts active turn, clears state, calls `super.dispose()`.
+
+Fake streaming timing:
+
+- Use `timeout(0)` or a tiny injectable delay between chunks so abort tests can interleave.
+- Tests should not depend on wall-clock sleeps longer than necessary.
+
+Concurrency rule:
+
+- Phase 2 may serialize sends per session using a `SequencerByKey` in `DirectorAgent`, or reject concurrent sends with a clear error.
+- Prefer serialization if it is simple, because existing AgentHost patterns already expect per-session sequencing.
+
 ### Stubs and No-Ops
 
 Implement required `IAgent` methods with safe minimal behavior:
@@ -210,7 +311,7 @@ Implement required `IAgent` methods with safe minimal behavior:
 
 Avoid throwing `TODO` from methods the workbench may call during normal minimal usage. For truly unsupported optional behavior, prefer omitting optional methods.
 
-## 6. Registration Details
+## 8. Registration Details
 
 In `agentHostMain.ts` and `agentHostServerMain.ts`:
 
@@ -239,7 +340,15 @@ if (process.env[AgentHostEnableDirectorAgentEnvVar]) {
 
 If registration order affects UI ordering, document the choice. Director can appear after Claude in Phase 2.
 
-## 7. Tests
+Registration checklist:
+
+- `CopilotAgent` still registers without any Director gate.
+- Existing Claude registration still depends only on `AgentHostClaudeSdkPathEnvVar`.
+- `DirectorAgent` registers only when `AgentHostEnableDirectorAgentEnvVar` is truthy.
+- `DirectorProviderBackendHub` registration does not require the Director agent gate if tests or future providers need it. If this feels too eager, gate both and document why.
+- Headless/server path and local utility-process path behave the same.
+
+## 9. Tests
 
 Create `directorAgent.test.ts`.
 
@@ -264,7 +373,19 @@ Add registration tests if existing agentHost main/server tests make this practic
 
 If main-process registration tests are too heavy for Phase 2, document a manual smoke step and keep unit coverage around the class itself.
 
-## 8. Manual Smoke
+Additional behavior tests:
+
+| Test | Expected |
+|---|---|
+| create with explicit session URI | preserves supplied `director:/...` URI |
+| create with model selection | session stores selected model |
+| change model to known model | updates metadata and model |
+| change model to unknown provider | rejects with clear error |
+| send after dispose | rejects or no-ops with clear error |
+| double abort | idempotent |
+| shutdown during active send | cancels active turn and disposes |
+
+## 10. Manual Smoke
 
 After compile and tests:
 
@@ -278,7 +399,14 @@ After compile and tests:
 8. Confirm deterministic echo output streams and completes.
 9. Confirm Copilot and existing Claude behavior remain unchanged.
 
-## 9. Validation
+Optional manual checks:
+
+10. Disable `chat.agentHost.directorAgent.enabled`.
+11. Restart AgentHost/workbench.
+12. Confirm `Director` disappears.
+13. Re-enable and confirm it reappears without changing Copilot/Claude settings.
+
+## 11. Validation
 
 Required:
 
@@ -295,7 +423,35 @@ npm run test-node -- --grep directorAgent
 
 If targeted grep is unavailable, run the nearest AgentHost node test suite and document the exact command.
 
-## 10. Exit Criteria
+## 12. Failure Modes and Recovery
+
+Expected recoverable failures:
+
+- No fake models available:
+  - publish empty model list;
+  - create session should return a user-readable error or fallback model only if Phase 1 explicitly allows it.
+- Model selection references another provider:
+  - reject `createSession` or `changeModel` with a clear error.
+- Send called for unknown session:
+  - throw a protocol error or normal `Error` consistent with nearby agents.
+- Abort called for idle/unknown session:
+  - idle abort is no-op;
+  - unknown session should not crash the host.
+
+Do not recover by registering Copilot resources, using CAPI models, or silently creating a Copilot session.
+
+## 13. Review Checklist
+
+- `DirectorAgent.getProtectedResources()` returns `[]`.
+- No `ICopilotApiService` import exists in `node/director/**`.
+- No `GITHUB_COPILOT_PROTECTED_RESOURCE` import exists in `node/director/**`.
+- `DirectorAgent` is invisible without its gate.
+- `DirectorAgent` can be instantiated in unit tests without GitHub auth.
+- Fake stream emits protocol actions, not UI-specific progress objects.
+- `setClientTools` and customization methods are safe no-ops, not crashing TODO stubs.
+- No old Director generated-tree files are imported.
+
+## 14. Exit Criteria
 
 - `DirectorAgent` is compiled and tested.
 - Provider appears only when gated on.
@@ -305,7 +461,7 @@ If targeted grep is unavailable, run the nearest AgentHost node test suite and d
 - No real provider credentials are required.
 - No old Director `AgentEngine` code has been moved yet.
 
-## 11. Open Questions
+## 15. Open Questions
 
 - Should Phase 2 model ids include backend instance id, or should the fake model stay simple until Phase 3?
 - Should `DirectorAgent` publish one model or multiple fake models to exercise picker behavior?

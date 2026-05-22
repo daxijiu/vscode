@@ -72,16 +72,27 @@ Run:
 git status --short --branch
 git rev-parse --show-toplevel
 git log -1 --oneline
+git remote -v
 ```
 
 Record:
 
 - branch name;
 - latest commit;
+- remote push target;
 - untracked/dirty files relevant to this work;
 - whether `doc/research/**` and roadmap files are already untracked.
 
 Do not clean or revert anything.
+
+If the tree is dirty, classify each path:
+
+| Path | Status | Owned by this phase? | Action |
+|---|---|---|---|
+| `doc/...` | modified/untracked | yes/no | include / ignore / ask |
+| `src/...` | modified/untracked | no by default | do not touch |
+
+Phase 0 should only proceed to source-code planning if there are no unexplained `src/**` changes that would affect Phase 1 or Phase 2.
 
 ### Step 2 - Current AgentHost Boundary Inventory
 
@@ -106,6 +117,19 @@ The inventory should list concrete files for:
 - `SessionTurnStarted` side effect;
 - response part / turn complete action path.
 
+Use this table in the inventory:
+
+| Concern | Current file(s) | Notes for Director |
+|---|---|---|
+| Provider registration |  | Where `CopilotAgent` and gated `ClaudeAgent` are registered. |
+| Root state / agents |  | How descriptors, models, resources reach the client. |
+| Auth fan-out |  | Why Director Phase 1/2 should return no protected resources. |
+| Session lifecycle |  | Create/list/dispose entrypoints. |
+| Turn side effects |  | Where `SessionTurnStarted` becomes `IAgent.sendMessage`. |
+| Progress actions |  | How `AgentSignal.kind === 'action'` reaches session state. |
+| Model picker |  | How `IAgentModelInfo` is projected. |
+| Feature gates |  | Existing Claude SDK path env/setting pattern. |
+
 ### Step 3 - Claude Reference Boundary
 
 Document what should be reused from `src/vs/platform/agentHost/node/claude/**`:
@@ -124,6 +148,16 @@ Document what should not be reused directly:
 - `ICopilotApiService.models()` as generic model source;
 - `ClaudeProxyService.start(githubToken)` as generic provider backend;
 - CAPI-specific model filtering.
+
+Also capture the minimum useful reference set from Claude:
+
+| Claude reference | Use in Director? | Reason |
+|---|---|---|
+| `claudeAgent.ts` provider shell | yes | Best current `IAgent` skeleton. |
+| `claudeAgentSession.ts` lifecycle | partial | Useful for later real harness, too heavy for Phase 2 echo. |
+| `claudeSdkPipeline.ts` stream mapping | later | Useful once a real SDK/runtime exists. |
+| `claudeProxyService.ts` local endpoint shape | later | Shape is useful, outbound CAPI dependency is not. |
+| `phase*-plan.md` docs | yes | Planning style to mirror. |
 
 ### Step 4 - Old Director Reuse Boundary
 
@@ -154,6 +188,18 @@ Do not copy as-is:
 - generated-tree patch/replay mechanics;
 - old `IChatAgentImplementation` entrypoint as the final runtime surface.
 
+Inventory should state the migration role of each old Director module:
+
+| Old module | Phase to revisit | Role |
+|---|---:|---|
+| `providerRegistry.ts` | 3 | Provider instance source of truth. |
+| `apiKeyService.ts` | 3 | Secret-backed API-key semantics. |
+| `authStateService.ts` | 3/8 | Auth resolver and OAuth facade split. |
+| `providerTypes.ts` | 1/3 | Normalized provider model and stream types. |
+| `providerFactory.ts` | 3/5 | Provider transport factory. |
+| `AgentEngine` | 4 | Harness adapter runtime. |
+| `directorPlanMode.ts` | 4/9 | Director-specific session policy. |
+
 ### Step 5 - Make Phase 1/2 Decisions
 
 Record decisions in the inventory output:
@@ -176,7 +222,58 @@ Suggested output:
 
 The inventory should be concise. It should not duplicate the whole roadmap. It should give enough evidence for Phase 1 and Phase 2 implementation agents to proceed without rediscovery.
 
-## 5. Expected Decisions
+Recommended inventory outline:
+
+```md
+# Phase 0 Inventory - Director Agent Provider
+
+## Local State
+
+- Branch:
+- Commit:
+- Remote:
+- Dirty paths:
+
+## Current AgentHost Flow
+
+| Concern | File(s) | Notes |
+|---|---|---|
+
+## Claude Reference Boundary
+
+### Reuse
+
+### Do Not Reuse Directly
+
+## Old Director Reference Boundary
+
+| Module | Reuse role | Target phase |
+|---|---|---|
+
+## Phase 1/2 Decisions
+
+| Decision | Value | Reason |
+|---|---|---|
+
+## Risks Before Implementation
+
+## Validation Performed
+```
+
+The Phase 0 inventory should use exact file paths and enough line/function names for a later implementation agent to jump directly to code.
+
+## 5. Review Checklist
+
+Before marking Phase 0 complete, verify:
+
+- The inventory distinguishes "AgentHost provider" from "markdown custom agent".
+- The inventory distinguishes "Claude harness" from "Claude/CAPI backend".
+- The inventory says `ICopilotApiService` is Copilot-only.
+- The inventory says API keys are not `ProtectedResourceMetadata`.
+- Phase 1/2 file boundaries are exact enough to avoid touching broad directories.
+- No `src/**` file was modified.
+
+## 6. Expected Decisions
 
 Recommended default decisions unless Phase 0 finds conflicting code evidence:
 
@@ -187,11 +284,13 @@ Recommended default decisions unless Phase 0 finds conflicting code evidence:
 | Env var | `VSCODE_AGENT_HOST_ENABLE_DIRECTOR_AGENT` |
 | Provider backend type file | `src/vs/platform/agentHost/common/directorProviderBackend.ts` |
 | Node implementation directory | `src/vs/platform/agentHost/node/director/` |
-| Workbench changes | setting registration and env forwarding only |
+| Workbench changes | setting registration and env forwarding only in Phase 2 |
 | Auth in Phase 1/2 | none; `getProtectedResources()` returns `[]` |
 | Real LLM calls in Phase 1/2 | none |
+| Phase 1 fake backend | compiled test/development scaffold, no secrets |
+| Phase 2 session restore | in-memory only; durable restore waits for Phase 9 |
 
-## 6. Validation
+## 7. Validation
 
 Phase 0 does not require TypeScript compilation because it should not edit TypeScript source.
 
@@ -207,16 +306,17 @@ If only plan docs were created, also verify:
 git status --short -- doc
 ```
 
-## 7. Exit Criteria
+## 8. Exit Criteria
 
 - `doc/director-agent-provider-phase0-inventory.md` exists.
 - It records current branch, dirty state, and commit.
 - It lists the current AgentHost and Claude boundaries with concrete file paths.
 - It records Phase 1/2 decisions.
 - It explicitly says old `Director-Code-112-check/vscode.generated/**` is reference-only, not the source root for this fork.
+- It includes a risk list and "do not touch" list for Phase 1/2.
 - No runtime code has changed.
 
-## 8. Open Questions
+## 9. Open Questions
 
 - Should `director` be the permanent provider id, or only the first implementation id?
 - Should `chat.agentHost.directorAgent.enabled` be user-visible or hidden/experimental at first?

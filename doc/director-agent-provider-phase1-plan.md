@@ -62,6 +62,23 @@ export type DirectorProviderKind =
 export type DirectorProviderAuthKind = 'none' | 'api-key' | 'oauth' | 'bearer';
 ```
 
+Provider instance:
+
+```ts
+export interface DirectorProviderInstance {
+	readonly id: string;
+	readonly kind: DirectorProviderKind;
+	readonly displayName: string;
+	readonly enabled: boolean;
+	readonly authKind: DirectorProviderAuthKind;
+	readonly baseURL?: string;
+	readonly headers?: Record<string, string>;
+	readonly defaultModelId?: string;
+}
+```
+
+Phase 1 intentionally keeps `DirectorProviderInstance` small. Phase 3 will add persistent fields such as created/updated timestamps, model visibility, auth variant, API-key source, and migration metadata.
+
 ### Provider Model
 
 ```ts
@@ -77,6 +94,17 @@ export interface DirectorProviderModel {
 ```
 
 `DirectorProviderModel` must not depend on `CCAModel`. If a later provider reads CAPI-like data, conversion belongs at that provider boundary, not in this common type.
+
+Selection:
+
+```ts
+export interface DirectorProviderSelection {
+	readonly providerInstanceId?: string;
+	readonly modelId?: string;
+}
+```
+
+Selection is deliberately optional so Phase 2 can create a session without forcing the UI to provide provider/model config. The hub resolves missing fields to the default enabled provider and default model.
 
 ### Capabilities
 
@@ -148,6 +176,24 @@ Register a decorator if the implementation is intended for DI:
 export const IDirectorProviderBackendHub = createDecorator<IDirectorProviderBackendHub>('directorProviderBackendHub');
 ```
 
+### Helper Functions
+
+Recommended helpers in `directorProviderBackend.ts`:
+
+```ts
+export function isResolvedBackend(result: DirectorBackendResolution): result is { readonly status: 'ok'; readonly backend: DirectorResolvedProviderBackend };
+
+export function toAgentModelInfo(agentProvider: AgentProvider, model: DirectorProviderModel): IAgentModelInfo;
+
+export function findDefaultModel(models: readonly DirectorProviderModel[], providerInstanceId?: string, modelId?: string): DirectorProviderModel | undefined;
+```
+
+Rules:
+
+- `toAgentModelInfo(...).provider` must be the AgentHost agent provider id, usually `director`, not the backend instance id.
+- `toAgentModelInfo(...)._meta` may carry `providerInstanceId`, `providerKind`, and backend model id for later diagnostics.
+- No helper should mutate input arrays.
+
 ## 5. Implementation Steps
 
 ### Step 1 - Add Common Types
@@ -167,6 +213,13 @@ Create `directorProviderBackend.ts` with:
   - selecting a default model.
 
 Keep helpers pure and fully unit-testable.
+
+Implementation notes:
+
+- Follow VS Code style: copyright header, tabs, single quotes for non-user-facing strings.
+- Keep this file in `common` only if every import is layer-safe. If `IAgentModelInfo` import creates a layering issue, move `toAgentModelInfo` to a node-side helper and leave pure provider types in common.
+- Prefer discriminated unions over optional `error` fields.
+- Do not introduce `any`; use `unknown` for raw metadata only if needed.
 
 ### Step 2 - Add In-Memory Hub
 
@@ -188,6 +241,25 @@ Create `directorProviderBackendHub.ts` with a small implementation:
   - `missingAuth` for an API-key fixture without fake auth.
 
 This is a development/test scaffold, not the final provider registry.
+
+Recommended fixture set:
+
+| Provider | Enabled | Auth | Models | Expected behavior |
+|---|---|---|---|---|
+| `director-fake` | yes | none | `echo`, `echo-large` | default success path |
+| `director-disabled` | no | none | `disabled-model` | returns `disabled` |
+| `director-missing-key` | yes | api-key | `needs-key` | returns `missingAuth` |
+
+Default backend resolution should pick `director-fake` + `echo`.
+
+Implementation details:
+
+- Keep fixture arrays private and readonly.
+- Return copies or readonly arrays so tests cannot mutate internal state.
+- If a provider id is unknown, return `error` or `modelUnavailable` consistently. Prefer:
+  - unknown provider -> `error` with a clear message;
+  - known provider with unknown model -> `modelUnavailable`.
+- The fake hub should not read configuration service or environment variables in Phase 1.
 
 ### Step 3 - Keep Copilot Out
 
@@ -212,7 +284,45 @@ Test cases:
 - API-key fixture without auth returns `missingAuth`;
 - helper converts `DirectorProviderModel` to `IAgentModelInfo` without CAPI fields.
 
-## 6. Validation
+Test matrix:
+
+| Test | Setup | Expected |
+|---|---|---|
+| lists default provider | no custom fixtures | one enabled `director-fake` instance |
+| lists all models | no filter | `echo` and fixture models returned |
+| filters models | provider id filter | only matching provider models |
+| resolves default | no selection | `ok`, model `echo` |
+| resolves explicit model | `director-fake` + `echo-large` | `ok`, model `echo-large` |
+| disabled provider | `director-disabled` | `disabled` |
+| missing API key | `director-missing-key` | `missingAuth` |
+| unknown model | `director-fake` + bad id | `modelUnavailable` |
+| agent model conversion | model fixture | `IAgentModelInfo.provider === 'director'` |
+| no CAPI dependency | instantiate hub | no `ICopilotApiService` argument or mock |
+
+## 6. Implementation Order
+
+Recommended order:
+
+1. Add common type file with only types and helpers.
+2. Add tests for helpers.
+3. Add in-memory hub implementation.
+4. Add behavior tests for in-memory hub.
+5. Run compile.
+6. Run targeted tests.
+7. Run layer check.
+
+This order keeps type/layering mistakes visible before Phase 2 depends on the hub.
+
+## 7. Review Checklist
+
+- `directorProviderBackend.ts` has no Copilot imports.
+- `directorProviderBackendHub.ts` has no configuration or Secret Storage dependency.
+- All expected user configuration problems are represented as status results, not thrown exceptions.
+- The fake fixture is obviously fake and cannot be mistaken for a real provider.
+- `DirectorResolvedProviderAuth` exists only as a runtime resolved shape, not a persisted registry shape.
+- Test names mention `Director` or `directorProviderBackend` so targeted grep is easy.
+
+## 8. Validation
 
 Primary validation:
 
@@ -234,7 +344,7 @@ npm run valid-layers-check
 
 If targeted `test-node -- --grep` is not supported in the local package scripts, use the nearest existing AgentHost node test command and document the exact command that worked.
 
-## 7. Exit Criteria
+## 9. Exit Criteria
 
 - `directorProviderBackend.ts` exists and has no dependency on Copilot CAPI types.
 - `directorProviderBackendHub.ts` provides a fake/in-memory backend suitable for Phase 2.
@@ -242,7 +352,7 @@ If targeted `test-node -- --grep` is not supported in the local package scripts,
 - `npm run compile-check-ts-native` passes.
 - `npm run valid-layers-check` passes or any failure is clearly unrelated/pre-existing and documented.
 
-## 8. Open Questions
+## 10. Open Questions
 
 - Should the fake hub be compiled into product code behind a development gate, or live only in tests once Phase 3 starts?
 - Should `local` and `custom-http` be separate provider kinds or one provider kind with a transport field?
