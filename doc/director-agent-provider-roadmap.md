@@ -397,6 +397,7 @@ Scope:
   - model id;
   - provider capabilities.
 - Decide whether this is a new provider id, such as `director-claude`, or a backend mode of `DirectorAgent`.
+- Ensure a Director-backed Claude-like provider is not hidden merely because the user is logged out of GitHub Copilot.
 
 Out of scope:
 
@@ -407,6 +408,7 @@ Exit criteria:
 
 - Claude-like SDK can create a session and send messages using a Director provider backend.
 - Existing Copilot-backed Claude path remains available or explicitly gated as legacy/experimental.
+- Copilot logout does not suppress the Director-backed Claude-like provider when a Director backend is configured.
 
 ### Phase 7 - Provider Settings UI and Model Picker
 
@@ -474,6 +476,7 @@ Scope:
 - Persist provider-backed agent sessions.
 - Restore turns from harness-specific logs or normalized transcripts.
 - Persist session provider/model selection.
+- Persist current Director session message history beyond the AgentHost process lifetime.
 - Handle missing provider/model on restore.
 - Optionally migrate old provider registry state if the storage location changes.
 - Decide how old Chat Agent sessions and new AgentHost sessions coexist.
@@ -486,6 +489,7 @@ Out of scope:
 Exit criteria:
 
 - AgentHost restart is invisible for new Director sessions.
+- Director conversation history is available after closing and reopening the workbench.
 - Missing backend produces recoverable UI state.
 - Session kind remains stable.
 

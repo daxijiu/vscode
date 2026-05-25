@@ -37,10 +37,13 @@ import { CopilotApiService, ICopilotApiService } from './shared/copilotApiServic
 import { ClaudeAgent } from './claude/claudeAgent.js';
 import { ClaudeAgentSdkService, IClaudeAgentSdkService } from './claude/claudeAgentSdkService.js';
 import { ClaudeProxyService, IClaudeProxyService } from './claude/claudeProxyService.js';
+import { DirectorAgent } from './director/directorAgent.js';
+import { DirectorProviderBackendHub } from './director/directorProviderBackendHub.js';
 import { IAgentHostOTelService } from '../common/otel/agentHostOTelService.js';
 import { AgentHostOTelService } from './otel/agentHostOTelService.js';
 import { AgentService } from './agentService.js';
-import { AgentHostClaudeSdkPathEnvVar } from '../common/agentService.js';
+import { AgentHostClaudeSdkPathEnvVar, AgentHostEnableDirectorAgentEnvVar } from '../common/agentService.js';
+import { IDirectorProviderBackendHub } from '../common/directorProviderBackend.js';
 import { IAgentConfigurationService } from './agentConfigurationService.js';
 import { IAgentHostCompletions } from './agentHostCompletions.js';
 import { IAgentHostTerminalManager } from './agentHostTerminalManager.js';
@@ -79,6 +82,7 @@ interface IServerOptions {
 	readonly port: number;
 	readonly host: string | undefined;
 	readonly enableMockAgent: boolean;
+	readonly enableDirectorAgent: boolean;
 	/** Absolute path to a locally-installed `@anthropic-ai/claude-agent-sdk` package, or empty to disable the Claude agent. */
 	readonly claudeSdkPath: string;
 	readonly quiet: boolean;
@@ -94,6 +98,7 @@ function parseServerOptions(): IServerOptions {
 	const hostIdx = argv.indexOf('--host');
 	const host = hostIdx >= 0 ? argv[hostIdx + 1] : undefined;
 	const enableMockAgent = argv.includes('--enable-mock-agent');
+	const enableDirectorAgent = argv.includes('--enable-director-agent') || !!process.env[AgentHostEnableDirectorAgentEnvVar];
 	// Claude agent registration is opt-in: enable by passing a path to a
 	// locally-installed `@anthropic-ai/claude-agent-sdk` package via the CLI
 	// flag or the shared env var (the env var is what the agent host starters
@@ -143,7 +148,7 @@ function parseServerOptions(): IServerOptions {
 		connectionToken = generateUuid();
 	}
 
-	return { port, host, enableMockAgent, claudeSdkPath, quiet, connectionToken };
+	return { port, host, enableMockAgent, enableDirectorAgent, claudeSdkPath, quiet, connectionToken };
 }
 
 // ---- Main -------------------------------------------------------------------
@@ -232,6 +237,8 @@ async function main(): Promise<void> {
 		diServices.set(IClaudeProxyService, claudeProxyService);
 		const claudeAgentSdkService = instantiationService.createInstance(ClaudeAgentSdkService);
 		diServices.set(IClaudeAgentSdkService, claudeAgentSdkService);
+		const directorProviderBackendHub = instantiationService.createInstance(DirectorProviderBackendHub);
+		diServices.set(IDirectorProviderBackendHub, directorProviderBackendHub);
 		const agentHostOTelService = disposables.add(instantiationService.createInstance(AgentHostOTelService));
 		diServices.set(IAgentHostOTelService, agentHostOTelService);
 		const copilotAgent = disposables.add(instantiationService.createInstance(CopilotAgent));
@@ -244,6 +251,12 @@ async function main(): Promise<void> {
 			const claudeAgent = disposables.add(instantiationService.createInstance(ClaudeAgent));
 			agentService.registerProvider(claudeAgent);
 			log('ClaudeAgent registered');
+		}
+		if (options.enableDirectorAgent) {
+			process.env[AgentHostEnableDirectorAgentEnvVar] = '1';
+			const directorAgent = disposables.add(instantiationService.createInstance(DirectorAgent));
+			agentService.registerProvider(directorAgent);
+			log('DirectorAgent registered');
 		}
 	}
 

@@ -45,7 +45,7 @@ import { BugIndicatingError, isCancellationError } from '../../../../../base/com
 import { IEditorGroupsService } from '../../../../services/editor/common/editorGroupsService.js';
 import { getChatSessionType, isUntitledChatSession, LocalChatSessionUri } from '../../common/model/chatUri.js';
 import { assertNever } from '../../../../../base/common/assert.js';
-import { ICommandService } from '../../../../../platform/commands/common/commands.js';
+import { CommandsRegistry, ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { Target } from '../../common/promptSyntax/promptTypes.js';
 import { slashReg } from '../../common/requestParser/chatRequestParser.js';
 import { OffsetRange } from '../../../../../editor/common/core/ranges/offsetRange.js';
@@ -1280,10 +1280,15 @@ export class ChatSessionsService extends Disposable implements IChatSessionsServ
 registerSingleton(IChatSessionsService, ChatSessionsService, InstantiationType.Delayed);
 
 function registerNewSessionInPlaceAction(type: string, displayName: string): IDisposable {
+	const commandId = `workbench.action.chat.openNewChatSessionInPlace.${type}`;
+	if (CommandsRegistry.getCommand(commandId)) {
+		return toDisposable(() => { });
+	}
+
 	return registerAction2(class NewChatSessionInPlaceAction extends Action2 {
 		constructor() {
 			super({
-				id: `workbench.action.chat.openNewChatSessionInPlace.${type}`,
+				id: commandId,
 				title: localize2('interactiveSession.openNewChatSessionInPlace', "New {0} Session", displayName),
 				category: CHAT_CATEGORY,
 				f1: false,

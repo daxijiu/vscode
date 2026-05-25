@@ -15,7 +15,8 @@ import { URI } from '../../../base/common/uri.js';
 import { generateUuid } from '../../../base/common/uuid.js';
 import * as os from 'os';
 import * as inspector from 'inspector';
-import { AgentHostClaudeSdkPathEnvVar, AgentHostIpcChannels, IAgentHostInspectInfo, IAgentHostSocketInfo, IConnectionTrackerService } from '../common/agentService.js';
+import { AgentHostClaudeSdkPathEnvVar, AgentHostEnableDirectorAgentEnvVar, AgentHostIpcChannels, IAgentHostInspectInfo, IAgentHostSocketInfo, IConnectionTrackerService } from '../common/agentService.js';
+import { IDirectorProviderBackendHub } from '../common/directorProviderBackend.js';
 import { AgentService } from './agentService.js';
 import { IAgentConfigurationService } from './agentConfigurationService.js';
 import { IAgentHostCompletions } from './agentHostCompletions.js';
@@ -25,6 +26,8 @@ import { CopilotApiService, ICopilotApiService } from './shared/copilotApiServic
 import { ClaudeAgent } from './claude/claudeAgent.js';
 import { ClaudeAgentSdkService, IClaudeAgentSdkService } from './claude/claudeAgentSdkService.js';
 import { ClaudeProxyService, IClaudeProxyService } from './claude/claudeProxyService.js';
+import { DirectorAgent } from './director/directorAgent.js';
+import { DirectorProviderBackendHub } from './director/directorProviderBackendHub.js';
 import { IAgentHostOTelService } from '../common/otel/agentHostOTelService.js';
 import { AgentHostOTelService } from './otel/agentHostOTelService.js';
 import { ProtocolServerHandler } from './protocolServerHandler.js';
@@ -145,6 +148,8 @@ async function startAgentHost(): Promise<void> {
 		diServices.set(IClaudeProxyService, claudeProxyService);
 		const claudeAgentSdkService = instantiationService.createInstance(ClaudeAgentSdkService);
 		diServices.set(IClaudeAgentSdkService, claudeAgentSdkService);
+		const directorProviderBackendHub = instantiationService.createInstance(DirectorProviderBackendHub);
+		diServices.set(IDirectorProviderBackendHub, directorProviderBackendHub);
 		const agentHostOTelService = disposables.add(instantiationService.createInstance(AgentHostOTelService));
 		diServices.set(IAgentHostOTelService, agentHostOTelService);
 		agentService = new AgentService(logService, fileService, sessionDataService, productService, gitService, checkpointService, rootConfigResource, telemetryService);
@@ -164,6 +169,9 @@ async function startAgentHost(): Promise<void> {
 		// absolute path to a locally-installed `@anthropic-ai/claude-agent-sdk` package.
 		if (process.env[AgentHostClaudeSdkPathEnvVar]) {
 			agentService.registerProvider(instantiationService.createInstance(ClaudeAgent));
+		}
+		if (process.env[AgentHostEnableDirectorAgentEnvVar]) {
+			agentService.registerProvider(instantiationService.createInstance(DirectorAgent));
 		}
 	} catch (err) {
 		logService.error('Failed to create AgentService', err);

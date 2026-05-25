@@ -71,6 +71,22 @@ export const AgentHostClaudeAgentSdkPathSettingId = 'chat.agentHost.claudeAgent.
  */
 export const AgentHostClaudeSdkPathEnvVar = 'VSCODE_AGENT_HOST_CLAUDE_SDK_PATH';
 
+/**
+ * Configuration key that controls whether the experimental Director agent
+ * provider is registered inside the agent host. Director is intentionally
+ * gated separately from Copilot and Claude so non-Copilot provider backend
+ * work can remain opt-in while the boundary is under development.
+ */
+export const AgentHostDirectorAgentEnabledSettingId = 'chat.agentHost.directorAgent.enabled';
+
+/**
+ * Environment variable consumed by the agent host process to register the
+ * Director agent provider. Set by the agent host starters from
+ * {@link AgentHostDirectorAgentEnabledSettingId}, and may also be set
+ * directly by developers as an override.
+ */
+export const AgentHostEnableDirectorAgentEnvVar = 'VSCODE_AGENT_HOST_ENABLE_DIRECTOR_AGENT';
+
 // -- OpenTelemetry settings ------------------------------------------------------
 //
 // The `chat.agentHost.otel.*` namespace surfaces the same exporter knobs the CLI

@@ -19,7 +19,7 @@ import { getResolvedShellEnv } from '../../shell/node/shellEnv.js';
 import { NullTelemetryService } from '../../telemetry/common/telemetryUtils.js';
 import { UtilityProcess } from '../../utilityProcess/electron-main/utilityProcess.js';
 import { IAgentHostConnection, IAgentHostStarter } from '../common/agent.js';
-import { AgentHostClaudeAgentSdkPathSettingId, AgentHostClaudeSdkPathEnvVar, AgentHostOTelCaptureContentSettingId, AgentHostOTelDbSpanExporterEnabledSettingId, AgentHostOTelEnabledSettingId, AgentHostOTelExporterTypeSettingId, AgentHostOTelOtlpEndpointSettingId, AgentHostOTelOutfileSettingId, buildAgentHostOTelEnv } from '../common/agentService.js';
+import { AgentHostClaudeAgentSdkPathSettingId, AgentHostClaudeSdkPathEnvVar, AgentHostDirectorAgentEnabledSettingId, AgentHostEnableDirectorAgentEnvVar, AgentHostOTelCaptureContentSettingId, AgentHostOTelDbSpanExporterEnabledSettingId, AgentHostOTelEnabledSettingId, AgentHostOTelExporterTypeSettingId, AgentHostOTelOtlpEndpointSettingId, AgentHostOTelOutfileSettingId, buildAgentHostOTelEnv } from '../common/agentService.js';
 import { deepClone } from '../../../base/common/objects.js';
 
 export class ElectronAgentHostStarter extends Disposable implements IAgentHostStarter {
@@ -72,6 +72,8 @@ export class ElectronAgentHostStarter extends Disposable implements IAgentHostSt
 		const claudeSdkPath = this._configurationService.getValue<string>(AgentHostClaudeAgentSdkPathSettingId)
 			|| process.env[AgentHostClaudeSdkPathEnvVar]
 			|| '';
+		const directorAgentEnabled = this._configurationService.getValue<boolean>(AgentHostDirectorAgentEnabledSettingId)
+			|| !!process.env[AgentHostEnableDirectorAgentEnvVar];
 
 		// Translate `chat.agentHost.otel.*` settings into the env vars consumed by
 		// the agent host process. Any value already present on `process.env` wins
@@ -106,6 +108,7 @@ export class ElectronAgentHostStarter extends Disposable implements IAgentHostSt
 				VSCODE_PIPE_LOGGING: 'true',
 				VSCODE_VERBOSE_LOGGING: 'true',
 				...(claudeSdkPath ? { [AgentHostClaudeSdkPathEnvVar]: claudeSdkPath } : {}),
+				...(directorAgentEnabled ? { [AgentHostEnableDirectorAgentEnvVar]: '1' } : {}),
 				...otelEnv,
 			}
 		});

@@ -1,6 +1,6 @@
 # Project Memory - Director Agent / Provider Backend
 
-更新时间：2026-05-22
+Updated: 2026-05-25
 
 ## Project Context
 
@@ -24,10 +24,11 @@ codex/Director
 
 Current remote-synced commits:
 
+- `9da6c704379 docs: record director agent project context`
 - `4b087dfc4bf docs: add agent provider research notes`
 - `fd76ff9f138 docs: add director agent provider roadmap`
 
-At the time this file was created, the Phase 0-2 plan documents had additional local refinements that were not yet committed.
+The current Phase 0-2 implementation is local/uncommitted at this update.
 
 ## Project Goal
 
@@ -77,19 +78,35 @@ Completed and pushed:
 - `doc/director-agent-provider-roadmap.md`
 - `doc/research/claude-agenthost-phase-handoff.md`
 - `doc/research/custom-agent-provider-backend-plan.md`
-
-Created and locally refined:
-
 - `doc/director-agent-provider-phase0-plan.md`
 - `doc/director-agent-provider-phase1-plan.md`
 - `doc/director-agent-provider-phase2-plan.md`
-
-Created in this update:
-
 - `AGENTS.md`
 - `MEMORY.md`
 
-Important: check `git status --short --branch` before continuing. There may be uncommitted doc refinements.
+Implemented locally in the current Phase 0-2 wave:
+
+- Phase 0 inventory: `doc/director-agent-provider-phase0-inventory.md`.
+- Phase 1 Provider Backend contract and fake hub:
+  - `src/vs/platform/agentHost/common/directorProviderBackend.ts`
+  - `src/vs/platform/agentHost/node/director/directorProviderBackendHub.ts`
+  - `src/vs/platform/agentHost/test/node/directorProviderBackend.test.ts`
+- Phase 2 minimal gated Director agent:
+  - `src/vs/platform/agentHost/node/director/directorAgent.ts`
+  - `src/vs/platform/agentHost/node/director/directorAgentSession.ts`
+  - `src/vs/platform/agentHost/test/node/directorAgent.test.ts`
+  - narrow gate/registration edits in `agentService.ts`, both AgentHost starters, both AgentHost main entrypoints, and `chat.shared.contribution.ts`.
+
+Manual Phase 0-2 acceptance package generated locally:
+
+- `.tmp/director-phase0-2-acceptance/`
+- `.tmp/director-phase0-2-acceptance.zip`
+- The package now includes `Ensure-DirectorAcceptanceBuild.ps1`, and the launch scripts run it before opening Code OSS. It checks the core `out/` tree, the Codicons font, built-in extension outputs, and the Copilot Chat `dist/extension.js` entrypoint, then runs `npm run gulp copy-codicons`, `npm run transpile-client`, `npm run gulp compile-extensions`, and `npm --prefix extensions/copilot run compile` if required.
+- The enabled and disabled launch scripts support `-Fresh` and rewrite their profile `settings.json` on every run.
+
+The package is ignored workspace state. It contains enabled/disabled AgentHost profiles and PowerShell launch/smoke scripts; it should not be committed.
+
+Important: check `git status --short --branch` before continuing. The Phase 0-2 implementation files are local/uncommitted at this memory update.
 
 ## Plan Documents
 
@@ -138,6 +155,10 @@ Old Director reference implementation:
 - `E:\Projects\Director-Code-batch\Director-Code-112-check`
 - `E:\Projects\Director-Code-batch\Director-Code-112-check\vscode.generated\layers\director\vscode`
 
+Phase 0 found that the old generated-tree path currently exists but is empty/unmaterialized. For Phase 3+, materialize the old tree or mine the replay patch:
+
+- `E:\Projects\Director-Code-batch\Director-Code-112-check\patches\replay\004-director-agent-engine.120-insider.patch`
+
 Old Director modules to mine for concepts:
 
 - `src/vs/workbench/contrib/directorCode/common/agentEngine/providerRegistry.ts`
@@ -164,22 +185,27 @@ Recommended execution order:
 
 Phase 0:
 
-- Produce `doc/director-agent-provider-phase0-inventory.md`.
-- Confirm branch, dirty state, current AgentHost boundaries, Claude reference boundary, old Director reference boundary, and Phase 1/2 decisions.
+- Done locally: produced `doc/director-agent-provider-phase0-inventory.md`.
+- Confirmed branch, dirty state, current AgentHost boundaries, Claude reference boundary, old Director reference boundary, and Phase 1/2 decisions.
 
 Phase 1:
 
-- Add provider backend contracts.
-- Add fake/in-memory backend hub.
-- Add tests for model listing, backend resolution, disabled provider, missing auth, unknown model, and conversion to `IAgentModelInfo`.
+- Done locally: added provider backend contracts.
+- Done locally: added fake/in-memory backend hub.
+- Done locally: added tests for model listing, backend resolution, disabled provider, missing auth, unknown model, and conversion to `IAgentModelInfo`.
 
 Phase 2:
 
-- Add gated minimal `DirectorAgent implements IAgent`.
-- No protected resources.
-- No Copilot CAPI.
-- Fake/echo streaming only.
-- Create/list/dispose session, send, abort, and shutdown.
+- Done locally: added gated minimal `DirectorAgent implements IAgent`.
+- Done locally: no protected resources.
+- Done locally: no Copilot CAPI.
+- Done locally: fake/echo streaming only.
+- Done locally: create/list/dispose session, send, abort, change model, and shutdown.
+- Runtime acceptance fix: if Director appears in the AgentHost picker but clicking it still opens `copilotcli`/Local, inspect the workbench renderer log for `command 'workbench.action.chat.openNewChatSessionInPlace.agent-host-director' not found`. The current fix makes dynamic chat-session command registration skip already-registered static commands so the duplicate `agent-host-copilotcli` command does not abort before `agent-host-director` is registered.
+- Runtime acceptance note: if many UI icons render as empty boxes, check `out/vs/base/browser/ui/codicons/codicon/codicon.ttf`. Source launch needs `npm run gulp copy-codicons` before `npm run transpile-client` when the ignored `src/.../codicon.ttf` file is missing.
+- Runtime acceptance note: if `GitHub.copilot-chat` fails with `Cannot find module ... extensions/copilot/dist/extension`, run `npm --prefix extensions/copilot run compile`. The regular `compile-extensions` task does not produce the Copilot Chat dist bundle.
+- Runtime acceptance note: `Director echo: <message>` is expected for Phase 0-2 because the Director agent is fake/echo-backed until real provider traffic is wired later.
+- Runtime acceptance note: Director conversation history is not durable in Phase 2. `DirectorAgentSession` records turns in memory only; restoring across workbench/AgentHost restart is Phase 9.
 
 Phase 3:
 
@@ -196,6 +222,7 @@ Phase 5:
 Phase 6:
 
 - De-CAPI Claude-like SDK harness.
+- Observed acceptance follow-up: the current upstream Claude provider can disappear while logged out of Copilot because the current Claude path is still Copilot-protected/CAPI-backed. Fix this in Phase 6 by making the Director-backed Claude-like provider independent from GitHub Copilot login state.
 
 Phase 7:
 
@@ -208,6 +235,7 @@ Phase 8:
 Phase 9:
 
 - Session restore, migration, and compatibility.
+- Observed acceptance follow-up: Phase 2 Director sessions keep messages only in current process memory. Durable Director conversation history belongs in Phase 9.
 
 Phase 10:
 
@@ -241,6 +269,22 @@ npm run compile-check-ts-native
 npm run valid-layers-check
 ```
 
+Current Phase 0-2 validation results:
+
+- `npm run compile-check-ts-native` passed.
+- `npm run gulp copy-codicons` passed and restored the ignored Codicons font used by source launch UI.
+- `npm run transpile-client` passed.
+- `npm run gulp compile-extensions` passed and produced the built-in extension `out/` files needed for source launch.
+- `npm --prefix extensions/copilot run compile` passed and produced `extensions/copilot/dist/extension.js`.
+- `npm run valid-layers-check` passed.
+- `npm run test-node -- --run src/vs/platform/agentHost/test/node/directorProviderBackend.test.ts` passed, 6 passing.
+- `npm run test-node -- --run src/vs/platform/agentHost/test/node/directorAgent.test.ts` passed, 5 passing.
+- Direct combined mocha against generated output also passed, 9 passing.
+- Dependency scan for `ICopilotApiService`, `GITHUB_COPILOT_PROTECTED_RESOURCE`, `copilotApi`, `CAPI`, and `Copilot` in Director-owned backend/agent files returned no hits.
+- `npm run test-node -- --grep "Director"` ran the full node unit suite in this repository and failed on an existing environment-specific `Request Service / Kerberos lookup` credential error, not on Director tests.
+- `.tmp/director-phase0-2-acceptance/Run-DirectorSmoke.ps1` passed after the manual acceptance package was generated.
+- Manual package settings were checked: enabled profile has both `chat.agentHost.enabled` and `chat.agentHost.directorAgent.enabled` set to `true`; disabled profile keeps `chat.agentHost.enabled` true and sets `chat.agentHost.directorAgent.enabled` to `false`.
+
 For AgentHost-focused tests:
 
 ```powershell
@@ -264,8 +308,11 @@ git diff --check -- <changed-doc-paths>
 
 ## Next Recommended Action
 
-Finish or execute Phase 0:
+Manual acceptance:
 
-1. Generate `doc/director-agent-provider-phase0-inventory.md`.
-2. Commit the refined Phase 0-2 plan docs plus `AGENTS.md` and `MEMORY.md`.
-3. Start Phase 1 only after the inventory confirms the file boundaries and feature gate names.
+- Run `.tmp/director-phase0-2-acceptance/Launch-DirectorDisabled.ps1 -Fresh` and confirm Director is not offered as an AgentHost provider.
+- Run `.tmp/director-phase0-2-acceptance/Launch-DirectorEnabled.ps1 -Fresh` and confirm Director is offered, creates an AHP `createSession` request with `provider: director`, streams deterministic echo text, and does not trigger GitHub/Copilot auth.
+
+Then review and commit/push the local Phase 0-2 implementation.
+
+After that, start Phase 3 only after deciding how to materialize or mine the old Director provider registry/auth/model resolver from the 112 replay patch.
