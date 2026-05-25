@@ -288,35 +288,57 @@ Exit criteria:
 
 Goal: port the useful old Director provider registry/auth semantics into the current fork.
 
+Full step-by-step plan: [director-agent-provider-phase3-plan.md](./director-agent-provider-phase3-plan.md).
+
 Scope:
 
 - Add provider instance registry.
 - Add API-key provider auth model.
+- Add OpenAI Codex OAuth auth model from old Director as the Phase 3 minimum OAuth path.
 - Add Secret Storage bridge.
 - Add OpenAI-compatible and Anthropic-compatible provider metadata.
 - Add model list refresh and connection test.
 - Add provider capability normalization.
+- Add provider protocol routing so matching harness/provider API types can pass through natively, with conversion adapters only for cross-protocol routes.
+- Keep AgentHost runtime provider transports under `src/vs/platform/agentHost/node/director/providers/**`; Workbench owns settings, registry, auth, secrets, and UI orchestration.
+- Add a Workbench-owned, profile-scoped, secret-free provider/model/auth-state snapshot writer for AgentHost consumption.
+- Keep Workbench connection tests on Workbench request/auth services and shared pure request builders; do not import AgentHost node transports into Workbench.
+- Add compatibility-based model visibility so unproven harness/provider combinations stay out of the picker.
+- Keep public `openai-responses` reserved/hidden until implemented separately from old Director `openai-codex`.
+- Restore a practical Director Settings entry based on the old provider settings editor.
+- Reuse the old `ProviderSettingsWidget` as the main provider manager surface.
 
 Source concepts to reuse:
 
 - Old `providerRegistry.ts`
 - Old `apiKeyService.ts`
 - Old `authStateService.ts`
+- Old `oauthService.ts`
 - Old `modelResolver.ts`
 - Old `providerTypes.ts`
 - Old `providerFactory.ts`
+- Old provider adapter files under `providers/`
+- Old `providerSettingsWidget.ts`
+- Old `directorCodeSettingsEditor.ts`
+- Old `settingsWriteQueue.ts`
 
 Out of scope:
 
-- OAuth.
-- Full Provider Manager UI polish.
+- Real Director `AgentEngine` turns.
 - Claude SDK de-CAPI migration.
 
 Exit criteria:
 
+- Director Settings opens from a visible command/menu entry.
 - A configured API-key provider can list or define models.
+- A configured OpenAI Codex OAuth provider can authenticate, sign out, and expose non-secret ready/signed-out state, or a deterministic fake OAuth target covers local acceptance.
 - Missing/invalid key is surfaced as provider state, not as an AgentHost crash.
 - Provider registry state does not store secrets in ordinary JSON.
+- Workbench writes a secret-free provider/model/auth-state snapshot, and AgentHost reads only that snapshot for Phase 3 model availability.
+- Provider protocol routing uses direct native pass-through for matching API types and conversion adapters only for cross-protocol routes.
+- Unsupported harness/provider/model combinations are hidden from the relevant agent model picker when it exists, or covered by compatibility metadata tests for future harnesses.
+- Public `openai-responses` remains hidden unless its adapter/auth/model path is implemented separately from `openai-codex`.
+- AgentHost can see configured non-secret provider/model metadata.
 - Tests cover key rotation and model cache invalidation.
 
 ### Phase 4 - Provider-Backed Director Agent Harness
@@ -410,19 +432,13 @@ Exit criteria:
 - Existing Copilot-backed Claude path remains available or explicitly gated as legacy/experimental.
 - Copilot logout does not suppress the Director-backed Claude-like provider when a Director backend is configured.
 
-### Phase 7 - Provider Settings UI and Model Picker
+### Phase 7 - Provider Settings Polish and Model Picker
 
-Goal: expose provider/backend configuration without rewriting the main Chat UI.
+Goal: polish provider/backend configuration and integrate it more deeply with Agent Sessions model/session selection, after Phase 3 has restored the practical Director Settings entry.
 
 Scope:
 
-- Add or port Provider Manager UI:
-  - Add Provider;
-  - Edit Provider;
-  - Delete Provider;
-  - Test Connection;
-  - Refresh Models;
-  - Set Default Provider / Model.
+- Polish the Provider Manager UI restored in Phase 3.
 - Project provider models into AgentHost model picker.
 - Add session config schema for provider/model/harness selection if needed.
 - Preserve secret isolation: UI writes secrets to Secret Storage, registry stores references and metadata only.
@@ -436,22 +452,23 @@ Source concepts to reuse:
 
 Out of scope:
 
-- OAuth login UI, except placeholders.
-- Full parity with old settings page in the first pass.
+- Additional OAuth provider login UI beyond Phase 3 parity.
+- Re-porting the basic provider settings entry already completed in Phase 3.
 
 Exit criteria:
 
 - User can configure an API-key provider and select its model for a Director/Claude-like agent session.
 - Restart preserves provider registry and model visibility.
 
-### Phase 8 - OAuth Provider Support
+### Phase 8 - OAuth Hardening and Additional Provider Support
 
-Goal: support non-Copilot OAuth providers without reusing GitHub Copilot resource identity.
+Goal: harden the OpenAI Codex OAuth support introduced in Phase 3 and add more non-Copilot OAuth providers without reusing GitHub Copilot resource identity.
 
 Scope:
 
-- Define OAuth provider config.
-- Implement or bridge VS Code `AuthenticationProvider` where appropriate.
+- Add OAuth providers beyond the Phase 3 OpenAI Codex path.
+- Harden token refresh, expiry, and re-auth UX.
+- Implement or bridge VS Code `AuthenticationProvider` where appropriate if Phase 3 used a narrower internal service.
 - Add provider-specific `ProtectedResourceMetadata`.
 - Add login/logout/refresh state.
 - Resolve OAuth tokens into `ProviderAuth`.
@@ -460,11 +477,11 @@ Scope:
 Out of scope:
 
 - Using `GITHUB_COPILOT_PROTECTED_RESOURCE` for non-Copilot providers.
-- Mixing OAuth implementation into Phase 3 API-key backend.
+- Moving OpenAI Codex OAuth support back out of Phase 3.
 
 Exit criteria:
 
-- A configured OAuth provider can authenticate and produce a resolved backend.
+- Additional OAuth providers can authenticate and produce a resolved backend.
 - Token refresh does not leak into agent harness code.
 
 ### Phase 9 - Session Restore, Migration, and Compatibility

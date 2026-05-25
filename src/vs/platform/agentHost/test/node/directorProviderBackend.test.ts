@@ -75,7 +75,8 @@ suite('directorProviderBackend', () => {
 				providerKind: defaultResult.backend.providerKind,
 				apiType: defaultResult.backend.apiType,
 				modelId: defaultResult.backend.modelId,
-				authKind: defaultResult.backend.auth.kind,
+				agentModelId: defaultResult.backend.agentModelId,
+				authState: defaultResult.backend.authState.kind,
 				identityKey: defaultResult.backend.identityKey,
 			},
 			explicitBackend: {
@@ -89,7 +90,8 @@ suite('directorProviderBackend', () => {
 				providerKind: 'local',
 				apiType: 'local',
 				modelId: 'echo',
-				authKind: 'none',
+				agentModelId: 'echo',
+				authState: 'none',
 				identityKey: 'director-fake/echo',
 			},
 			explicitBackend: {
@@ -153,6 +155,93 @@ suite('directorProviderBackend', () => {
 				family: 'echo',
 				capabilities: { streaming: true, toolCalling: false, agentMode: true },
 			},
+		});
+	});
+
+	test('keeps AgentHost model ids distinct from provider wire model ids', async () => {
+		const hub = new DirectorProviderBackendHub({
+			providerInstances: [{
+				id: 'openai-compatible',
+				kind: 'openai-compatible',
+				displayName: 'OpenAI Compatible',
+				enabled: true,
+				authKind: 'none',
+				apiType: 'openai-completions',
+				defaultModelId: 'openai-compatible:gpt-4.1',
+			}],
+			models: [{
+				providerInstanceId: 'openai-compatible',
+				id: 'openai-compatible:gpt-4.1',
+				providerModelId: 'gpt-4.1',
+				name: 'GPT-4.1',
+				supportsVision: false,
+			}],
+		});
+		const [model] = await hub.listModels('openai-compatible');
+		const resolved = await hub.resolveBackend({ providerInstanceId: 'openai-compatible', modelId: 'openai-compatible:gpt-4.1' });
+
+		assert.ok(isResolvedBackend(resolved));
+		const modelInfo = toAgentModelInfo(DirectorAgentProviderId, model);
+		assert.deepStrictEqual({
+			agentModelId: modelInfo.id,
+			backendModelId: (modelInfo._meta ?? {}).backendModelId,
+			resolvedAgentModelId: resolved.backend.agentModelId,
+			resolvedModelId: resolved.backend.modelId,
+		}, {
+			agentModelId: 'openai-compatible:gpt-4.1',
+			backendModelId: 'gpt-4.1',
+			resolvedAgentModelId: 'openai-compatible:gpt-4.1',
+			resolvedModelId: 'gpt-4.1',
+		});
+	});
+
+	test('infers provider from globally unique model id and honors global default model first', async () => {
+		const hub = new DirectorProviderBackendHub({
+			defaultProviderId: 'provider-a',
+			defaultModelId: 'provider-a:gpt-4.1-mini',
+			providerInstances: [
+				{
+					id: 'provider-a',
+					kind: 'openai-compatible',
+					displayName: 'Provider A',
+					enabled: true,
+					authKind: 'none',
+					apiType: 'openai-completions',
+					defaultModelId: 'provider-a:gpt-4.1',
+				},
+				{
+					id: 'provider-b',
+					kind: 'anthropic-compatible',
+					displayName: 'Provider B',
+					enabled: true,
+					authKind: 'none',
+					apiType: 'anthropic-messages',
+					defaultModelId: 'provider-b:claude-sonnet-4.5',
+				},
+			],
+			models: [
+				{ providerInstanceId: 'provider-a', id: 'provider-a:gpt-4.1', providerModelId: 'gpt-4.1', name: 'GPT-4.1', supportsVision: false },
+				{ providerInstanceId: 'provider-a', id: 'provider-a:gpt-4.1-mini', providerModelId: 'gpt-4.1-mini', name: 'GPT-4.1 Mini', supportsVision: false },
+				{ providerInstanceId: 'provider-b', id: 'provider-b:claude-sonnet-4.5', providerModelId: 'claude-sonnet-4.5', name: 'Claude Sonnet 4.5', supportsVision: false },
+			],
+		});
+		const defaultProviderA = await hub.resolveBackend();
+		const explicitProviderB = await hub.resolveBackend({ modelId: 'provider-b:claude-sonnet-4.5' });
+
+		assert.ok(isResolvedBackend(defaultProviderA));
+		assert.ok(isResolvedBackend(explicitProviderB));
+		assert.deepStrictEqual({
+			defaultAgentModelId: defaultProviderA.backend.agentModelId,
+			defaultModelId: defaultProviderA.backend.modelId,
+			providerInstanceId: explicitProviderB.backend.providerInstanceId,
+			agentModelId: explicitProviderB.backend.agentModelId,
+			modelId: explicitProviderB.backend.modelId,
+		}, {
+			defaultAgentModelId: 'provider-a:gpt-4.1-mini',
+			defaultModelId: 'gpt-4.1-mini',
+			providerInstanceId: 'provider-b',
+			agentModelId: 'provider-b:claude-sonnet-4.5',
+			modelId: 'claude-sonnet-4.5',
 		});
 	});
 });

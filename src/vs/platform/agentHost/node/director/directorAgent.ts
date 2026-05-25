@@ -3,9 +3,10 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { SequencerByKey } from '../../../../base/common/async.js';
+import { IntervalTimer, SequencerByKey } from '../../../../base/common/async.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap } from '../../../../base/common/lifecycle.js';
+import { equals } from '../../../../base/common/objects.js';
 import { IObservable, observableValue } from '../../../../base/common/observable.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -32,6 +33,8 @@ export class DirectorAgent extends Disposable implements IAgent {
 	private readonly _sessions = this._register(new DisposableMap<string, DirectorSessionEntry>());
 	private readonly _sessionSequencer = new SequencerByKey<string>();
 	private readonly _disposeSequencer = new SequencerByKey<string>();
+	private readonly _modelRefreshTimer = this._register(new IntervalTimer());
+	private _modelRefreshPromise: Promise<void> | undefined;
 
 	constructor(
 		@IDirectorProviderBackendHub private readonly _backendHub: IDirectorProviderBackendHub,
@@ -39,9 +42,22 @@ export class DirectorAgent extends Disposable implements IAgent {
 	) {
 		super();
 		void this.refreshModels();
+		this._modelRefreshTimer.cancelAndSet(() => {
+			void this.refreshModels();
+		}, 2000);
 	}
 
 	async refreshModels(): Promise<void> {
+		if (this._modelRefreshPromise !== undefined) {
+			return this._modelRefreshPromise;
+		}
+		this._modelRefreshPromise = this.doRefreshModels().finally(() => {
+			this._modelRefreshPromise = undefined;
+		});
+		return this._modelRefreshPromise;
+	}
+
+	private async doRefreshModels(): Promise<void> {
 		try {
 			const models = await this._backendHub.listModels();
 			const availableModels = [];
@@ -51,10 +67,14 @@ export class DirectorAgent extends Disposable implements IAgent {
 					availableModels.push(toAgentModelInfo(this.id, model));
 				}
 			}
-			this._models.set(availableModels, undefined);
+			if (!equals(this._models.get(), availableModels)) {
+				this._models.set(availableModels, undefined);
+			}
 		} catch (err) {
 			this._logService.error('[Director] Failed to refresh models', err);
-			this._models.set([], undefined);
+			if (this._models.get().length !== 0) {
+				this._models.set([], undefined);
+			}
 		}
 	}
 
@@ -196,7 +216,7 @@ export class DirectorAgent extends Disposable implements IAgent {
 		const resolution = await this._backendHub.resolveBackend(model ? { modelId: model.id } : undefined);
 		if (isResolvedBackend(resolution)) {
 			return {
-				id: model?.id ?? resolution.backend.modelId,
+				id: model?.id ?? resolution.backend.agentModelId ?? resolution.backend.modelId,
 				...(model?.config ? { config: model.config } : {}),
 			};
 		}

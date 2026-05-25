@@ -148,7 +148,7 @@ async function startAgentHost(): Promise<void> {
 		diServices.set(IClaudeProxyService, claudeProxyService);
 		const claudeAgentSdkService = instantiationService.createInstance(ClaudeAgentSdkService);
 		diServices.set(IClaudeAgentSdkService, claudeAgentSdkService);
-		const directorProviderBackendHub = instantiationService.createInstance(DirectorProviderBackendHub);
+		const directorProviderBackendHub = new DirectorProviderBackendHub({}, fileService, environmentService, logService);
 		diServices.set(IDirectorProviderBackendHub, directorProviderBackendHub);
 		const agentHostOTelService = disposables.add(instantiationService.createInstance(AgentHostOTelService));
 		diServices.set(IAgentHostOTelService, agentHostOTelService);

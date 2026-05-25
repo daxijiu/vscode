@@ -27,8 +27,9 @@ Current remote-synced commits:
 - `9da6c704379 docs: record director agent project context`
 - `4b087dfc4bf docs: add agent provider research notes`
 - `fd76ff9f138 docs: add director agent provider roadmap`
+- `be253aa6d52 feat: add gated director agenthost provider`
 
-The current Phase 0-2 implementation is local/uncommitted at this update.
+The Phase 0-2 implementation has been accepted, committed, and pushed.
 
 ## Project Goal
 
@@ -84,7 +85,7 @@ Completed and pushed:
 - `AGENTS.md`
 - `MEMORY.md`
 
-Implemented locally in the current Phase 0-2 wave:
+Implemented and pushed in the Phase 0-2 wave:
 
 - Phase 0 inventory: `doc/director-agent-provider-phase0-inventory.md`.
 - Phase 1 Provider Backend contract and fake hub:
@@ -106,7 +107,7 @@ Manual Phase 0-2 acceptance package generated locally:
 
 The package is ignored workspace state. It contains enabled/disabled AgentHost profiles and PowerShell launch/smoke scripts; it should not be committed.
 
-Important: check `git status --short --branch` before continuing. The Phase 0-2 implementation files are local/uncommitted at this memory update.
+Important: check `git status --short --branch` before continuing.
 
 ## Plan Documents
 
@@ -119,6 +120,7 @@ Phase plans:
 - `doc/director-agent-provider-phase0-plan.md`
 - `doc/director-agent-provider-phase1-plan.md`
 - `doc/director-agent-provider-phase2-plan.md`
+- `doc/director-agent-provider-phase3-plan.md`
 
 Research:
 
@@ -209,7 +211,23 @@ Phase 2:
 
 Phase 3:
 
-- Port provider registry and API-key backend semantics from old Director.
+- Phase 3 acceptance slice passed manual validation on 2026-05-25 and is ready to commit/push.
+- Added Workbench-owned provider registry, API-key Secret Storage wrapper, deterministic OpenAI Codex fake OAuth state, model resolver, and secret-free provider snapshot writer under `src/vs/workbench/contrib/directorCode/**`.
+- Added shared AgentHost common DTO/helpers for secret-free snapshots, protocol compatibility routing, and provider request templates under `src/vs/platform/agentHost/common/directorProvider*.ts`.
+- Updated `DirectorProviderBackendHub` to read the Workbench-written snapshot when available, while keeping explicit fake fixtures for tests and fallback startup.
+- Added a visible `director-code.openSettings` command with Command Palette, Menubar Preferences, and Chat title menu entries. The current UI is a QuickInput Phase 3 acceptance shell, not the full old `ProviderSettingsWidget` / `DirectorCodeSettingsEditor` editor-pane port yet.
+- Added a no-network provider setup validation action. It checks auth state and builds a redacted request template; it intentionally does not send API-key traffic through `IRequestService` because VS Code request logging redacts `authorization` but not every provider-specific key header.
+- Model ids are separated into AgentHost-visible unique ids and provider wire model ids via `providerModelId`, so future real traffic does not send namespaced picker ids to providers.
+- Review fixes already applied in this local slice: AgentHost infers provider from the selected global model id, global default model selection wins over per-provider defaults, snapshot writes are serialized, and known sensitive auth headers are stripped from registry/snapshot/backend metadata.
+- Runtime acceptance fix: `director-code.openSettings` must not pass `ServicesAccessor` across `await`. The command now captures all Director settings services synchronously in `Action2.run()` and passes service instances through the async QuickInput flow.
+- Runtime acceptance fix: `DirectorAgent` now refreshes provider models periodically from the secret-free snapshot and only emits model changes when the list differs. This fixes the case where AgentHost starts before Workbench writes provider models, leaving the picker empty until a full AgentHost process restart.
+- Manual acceptance covered Director Settings, API-key provider save, dry-run provider validation, secret-free registry/snapshot inspection, fake OpenAI Codex OAuth state, AgentHost model list refresh, and expected `Director echo: ...` runtime behavior.
+- Real OpenAI Codex OAuth browser/device flow is still pending; the local Phase 3 target uses a deterministic fake token state stored in Secret Storage.
+- Keep AgentHost runtime provider transports under `src/vs/platform/agentHost/**`; Workbench owns Settings UI, registry, auth, secrets, model-refresh orchestration, connection-test orchestration, and the secret-free provider/model/auth-state snapshot writer.
+- Workbench must not import AgentHost node transports. Shared compatibility, request builders, and snapshot DTOs belong under `src/vs/platform/agentHost/common/**`; AgentHost Phase 3 code consumes auth state, not raw API keys or OAuth bearer tokens.
+- Keep public `openai-responses` hidden/reserved until implemented separately from old Director `openai-codex`.
+- Keep real Director `AgentEngine` turns for Phase 4.
+- Keep full old settings editor port, real OAuth hardening, additional OAuth providers, and real provider network connection tests as follow-up work unless this Phase 3 slice is expanded.
 
 Phase 4:
 
@@ -226,11 +244,11 @@ Phase 6:
 
 Phase 7:
 
-- Provider Settings UI and model picker integration.
+- Deeper Provider Settings polish and Agent Sessions model picker integration after Phase 3 restores the practical Director Settings entry.
 
 Phase 8:
 
-- OAuth provider support.
+- OAuth hardening and additional provider support.
 
 Phase 9:
 

@@ -5,6 +5,7 @@
 
 import { createDecorator } from '../../instantiation/common/instantiation.js';
 import type { AgentProvider, IAgentModelInfo } from './agentService.js';
+import type { DirectorProviderAuthState } from './directorProviderSnapshot.js';
 
 export const DirectorAgentProviderId: AgentProvider = 'director';
 
@@ -42,6 +43,7 @@ export interface DirectorProviderInstance {
 	readonly displayName: string;
 	readonly enabled: boolean;
 	readonly authKind: DirectorProviderAuthKind;
+	readonly apiType?: DirectorProviderApiType;
 	readonly baseURL?: string;
 	readonly headers?: Record<string, string>;
 	readonly defaultModelId?: string;
@@ -50,6 +52,7 @@ export interface DirectorProviderInstance {
 export interface DirectorProviderModel {
 	readonly providerInstanceId: string;
 	readonly id: string;
+	readonly providerModelId?: string;
 	readonly name: string;
 	readonly family?: string;
 	readonly maxContextWindow?: number;
@@ -62,17 +65,13 @@ export interface DirectorProviderSelection {
 	readonly modelId?: string;
 }
 
-export type DirectorResolvedProviderAuth =
-	| { readonly kind: 'none' }
-	| { readonly kind: 'api-key'; readonly value: string }
-	| { readonly kind: 'bearer'; readonly accessToken: string; readonly refreshToken?: string; readonly clientId?: string };
-
 export interface DirectorResolvedProviderBackend {
 	readonly providerInstanceId: string;
 	readonly providerKind: DirectorProviderKind;
 	readonly apiType: DirectorProviderApiType;
+	readonly agentModelId?: string;
 	readonly modelId: string;
-	readonly auth: DirectorResolvedProviderAuth;
+	readonly authState: DirectorProviderAuthState;
 	readonly baseURL?: string;
 	readonly headers?: Record<string, string>;
 	readonly capabilities?: DirectorProviderCapabilities;
@@ -103,7 +102,7 @@ export function isResolvedBackend(result: DirectorBackendResolution): result is 
 export function toAgentModelInfo(agentProvider: AgentProvider, model: DirectorProviderModel): IAgentModelInfo {
 	const metadata: Record<string, unknown> = {
 		providerInstanceId: model.providerInstanceId,
-		backendModelId: model.id,
+		backendModelId: model.providerModelId ?? model.id,
 	};
 
 	if (model.family !== undefined) {

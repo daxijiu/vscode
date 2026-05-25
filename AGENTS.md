@@ -42,6 +42,7 @@ Current docs:
 - `doc/director-agent-provider-phase0-plan.md`
 - `doc/director-agent-provider-phase1-plan.md`
 - `doc/director-agent-provider-phase2-plan.md`
+- `doc/director-agent-provider-phase3-plan.md`
 - `doc/research/claude-agenthost-phase-handoff.md`
 - `doc/research/custom-agent-provider-backend-plan.md`
 - `MEMORY.md`
@@ -105,10 +106,21 @@ The recommended implementation order is:
 Phase 0 -> Phase 1 -> Phase 2 -> Phase 3 -> Phase 4 -> Phase 7 -> Phase 5 -> Phase 6 -> Phase 8 -> Phase 9 -> Phase 10 -> Phase 11
 ```
 
-Start with Phase 0-2:
+Phase 0-2 has been accepted, committed, and pushed. The current active work is Phase 3.
 
-- Phase 0: read-only baseline and ownership inventory.
-- Phase 1: provider backend contracts and fake/in-memory backend.
-- Phase 2: gated minimal `DirectorAgent implements IAgent` with fake/echo streaming.
+Phase 3 should port the old Director provider registry/API-key/OpenAI Codex OAuth/model resolver semantics, add the provider protocol routing/conversion layer, and restore a practical Director Settings entry based on the old `ProviderSettingsWidget` / `DirectorCodeSettingsEditor`.
 
-Do not jump directly to real LLM traffic, Secret Storage, OAuth, or old `AgentEngine` migration before Phase 1-2 prove the AgentHost boundary.
+Provider runtime adapters should be AgentHost/platform-owned under `src/vs/platform/agentHost/**`; Workbench should own Settings UI, registry, auth, secrets, model-refresh orchestration, connection tests, and the secret-free provider/model/auth-state snapshot writer.
+
+Workbench must not import AgentHost node transports. Shared compatibility, request builders, and snapshot DTOs belong under `src/vs/platform/agentHost/common/**`; AgentHost Phase 3 code consumes auth state, not raw API keys or OAuth bearer tokens.
+
+Current Phase 3 local slice:
+
+- Workbench-owned provider registry, API-key Secret Storage wrapper, deterministic OpenAI Codex fake OAuth state, model resolver, and secret-free snapshot writer are being implemented under `src/vs/workbench/contrib/directorCode/**`.
+- AgentHost shared DTO/helpers for snapshots, compatibility routing, and provider request templates live under `src/vs/platform/agentHost/common/directorProvider*.ts`.
+- `DirectorProviderBackendHub` reads the Workbench snapshot when available and otherwise keeps the deterministic fake fallback.
+- `director-code.openSettings` currently opens a QuickInput acceptance shell, not the full old editor-pane settings UI yet.
+- Provider setup validation is no-network by design so API-key headers are not sent through request logging.
+- OpenAI Codex OAuth currently uses a deterministic fake Secret Storage token state for local acceptance.
+
+Do not jump directly to real Director `AgentEngine` traffic, Claude SDK de-CAPI migration, additional OAuth providers beyond OpenAI Codex OAuth, public OpenAI Responses support, or session restore before Phase 3 proves the provider settings, OAuth, protocol routing/conversion, and backend boundary.
