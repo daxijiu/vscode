@@ -83,6 +83,7 @@ suite('directorProviderBackend', () => {
 			defaultBackend: {
 				providerInstanceId: defaultResult.backend.providerInstanceId,
 				providerKind: defaultResult.backend.providerKind,
+				authKind: defaultResult.backend.authKind,
 				apiType: defaultResult.backend.apiType,
 				modelId: defaultResult.backend.modelId,
 				agentModelId: defaultResult.backend.agentModelId,
@@ -98,6 +99,7 @@ suite('directorProviderBackend', () => {
 			defaultBackend: {
 				providerInstanceId: 'director-fake',
 				providerKind: 'local',
+				authKind: 'none',
 				apiType: 'local',
 				modelId: 'echo',
 				agentModelId: 'echo',

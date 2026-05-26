@@ -1,6 +1,6 @@
 # Project Memory - Director Agent / Provider Backend
 
-Updated: 2026-05-25
+Updated: 2026-05-26
 
 ## Project Context
 
@@ -28,8 +28,9 @@ Current remote-synced commits:
 - `4b087dfc4bf docs: add agent provider research notes`
 - `fd76ff9f138 docs: add director agent provider roadmap`
 - `be253aa6d52 feat: add gated director agenthost provider`
+- Latest Phase 3 close-out before this slice: `a01b3c8c4d7 Complete Director Phase 3 provider settings`
 
-The Phase 0-2 implementation has been accepted, committed, and pushed.
+The Phase 0-3 implementation has been accepted, committed, and pushed. Phase 4 now has a minimal provider-backed Director AgentHost turn slice ready for commit.
 
 ## Project Goal
 
@@ -121,6 +122,7 @@ Phase plans:
 - `doc/director-agent-provider-phase1-plan.md`
 - `doc/director-agent-provider-phase2-plan.md`
 - `doc/director-agent-provider-phase3-plan.md`
+- `doc/director-agent-provider-phase4-plan.md`
 
 Research:
 
@@ -239,7 +241,14 @@ Phase 3:
 
 Phase 4:
 
-- Wrap old Director `AgentEngine` as an AgentHost harness adapter.
+- Minimal provider-backed turn slice implemented and accepted locally on 2026-05-26.
+- `DirectorAgentSession` resolves a `DirectorResolvedProviderBackend` from the Phase 3 secret-free snapshot and runs a new AgentHost-owned `DirectorAgentEngineAdapter` instead of deterministic echo.
+- The adapter builds provider-native non-streaming requests from Phase 3 normalized-message request adapters, calls the selected provider, parses Anthropic Messages / OpenAI Chat Completions / OpenAI Codex Responses-shape / Gemini text responses, and emits AgentHost session actions for system notification, reasoning, markdown text, usage, completion, cancellation, and error.
+- Added a narrow `directorRuntimeCredentials` reverse IPC channel. AgentHost node asks a renderer for the active provider's credential only when a real turn needs it; registry JSON, provider snapshots, AgentHost model metadata, and AHP logs stay secret-free.
+- Workbench and Sessions renderers resolve Director API-key/fake OpenAI Codex OAuth credentials from Secret Storage. Workbench remains the owner of Settings UI, provider registry, auth state, secrets, model-refresh orchestration, and snapshot writing; AgentHost node owns runtime provider HTTP calls.
+- Manual source-run acceptance with `.tmp\director-phase3-acceptance` confirmed `Director Settings` opens, `deepseek-v4-flash` appears in the Director model picker, Copilot sign-in is not required for Director, and a real provider-backed turn answered `DIRECTOR_PHASE4_OK`.
+- Targeted validation passed for `compile-check-ts-native`, `valid-layers-check`, Director AgentHost tests, provider backend tests, provider adapter tests, Workbench provider service tests, and secret scans over registry/snapshot/current logs.
+- Deferred Phase 4 work: streaming provider deltas, tool-call bridge through AgentHost permission/tool UI, old Director Plan Mode state, and deeper old AgentEngine loop parity.
 
 Phase 5:
 

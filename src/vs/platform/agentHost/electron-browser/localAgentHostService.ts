@@ -27,6 +27,7 @@ import { revive } from '../../../base/common/marshalling.js';
 import { URI } from '../../../base/common/uri.js';
 import { IFileService } from '../../files/common/files.js';
 import { AGENT_HOST_CLIENT_RESOURCE_CHANNEL, AgentHostClientResourceChannel } from '../common/agentHostClientResourceChannel.js';
+import { DirectorRuntimeCredentialChannel, DirectorRuntimeCredentialChannelName, IDirectorRuntimeCredentialService } from '../common/directorRuntimeCredentials.js';
 import { TELEMETRY_CRASH_REPORTER_SETTING_ID, TELEMETRY_OLD_SETTING_ID, TELEMETRY_SETTING_ID } from '../../telemetry/common/telemetry.js';
 import { getTelemetryLevel } from '../../telemetry/common/telemetryUtils.js';
 import { AgentHostTelemetryLevelConfigKey, AgentHostSessionSyncEnabledConfigKey, SESSION_SYNC_ENABLED_SETTING_ID, telemetryLevelToAgentHostConfigValue } from '../common/agentHostSchema.js';
@@ -82,7 +83,7 @@ export class LocalAgentHostServiceClient extends Disposable implements IAgentHos
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IFileService private readonly _fileService: IFileService,
 		@IEnvironmentService environmentService: IEnvironmentService,
-		@IInstantiationService instantiationService: IInstantiationService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) {
 		super();
 
@@ -96,7 +97,7 @@ export class LocalAgentHostServiceClient extends Disposable implements IAgentHos
 		// frames for every request/response/notification on the in-process MessagePort
 		// channel, mirroring the AHP transport JSONL logs produced by remote agent hosts.
 		this._ahpLogger = this._configurationService.getValue<boolean>(AgentHostAhpJsonlLoggingSettingId)
-			? this._register(instantiationService.createInstance(AhpJsonlLogger, {
+			? this._register(this._instantiationService.createInstance(AhpJsonlLogger, {
 				logsHome: environmentService.logsHome,
 				connectionId: this.clientId,
 				transport: 'local',
@@ -144,6 +145,9 @@ export class LocalAgentHostServiceClient extends Disposable implements IAgentHos
 		// agent host registers an authority on its
 		// AgentHostClientFileSystemProvider that calls back through this channel.
 		client.registerChannel(AGENT_HOST_CLIENT_RESOURCE_CHANNEL, new AgentHostClientResourceChannel(this._fileService, this._ahpLogger));
+		client.registerChannel(DirectorRuntimeCredentialChannelName, new DirectorRuntimeCredentialChannel(
+			this._getDirectorRuntimeCredentialService(this._instantiationService) ?? NoopDirectorRuntimeCredentialService
+		));
 		this._clientEventually.complete(client);
 		this._updateTelemetryLevel();
 		this._updateSessionSyncEnabled();
@@ -173,6 +177,14 @@ export class LocalAgentHostServiceClient extends Disposable implements IAgentHos
 		}).catch(err => {
 			this._logService.error('[AgentHost:renderer] Failed to subscribe to root state', err);
 		});
+	}
+
+	private _getDirectorRuntimeCredentialService(instantiationService: IInstantiationService): IDirectorRuntimeCredentialService | undefined {
+		try {
+			return instantiationService.invokeFunction(accessor => accessor.get(IDirectorRuntimeCredentialService));
+		} catch {
+			return undefined;
+		}
 	}
 
 	private _updateTelemetryLevel(): void {
@@ -287,3 +299,11 @@ export class LocalAgentHostServiceClient extends Disposable implements IAgentHos
 		return this._connectionTracker.getInspectInfo(tryEnable);
 	}
 }
+
+const NoopDirectorRuntimeCredentialService: IDirectorRuntimeCredentialService = {
+	_serviceBrand: undefined,
+	resolveCredential: async request => ({
+		kind: 'missing',
+		message: `Director provider '${request.providerInstanceId}' credentials are not available in this window.`,
+	}),
+};

@@ -15,7 +15,7 @@ import { NullLogService } from '../../../../../../platform/log/common/log.js';
 import { TestSecretStorageService } from '../../../../../../platform/secrets/test/common/testSecretStorageService.js';
 import { IUserDataProfilesService, toUserDataProfile } from '../../../../../../platform/userDataProfile/common/userDataProfile.js';
 import { IUserDataProfileService } from '../../../../../services/userDataProfile/common/userDataProfile.js';
-import { createDirectorProviderInstance, DirectorApiKeyService, DirectorModelResolverService, DirectorOAuthService, DirectorProviderConnectionTestService, DirectorProviderRegistryService, DirectorProviderSnapshotService } from '../../../common/provider/directorProviderServices.js';
+import { createDirectorProviderInstance, DirectorApiKeyService, DirectorModelResolverService, DirectorOAuthService, DirectorProviderConnectionTestService, DirectorProviderRegistryService, DirectorProviderSnapshotService, DirectorRuntimeCredentialService } from '../../../common/provider/directorProviderServices.js';
 import { getDirectorProviderRegistryResourceFromGlobalStorageHome, getDirectorProviderSnapshotResourceFromGlobalStorageHome } from '../../../../../../platform/agentHost/common/directorProviderSnapshot.js';
 
 suite('directorProviderServices', () => {
@@ -31,6 +31,7 @@ suite('directorProviderServices', () => {
 	let modelResolverService: DirectorModelResolverService;
 	let connectionTestService: DirectorProviderConnectionTestService;
 	let snapshotService: DirectorProviderSnapshotService;
+	let runtimeCredentialService: DirectorRuntimeCredentialService;
 
 	setup(() => {
 		const logService = new NullLogService();
@@ -66,6 +67,7 @@ suite('directorProviderServices', () => {
 		registryService = disposables.add(new DirectorProviderRegistryService(fileService, userDataProfileService, logService));
 		apiKeyService = disposables.add(new DirectorApiKeyService(secretStorageService));
 		oauthService = disposables.add(new DirectorOAuthService(secretStorageService));
+		runtimeCredentialService = new DirectorRuntimeCredentialService(apiKeyService, oauthService);
 		modelResolverService = new DirectorModelResolverService();
 		connectionTestService = new DirectorProviderConnectionTestService(apiKeyService, oauthService, modelResolverService);
 		snapshotService = disposables.add(new DirectorProviderSnapshotService(
@@ -283,6 +285,41 @@ suite('directorProviderServices', () => {
 			requestUrl: 'https://api.openai.test/v1/chat/completions',
 			requestAuth: 'Bearer <redacted>',
 			leaksKey: false,
+		});
+	});
+
+	test('resolves runtime credentials only through the narrow bridge', async () => {
+		const apiKeyProvider = createDirectorProviderInstance({
+			id: 'api-key-provider',
+			kind: 'openai-compatible',
+			displayName: 'API Key Provider',
+			authKind: 'api-key',
+			apiType: 'openai-completions',
+			baseURL: 'https://api.openai.test/v1',
+			modelId: 'gpt-test',
+		});
+		const oauthProvider = createDirectorProviderInstance({
+			id: 'openai-codex',
+			kind: 'openai-codex',
+			displayName: 'OpenAI Codex',
+			authKind: 'oauth',
+			apiType: 'openai-codex',
+			authVariant: 'openai-codex',
+			baseURL: 'https://chatgpt.com/backend-api/codex',
+			modelId: 'gpt-5.2-codex',
+		});
+
+		await apiKeyService.setProviderInstanceKey(apiKeyProvider.id, 'sk-director-secret');
+		await oauthService.signInOpenAICodex(oauthProvider.id);
+
+		assert.deepStrictEqual({
+			apiKey: await runtimeCredentialService.resolveCredential({ providerInstanceId: apiKeyProvider.id, authKind: 'api-key' }),
+			oauth: await runtimeCredentialService.resolveCredential({ providerInstanceId: oauthProvider.id, authKind: 'oauth' }),
+			missing: await runtimeCredentialService.resolveCredential({ providerInstanceId: 'missing-provider', authKind: 'api-key' }),
+		}, {
+			apiKey: { kind: 'api-key', value: 'sk-director-secret' },
+			oauth: { kind: 'bearer', accessToken: 'director-code-fake-openai-codex-token' },
+			missing: { kind: 'missing', message: 'Director provider \'missing-provider\' is missing an API key.' },
 		});
 	});
 

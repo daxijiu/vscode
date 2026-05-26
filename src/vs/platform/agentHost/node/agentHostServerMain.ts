@@ -39,11 +39,13 @@ import { ClaudeAgentSdkService, IClaudeAgentSdkService } from './claude/claudeAg
 import { ClaudeProxyService, IClaudeProxyService } from './claude/claudeProxyService.js';
 import { DirectorAgent } from './director/directorAgent.js';
 import { DirectorProviderBackendHub } from './director/directorProviderBackendHub.js';
+import { DirectorRuntimeCredentialService } from './director/directorRuntimeCredentialService.js';
 import { IAgentHostOTelService } from '../common/otel/agentHostOTelService.js';
 import { AgentHostOTelService } from './otel/agentHostOTelService.js';
 import { AgentService } from './agentService.js';
 import { AgentHostClaudeSdkPathEnvVar, AgentHostEnableDirectorAgentEnvVar } from '../common/agentService.js';
 import { IDirectorProviderBackendHub } from '../common/directorProviderBackend.js';
+import { IDirectorRuntimeCredentialService } from '../common/directorRuntimeCredentials.js';
 import { IAgentConfigurationService } from './agentConfigurationService.js';
 import { IAgentHostCompletions } from './agentHostCompletions.js';
 import { IAgentHostTerminalManager } from './agentHostTerminalManager.js';
@@ -196,6 +198,7 @@ async function main(): Promise<void> {
 	// Session data service
 	const sessionDataService = new SessionDataService(URI.file(environmentService.userDataPath), fileService, logService);
 	const rootConfigResource = joinPath(environmentService.appSettingsHome, 'globalStorage', 'agent-host-config.json');
+	const directorRuntimeCredentialService = disposables.add(new DirectorRuntimeCredentialService(logService));
 
 	// Build the DI container early so the git service can be created via
 	// `createInstance` (it needs IFileService + INativeEnvironmentService).
@@ -239,6 +242,7 @@ async function main(): Promise<void> {
 		diServices.set(IClaudeAgentSdkService, claudeAgentSdkService);
 		const directorProviderBackendHub = new DirectorProviderBackendHub({}, fileService, environmentService, logService);
 		diServices.set(IDirectorProviderBackendHub, directorProviderBackendHub);
+		diServices.set(IDirectorRuntimeCredentialService, directorRuntimeCredentialService);
 		const agentHostOTelService = disposables.add(instantiationService.createInstance(AgentHostOTelService));
 		diServices.set(IAgentHostOTelService, agentHostOTelService);
 		const copilotAgent = disposables.add(instantiationService.createInstance(CopilotAgent));

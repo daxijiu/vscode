@@ -43,6 +43,7 @@ Current docs:
 - `doc/director-agent-provider-phase1-plan.md`
 - `doc/director-agent-provider-phase2-plan.md`
 - `doc/director-agent-provider-phase3-plan.md`
+- `doc/director-agent-provider-phase4-plan.md`
 - `doc/research/claude-agenthost-phase-handoff.md`
 - `doc/research/custom-agent-provider-backend-plan.md`
 - `MEMORY.md`
@@ -119,7 +120,7 @@ The recommended implementation order is:
 Phase 0 -> Phase 1 -> Phase 2 -> Phase 3 -> Phase 4 -> Phase 7 -> Phase 5 -> Phase 6 -> Phase 8 -> Phase 9 -> Phase 10 -> Phase 11
 ```
 
-Phase 0-3 has been accepted and committed on branch `codex/Director`. The next active work is Phase 4.
+Phase 0-3 has been accepted and committed on branch `codex/Director`. Phase 4 has a minimal provider-backed Director AgentEngine turn slice implemented and accepted; remaining Phase 4 follow-ups are tool-call bridging, Plan Mode semantics, and deeper old AgentEngine loop parity.
 
 Phase 3 ported the old Director provider registry/API-key/OpenAI Codex OAuth/model resolver semantics, added the provider protocol routing/conversion layer, and restored a practical Director Settings entry based on the old `ProviderSettingsWidget` / `DirectorCodeSettingsEditor`.
 
@@ -138,3 +139,10 @@ Accepted Phase 3 implementation:
 - Phase 3 includes pure normalized-message request adapters for Anthropic Messages, OpenAI Chat Completions, OpenAI Codex, and Gemini request shapes. Real LLM traffic remains Phase 4.
 
 Phase 4 should wrap the old Director `AgentEngine` as an AgentHost harness adapter. Keep Claude SDK de-CAPI migration, additional OAuth providers beyond OpenAI Codex OAuth, public OpenAI Responses support, and session restore in their later roadmap phases unless the user explicitly expands the scope.
+
+Accepted Phase 4 minimal slice:
+
+- `DirectorAgentSession` now resolves a `DirectorResolvedProviderBackend` from the Phase 3 secret-free snapshot and routes the turn through an AgentHost-owned `DirectorAgentEngineAdapter`.
+- A narrow `directorRuntimeCredentials` reverse IPC channel resolves API-key/OAuth credentials only at turn time; API keys and OAuth tokens are not written into registry JSON, provider snapshots, AgentHost model metadata, or AHP logs.
+- The Workbench and Sessions renderers provide the runtime credential bridge from Secret Storage. AgentHost node owns runtime HTTP/provider adapter code and never imports Workbench provider UI or Copilot CAPI.
+- The first Phase 4 adapter is non-streaming text generation for Anthropic Messages, OpenAI Chat Completions, OpenAI Codex Responses-shape, and Gemini request shapes. Tool calls and Plan Mode are deliberately left as explicit follow-up work.

@@ -345,15 +345,18 @@ Exit criteria:
 
 ### Phase 4 - Provider-Backed Director Agent Harness
 
+Status: minimal provider-backed turn slice accepted on 2026-05-26. See `doc/director-agent-provider-phase4-plan.md`.
+
 Goal: move the old Director `AgentEngine` from old Chat Agent shape into an AgentHost harness adapter.
 
 Scope:
 
-- Wrap old `AgentEngine` as a `HarnessAdapter`.
+- Wrap old `AgentEngine` semantics as an AgentHost-owned harness adapter.
 - Feed it `ResolvedProviderBackend` instead of letting it read settings/API keys directly.
 - Map Director stream events to AgentHost `AgentSignal` / session protocol state.
 - Reuse AgentHost tool approval and client tool surfaces where possible.
 - Preserve Plan Mode semantics as Director session state.
+- Add a narrow runtime credential bridge that resolves Secret Storage credentials only for the active provider-backed turn and does not write secrets into snapshots or logs.
 
 Source concepts to reuse:
 
@@ -372,9 +375,9 @@ Out of scope:
 
 Exit criteria:
 
-- A Director AgentHost session can run one real provider-backed turn.
-- Tool calls surface through AgentHost permission/tool UI.
-- Plan Mode can present a plan or is explicitly gated off with a clear TODO.
+- A Director AgentHost session can run one real provider-backed turn. Done for the Phase 4 minimal slice.
+- Tool calls surface through AgentHost permission/tool UI. Deferred follow-up.
+- Plan Mode can present a plan or is explicitly gated off with a clear TODO. Deferred follow-up.
 
 ### Phase 5 - Provider-Backed Anthropic Endpoint Proxy
 

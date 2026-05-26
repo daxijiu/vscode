@@ -68,6 +68,7 @@ export interface DirectorProviderSelection {
 export interface DirectorResolvedProviderBackend {
 	readonly providerInstanceId: string;
 	readonly providerKind: DirectorProviderKind;
+	readonly authKind: DirectorProviderAuthKind;
 	readonly apiType: DirectorProviderApiType;
 	readonly agentModelId?: string;
 	readonly modelId: string;

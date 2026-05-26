@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import type { Server } from 'http';
 import { Event } from '../../../../base/common/event.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { hasKey } from '../../../../base/common/types.js';
@@ -13,11 +14,12 @@ import { ServiceCollection } from '../../../instantiation/common/serviceCollecti
 import { InstantiationService } from '../../../instantiation/common/instantiationService.js';
 import { ILogService, NullLogService } from '../../../log/common/log.js';
 import { IDirectorProviderBackendHub } from '../../common/directorProviderBackend.js';
+import { DirectorRuntimeCredential, DirectorRuntimeCredentialRequest, IDirectorRuntimeCredentialService } from '../../common/directorRuntimeCredentials.js';
 import { AgentSession, AgentSignal } from '../../common/agentService.js';
 import { ActionType } from '../../common/state/sessionActions.js';
 import { ResponsePartKind, TurnState } from '../../common/state/sessionState.js';
 import { DirectorAgent } from '../../node/director/directorAgent.js';
-import { DirectorProviderBackendHub } from '../../node/director/directorProviderBackendHub.js';
+import { DirectorProviderBackendHub, DirectorProviderBackendHubFixtures } from '../../node/director/directorProviderBackendHub.js';
 
 suite('DirectorAgent', () => {
 
@@ -26,10 +28,11 @@ suite('DirectorAgent', () => {
 	teardown(() => disposables.clear());
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	function createAgent(): DirectorAgent {
+	function createAgent(fixtures: DirectorProviderBackendHubFixtures = {}, credential: DirectorRuntimeCredential = { kind: 'none' }): DirectorAgent {
 		const services = new ServiceCollection(
 			[ILogService, new NullLogService()],
-			[IDirectorProviderBackendHub, new DirectorProviderBackendHub()],
+			[IDirectorProviderBackendHub, new DirectorProviderBackendHub(fixtures)],
+			[IDirectorRuntimeCredentialService, new TestDirectorRuntimeCredentialService(credential)],
 		);
 		const instantiationService = disposables.add(new InstantiationService(services));
 		return disposables.add(instantiationService.createInstance(DirectorAgent));
@@ -45,7 +48,22 @@ suite('DirectorAgent', () => {
 				return {
 					type: action.type,
 					turnId: action.turnId,
-					content: action.part.kind === ResponsePartKind.Markdown ? action.part.content : undefined,
+					kind: action.part.kind,
+					content: action.part.kind === ResponsePartKind.Markdown || action.part.kind === ResponsePartKind.SystemNotification ? action.part.content : undefined,
+				};
+			}
+			if (action.type === ActionType.SessionUsage) {
+				return {
+					type: action.type,
+					turnId: action.turnId,
+					usage: action.usage,
+				};
+			}
+			if (action.type === ActionType.SessionError) {
+				return {
+					type: action.type,
+					turnId: action.turnId,
+					message: action.error.message,
 				};
 			}
 			return {
@@ -114,8 +132,15 @@ suite('DirectorAgent', () => {
 		});
 	});
 
-	test('streams deterministic markdown response and records in-memory turns', async () => {
-		const agent = createAgent();
+	test('runs a provider-backed Director AgentEngine turn and records in-memory turns', async () => {
+		const server = disposables.add(await createJsonServer({
+			status: 200,
+			body: {
+				choices: [{ message: { content: 'provider backed hello' } }],
+				usage: { prompt_tokens: 11, completion_tokens: 3 },
+			},
+		}));
+		const agent = createAgent(createOpenAIFixtures(server.url), { kind: 'api-key', value: 'sk-test' });
 		const created = await agent.createSession();
 		const signals: AgentSignal[] = [];
 		disposables.add(agent.onDidSessionProgress(signal => signals.push(signal)));
@@ -136,21 +161,44 @@ suite('DirectorAgent', () => {
 			})),
 		}, {
 			signals: [
-				{ type: ActionType.SessionResponsePart, turnId: 'turn-1', content: 'Director echo:' },
-				{ type: ActionType.SessionResponsePart, turnId: 'turn-1', content: ' hello director' },
+				{ type: ActionType.SessionResponsePart, turnId: 'turn-1', kind: ResponsePartKind.SystemNotification, content: 'Director AgentEngine using provider \'test-provider\' with model \'gpt-test\'.' },
+				{ type: ActionType.SessionResponsePart, turnId: 'turn-1', kind: ResponsePartKind.Markdown, content: 'provider backed hello' },
+				{ type: ActionType.SessionUsage, turnId: 'turn-1', usage: { inputTokens: 11, outputTokens: 3 } },
 				{ type: ActionType.SessionTurnComplete, turnId: 'turn-1' },
 			],
 			turns: [{
 				id: 'turn-1',
 				text: 'hello director',
 				state: TurnState.Complete,
-				responseText: 'Director echo: hello director',
+				responseText: 'provider backed hello',
 			}],
 		});
 	});
 
-	test('aborts in-flight fake stream without completing the turn', async () => {
-		const agent = createAgent();
+	test('reports missing runtime credentials without leaking secrets', async () => {
+		const server = disposables.add(await createJsonServer({ status: 200, body: { choices: [{ message: { content: 'unused' } }] } }));
+		const agent = createAgent(createOpenAIFixtures(server.url), { kind: 'missing', message: 'credential bridge missing' });
+		const created = await agent.createSession();
+		const signals: AgentSignal[] = [];
+		disposables.add(agent.onDidSessionProgress(signal => signals.push(signal)));
+
+		await agent.sendMessage(created.session, 'hello director', undefined, 'turn-missing');
+		const turns = await agent.getSessionMessages(created.session);
+
+		assert.deepStrictEqual({
+			signals: summarizeSignals(signals),
+			turns: turns.map(turn => ({ id: turn.id, state: turn.state })),
+		}, {
+			signals: [
+				{ type: ActionType.SessionError, turnId: 'turn-missing', message: 'credential bridge missing' },
+			],
+			turns: [{ id: 'turn-missing', state: TurnState.Error }],
+		});
+	});
+
+	test('aborts in-flight provider turn without completing the turn', async () => {
+		const server = disposables.add(await createJsonServer({ status: 200, body: { choices: [{ message: { content: 'late' } }] }, delayMs: 10_000 }));
+		const agent = createAgent(createOpenAIFixtures(server.url), { kind: 'api-key', value: 'sk-test' });
 		const created = await agent.createSession();
 		const signals: AgentSignal[] = [];
 		disposables.add(agent.onDidSessionProgress(signal => signals.push(signal)));
@@ -174,14 +222,83 @@ suite('DirectorAgent', () => {
 			})),
 		}, {
 			signals: [
-				{ type: ActionType.SessionResponsePart, turnId: 'turn-abort', content: 'Director echo:' },
+				{ type: ActionType.SessionResponsePart, turnId: 'turn-abort', kind: ResponsePartKind.SystemNotification, content: 'Director AgentEngine using provider \'test-provider\' with model \'gpt-test\'.' },
 				{ type: ActionType.SessionTurnCancelled, turnId: 'turn-abort' },
 			],
 			turns: [{
 				id: 'turn-abort',
 				state: TurnState.Cancelled,
-				responseText: 'Director echo:',
+				responseText: '',
 			}],
 		});
 	});
 });
+
+class TestDirectorRuntimeCredentialService implements IDirectorRuntimeCredentialService {
+	declare readonly _serviceBrand: undefined;
+
+	constructor(private readonly credential: DirectorRuntimeCredential) { }
+
+	resolveCredential(_request: DirectorRuntimeCredentialRequest): Promise<DirectorRuntimeCredential> {
+		return Promise.resolve(this.credential);
+	}
+}
+
+function createOpenAIFixtures(baseURL: string): DirectorProviderBackendHubFixtures {
+	return {
+		defaultProviderId: 'test-provider',
+		defaultModelId: 'test-provider:gpt-test',
+		providerInstances: [{
+			id: 'test-provider',
+			kind: 'openai-compatible',
+			displayName: 'Test Provider',
+			enabled: true,
+			authKind: 'api-key',
+			apiType: 'openai-completions',
+			baseURL,
+			defaultModelId: 'test-provider:gpt-test',
+			authState: { kind: 'ready' },
+		}],
+		models: [{
+			providerInstanceId: 'test-provider',
+			id: 'test-provider:gpt-test',
+			providerModelId: 'gpt-test',
+			name: 'GPT Test',
+			supportsVision: false,
+		}],
+	};
+}
+
+interface TestJsonServer extends Server {
+	readonly url: string;
+	dispose(): void;
+}
+
+async function createJsonServer(options: { readonly status: number; readonly body: unknown; readonly delayMs?: number }): Promise<TestJsonServer> {
+	const { createServer } = await import('http');
+	const server = createServer((req, res) => {
+		if (req.method !== 'POST' || req.url !== '/chat/completions') {
+			res.writeHead(404);
+			res.end();
+			return;
+		}
+		setTimeout(() => {
+			res.writeHead(options.status, { 'content-type': 'application/json' });
+			res.end(JSON.stringify(options.body));
+		}, options.delayMs ?? 0);
+	}) as TestJsonServer;
+	await new Promise<void>((resolve, reject) => {
+		server.once('error', reject);
+		server.listen(0, '127.0.0.1', () => {
+			server.off('error', reject);
+			resolve();
+		});
+	});
+	const address = server.address();
+	if (!address || typeof address === 'string') {
+		throw new Error('Test server did not bind to a TCP port.');
+	}
+	Object.defineProperty(server, 'url', { value: `http://127.0.0.1:${address.port}` });
+	server.dispose = () => server.close();
+	return server;
+}

@@ -28,6 +28,8 @@ import { ClaudeAgentSdkService, IClaudeAgentSdkService } from './claude/claudeAg
 import { ClaudeProxyService, IClaudeProxyService } from './claude/claudeProxyService.js';
 import { DirectorAgent } from './director/directorAgent.js';
 import { DirectorProviderBackendHub } from './director/directorProviderBackendHub.js';
+import { DirectorRuntimeCredentialService } from './director/directorRuntimeCredentialService.js';
+import { DirectorRuntimeCredentialChannelName, IDirectorRuntimeCredentialService } from '../common/directorRuntimeCredentials.js';
 import { IAgentHostOTelService } from '../common/otel/agentHostOTelService.js';
 import { AgentHostOTelService } from './otel/agentHostOTelService.js';
 import { ProtocolServerHandler } from './protocolServerHandler.js';
@@ -119,6 +121,7 @@ async function startAgentHost(): Promise<void> {
 	const sessionDataService = new SessionDataService(URI.file(environmentService.userDataPath), fileService, logService);
 	const rootConfigResource = joinPath(environmentService.appSettingsHome, 'globalStorage', 'agent-host-config.json');
 	const telemetryService = await createAgentHostTelemetryService({ environmentService, productService, fileService, loggerService, logService, disposables });
+	const directorRuntimeCredentialService = disposables.add(new DirectorRuntimeCredentialService(logService));
 
 	// Create the real service implementation that lives in this process
 	let agentService: AgentService;
@@ -150,6 +153,7 @@ async function startAgentHost(): Promise<void> {
 		diServices.set(IClaudeAgentSdkService, claudeAgentSdkService);
 		const directorProviderBackendHub = new DirectorProviderBackendHub({}, fileService, environmentService, logService);
 		diServices.set(IDirectorProviderBackendHub, directorProviderBackendHub);
+		diServices.set(IDirectorRuntimeCredentialService, directorRuntimeCredentialService);
 		const agentHostOTelService = disposables.add(instantiationService.createInstance(AgentHostOTelService));
 		diServices.set(IAgentHostOTelService, agentHostOTelService);
 		agentService = new AgentService(logService, fileService, sessionDataService, productService, gitService, checkpointService, rootConfigResource, telemetryService);
@@ -192,6 +196,7 @@ async function startAgentHost(): Promise<void> {
 	// `AGENT_HOST_CLIENT_RESOURCE_CHANNEL` for filesystem reads.
 	if (server instanceof UtilityProcessServer) {
 		const authorityRegistrations = new Map<unknown, IDisposable>();
+		const credentialRegistrations = new Map<unknown, IDisposable>();
 		disposables.add(server.onDidAddConnection(connection => {
 			const clientId = connection.ctx;
 			if (typeof clientId !== 'string' || !clientId) {
@@ -200,12 +205,19 @@ async function startAgentHost(): Promise<void> {
 			const channel = server.getChannel(AGENT_HOST_CLIENT_RESOURCE_CHANNEL, c => c.ctx === clientId);
 			const fsConnection = createAgentHostClientResourceConnection(channel);
 			authorityRegistrations.set(connection, clientFileSystemProvider.registerAuthority(clientId, fsConnection));
+			const credentialChannel = server.getChannel(DirectorRuntimeCredentialChannelName, c => c.ctx === clientId);
+			credentialRegistrations.set(connection, directorRuntimeCredentialService.registerConnection(clientId, credentialChannel));
 		}));
 		disposables.add(server.onDidRemoveConnection(connection => {
 			const reg = authorityRegistrations.get(connection);
 			if (reg) {
 				reg.dispose();
 				authorityRegistrations.delete(connection);
+			}
+			const credentialReg = credentialRegistrations.get(connection);
+			if (credentialReg) {
+				credentialReg.dispose();
+				credentialRegistrations.delete(connection);
 			}
 		}));
 	}

@@ -15,7 +15,8 @@ import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/edit
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../common/editor.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
-import { DirectorApiKeyService, DirectorModelResolverService, DirectorOAuthService, DirectorProviderConnectionTestService, DirectorProviderRegistryService, DirectorProviderSnapshotService, IDirectorApiKeyService, IDirectorModelResolverService, IDirectorOAuthService, IDirectorProviderConnectionTestService, IDirectorProviderRegistryService, IDirectorProviderSnapshotService } from '../common/provider/directorProviderServices.js';
+import { IDirectorRuntimeCredentialService } from '../../../../platform/agentHost/common/directorRuntimeCredentials.js';
+import { DirectorApiKeyService, DirectorModelResolverService, DirectorOAuthService, DirectorProviderConnectionTestService, DirectorProviderRegistryService, DirectorProviderSnapshotService, DirectorRuntimeCredentialService, IDirectorApiKeyService, IDirectorModelResolverService, IDirectorOAuthService, IDirectorProviderConnectionTestService, IDirectorProviderRegistryService, IDirectorProviderSnapshotService } from '../common/provider/directorProviderServices.js';
 import { DirectorSettingsEditor } from './providerSettings/directorSettingsEditor.js';
 import { DirectorSettingsEditorInput, DirectorSettingsEditorInputSerializer } from './providerSettings/directorSettingsEditorInput.js';
 
@@ -25,6 +26,7 @@ registerSingleton(IDirectorOAuthService, DirectorOAuthService, InstantiationType
 registerSingleton(IDirectorModelResolverService, DirectorModelResolverService, InstantiationType.Delayed);
 registerSingleton(IDirectorProviderSnapshotService, DirectorProviderSnapshotService, InstantiationType.Delayed);
 registerSingleton(IDirectorProviderConnectionTestService, DirectorProviderConnectionTestService, InstantiationType.Delayed);
+registerSingleton(IDirectorRuntimeCredentialService, DirectorRuntimeCredentialService, InstantiationType.Delayed);
 
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
 	EditorPaneDescriptor.create(

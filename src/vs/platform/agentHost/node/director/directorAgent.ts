@@ -13,6 +13,7 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../log/common/log.js';
 import { DirectorAgentProviderId, IDirectorProviderBackendHub, isResolvedBackend, toAgentModelInfo } from '../../common/directorProviderBackend.js';
+import { IDirectorRuntimeCredentialService } from '../../common/directorRuntimeCredentials.js';
 import { ISyncedCustomization } from '../../common/agentPluginManager.js';
 import { AgentProvider, AgentSession, AgentSignal, IAgent, IAgentCreateSessionConfig, IAgentCreateSessionResult, IAgentDescriptor, IAgentModelInfo, IAgentResolveSessionConfigParams, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata } from '../../common/agentService.js';
 import { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
@@ -38,6 +39,7 @@ export class DirectorAgent extends Disposable implements IAgent {
 
 	constructor(
 		@IDirectorProviderBackendHub private readonly _backendHub: IDirectorProviderBackendHub,
+		@IDirectorRuntimeCredentialService private readonly _credentialService: IDirectorRuntimeCredentialService,
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
@@ -113,6 +115,9 @@ export class DirectorAgent extends Disposable implements IAgent {
 			Date.now(),
 			config.workingDirectory,
 			model,
+			this._backendHub,
+			this._credentialService,
+			this._logService,
 		));
 
 		const metadata = session.createMetadata();
@@ -144,6 +149,9 @@ export class DirectorAgent extends Disposable implements IAgent {
 				Date.now(),
 				undefined,
 				undefined,
+				this._backendHub,
+				this._credentialService,
+				this._logService,
 			));
 			await session.send(prompt, attachments, effectiveTurnId);
 		});

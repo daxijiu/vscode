@@ -75,14 +75,14 @@ const defaultModels: readonly DirectorProviderModel[] = [
 ];
 
 export interface DirectorProviderBackendHubFixtures {
-	readonly providerInstances?: readonly DirectorProviderInstance[];
+	readonly providerInstances?: readonly (DirectorProviderInstance | DirectorProviderSnapshotProvider)[];
 	readonly models?: readonly DirectorProviderModel[];
 	readonly defaultProviderId?: string;
 	readonly defaultModelId?: string;
 }
 
 interface DirectorProviderBackendState {
-	readonly providerInstances: readonly DirectorProviderInstance[];
+	readonly providerInstances: readonly (DirectorProviderInstance | DirectorProviderSnapshotProvider)[];
 	readonly models: readonly DirectorProviderModel[];
 	readonly defaultProviderId?: string;
 	readonly defaultModelId?: string;
@@ -167,6 +167,7 @@ export class DirectorProviderBackendHub implements IDirectorProviderBackendHub {
 			backend: {
 				providerInstanceId: provider.id,
 				providerKind: provider.kind,
+				authKind: provider.authKind,
 				apiType: provider.apiType ?? apiTypeForProviderKind(provider.kind),
 				agentModelId: model.id,
 				modelId: model.providerModelId ?? model.id,

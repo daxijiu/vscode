@@ -15,6 +15,7 @@ import { ISecretStorageService } from '../../../../../platform/secrets/common/se
 import { IUserDataProfilesService } from '../../../../../platform/userDataProfile/common/userDataProfile.js';
 import { IUserDataProfileService } from '../../../../services/userDataProfile/common/userDataProfile.js';
 import type { DirectorProviderApiType, DirectorProviderAuthKind, DirectorProviderCapabilities, DirectorProviderInstance, DirectorProviderKind } from '../../../../../platform/agentHost/common/directorProviderBackend.js';
+import { getDirectorApiKeySecretStorageKey, getDirectorOAuthTokenSecretStorageKey, parseDirectorOAuthAccessToken, type DirectorRuntimeCredential, type DirectorRuntimeCredentialRequest, type IDirectorRuntimeCredentialService } from '../../../../../platform/agentHost/common/directorRuntimeCredentials.js';
 import { buildDirectorConnectionTestRequest, type DirectorConnectionTestRequest } from '../../../../../platform/agentHost/common/directorProviderRequest.js';
 import { DirectorProviderSnapshotVersion, getDirectorProviderRegistryResourceFromGlobalStorageHome, getDirectorProviderSnapshotResourceFromGlobalStorageHome, makeDirectorProviderModelKey, sanitizeDirectorProviderHeaders, sanitizeDirectorProviderId, type DirectorProviderAuthState, type DirectorProviderSnapshot, type DirectorProviderSnapshotModel, type DirectorProviderSnapshotProvider } from '../../../../../platform/agentHost/common/directorProviderSnapshot.js';
 
@@ -24,9 +25,6 @@ export const IDirectorOAuthService = createDecorator<IDirectorOAuthService>('dir
 export const IDirectorModelResolverService = createDecorator<IDirectorModelResolverService>('directorModelResolverService');
 export const IDirectorProviderSnapshotService = createDecorator<IDirectorProviderSnapshotService>('directorProviderSnapshotService');
 export const IDirectorProviderConnectionTestService = createDecorator<IDirectorProviderConnectionTestService>('directorProviderConnectionTestService');
-
-const API_KEY_PREFIX = 'director-code.providerInstanceKey';
-const OAUTH_TOKEN_PREFIX = 'director-code.oauth';
 
 export interface DirectorStoredProviderInstance extends DirectorProviderInstance {
 	readonly apiType: DirectorProviderApiType;
@@ -80,6 +78,7 @@ export interface IDirectorOAuthService {
 	readonly onDidChangeAuth: Event<string>;
 	signInOpenAICodex(providerInstanceId: string): Promise<void>;
 	signOutOpenAICodex(providerInstanceId: string): Promise<void>;
+	getOpenAICodexAccessToken(providerInstanceId: string): Promise<string | undefined>;
 	getAuthState(provider: DirectorStoredProviderInstance): Promise<DirectorProviderAuthState>;
 }
 
@@ -231,7 +230,7 @@ export class DirectorApiKeyService extends Disposable implements IDirectorApiKey
 	}
 
 	private getKey(providerInstanceId: string): string {
-		return `${API_KEY_PREFIX}.${providerInstanceId}`;
+		return getDirectorApiKeySecretStorageKey(providerInstanceId);
 	}
 }
 
@@ -259,6 +258,11 @@ export class DirectorOAuthService extends Disposable implements IDirectorOAuthSe
 		this.onDidChangeAuthEmitter.fire(providerInstanceId);
 	}
 
+	async getOpenAICodexAccessToken(providerInstanceId: string): Promise<string | undefined> {
+		const value = await this.secretStorageService.get(this.getKey(providerInstanceId));
+		return parseDirectorOAuthAccessToken(value);
+	}
+
 	async getAuthState(provider: DirectorStoredProviderInstance): Promise<DirectorProviderAuthState> {
 		if (provider.authKind !== 'oauth') {
 			return { kind: 'missing', message: `Director provider '${provider.id}' is not configured for OAuth.`, updatedAt: Date.now() };
@@ -270,7 +274,36 @@ export class DirectorOAuthService extends Disposable implements IDirectorOAuthSe
 	}
 
 	private getKey(providerInstanceId: string): string {
-		return `${OAUTH_TOKEN_PREFIX}.${providerInstanceId}`;
+		return getDirectorOAuthTokenSecretStorageKey(providerInstanceId);
+	}
+}
+
+export class DirectorRuntimeCredentialService implements IDirectorRuntimeCredentialService {
+	declare readonly _serviceBrand: undefined;
+
+	constructor(
+		@IDirectorApiKeyService private readonly apiKeyService: IDirectorApiKeyService,
+		@IDirectorOAuthService private readonly oauthService: IDirectorOAuthService,
+	) { }
+
+	async resolveCredential(request: DirectorRuntimeCredentialRequest): Promise<DirectorRuntimeCredential> {
+		switch (request.authKind) {
+			case 'none':
+				return { kind: 'none' };
+			case 'api-key': {
+				const value = await this.apiKeyService.getProviderInstanceKey(request.providerInstanceId);
+				return value
+					? { kind: 'api-key', value }
+					: { kind: 'missing', message: `Director provider '${request.providerInstanceId}' is missing an API key.` };
+			}
+			case 'oauth':
+			case 'bearer': {
+				const accessToken = await this.oauthService.getOpenAICodexAccessToken(request.providerInstanceId);
+				return accessToken
+					? { kind: 'bearer', accessToken }
+					: { kind: 'missing', message: `Director provider '${request.providerInstanceId}' is signed out or missing an OAuth token.` };
+			}
+		}
 	}
 }
 
