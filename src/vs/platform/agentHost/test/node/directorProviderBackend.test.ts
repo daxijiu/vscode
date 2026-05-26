@@ -4,13 +4,23 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { VSBuffer } from '../../../../base/common/buffer.js';
+import { Schemas } from '../../../../base/common/network.js';
+import { dirname } from '../../../../base/common/resources.js';
+import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
+import { FileService } from '../../../files/common/fileService.js';
+import { IFileService } from '../../../files/common/files.js';
+import { InMemoryFileSystemProvider } from '../../../files/common/inMemoryFilesystemProvider.js';
+import { INativeEnvironmentService } from '../../../environment/common/environment.js';
+import { NullLogService } from '../../../log/common/log.js';
 import { DirectorAgentProviderId, findDefaultModel, isResolvedBackend, toAgentModelInfo } from '../../common/directorProviderBackend.js';
+import { DirectorProviderSnapshotVersion, getDirectorProviderSnapshotResource } from '../../common/directorProviderSnapshot.js';
 import { DirectorProviderBackendHub } from '../../node/director/directorProviderBackendHub.js';
 
 suite('directorProviderBackend', () => {
 
-	ensureNoDisposablesAreLeakedInTestSuite();
+	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('lists deterministic fake providers and models', async () => {
 		const hub = new DirectorProviderBackendHub();
@@ -242,6 +252,65 @@ suite('directorProviderBackend', () => {
 			providerInstanceId: 'provider-b',
 			agentModelId: 'provider-b:claude-sonnet-4.5',
 			modelId: 'claude-sonnet-4.5',
+		});
+	});
+
+	test('loads a file-backed secret-free provider snapshot', async () => {
+		const logService = new NullLogService();
+		const fileService: IFileService = new FileService(logService);
+		disposables.add(fileService);
+		disposables.add(fileService.registerProvider(Schemas.file, disposables.add(new InMemoryFileSystemProvider())));
+		const appSettingsHome = URI.file('/director/User');
+		const resource = getDirectorProviderSnapshotResource(appSettingsHome);
+		await fileService.createFolder(dirname(resource));
+		await fileService.writeFile(resource, VSBuffer.fromString(JSON.stringify({
+			version: DirectorProviderSnapshotVersion,
+			updatedAt: 1,
+			defaultProviderId: 'snapshot-provider',
+			defaultModelId: 'snapshot-provider:gpt-test',
+			providers: [{
+				id: 'snapshot-provider',
+				kind: 'openai-compatible',
+				displayName: 'Snapshot Provider',
+				enabled: true,
+				authKind: 'api-key',
+				apiType: 'openai-completions',
+				baseURL: 'https://example.test/v1',
+				headers: {
+					authorization: 'Bearer should-not-surface',
+					'x-director-trace': 'safe',
+				},
+				defaultModelId: 'snapshot-provider:gpt-test',
+				authState: { kind: 'ready', identityKey: 'api-key:snapshot-provider' },
+			}],
+			models: [{
+				providerInstanceId: 'snapshot-provider',
+				id: 'snapshot-provider:gpt-test',
+				providerModelId: 'gpt-test',
+				name: 'GPT Test',
+				supportsVision: false,
+				apiType: 'openai-completions',
+			}],
+		})));
+
+		const hub = new DirectorProviderBackendHub({}, fileService, { appSettingsHome } as Partial<INativeEnvironmentService> as INativeEnvironmentService, logService);
+		const providers = await hub.listProviderInstances();
+		const models = await hub.listModels();
+		const resolved = await hub.resolveBackend();
+
+		assert.ok(isResolvedBackend(resolved));
+		assert.deepStrictEqual({
+			providerIds: providers.map(provider => provider.id),
+			modelIds: models.map(model => model.id),
+			headers: providers[0].headers,
+			resolvedHeaders: resolved.backend.headers,
+			resolvedModelId: resolved.backend.modelId,
+		}, {
+			providerIds: ['snapshot-provider'],
+			modelIds: ['snapshot-provider:gpt-test'],
+			headers: { 'x-director-trace': 'safe' },
+			resolvedHeaders: { 'x-director-trace': 'safe' },
+			resolvedModelId: 'gpt-test',
 		});
 	});
 });

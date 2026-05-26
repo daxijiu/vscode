@@ -76,3 +76,28 @@ export function sanitizeDirectorProviderId(value: string): string {
 export function makeDirectorProviderModelKey(providerInstanceId: string, modelId: string): string {
 	return `${sanitizeDirectorProviderId(providerInstanceId)}:${modelId.trim()}`;
 }
+
+export function sanitizeDirectorProviderHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+	if (headers === undefined) {
+		return undefined;
+	}
+
+	const result: Record<string, string> = {};
+	for (const [key, value] of Object.entries(headers)) {
+		if (!isDirectorSensitiveHeaderName(key)) {
+			result[key.trim()] = value;
+		}
+	}
+	return Object.keys(result).length ? result : undefined;
+}
+
+export function isDirectorSensitiveHeaderName(name: string): boolean {
+	const normalized = name.trim().toLowerCase();
+	const compact = normalized.replace(/[^a-z0-9]+/g, '');
+	return normalized === 'authorization'
+		|| normalized === 'proxy-authorization'
+		|| normalized.includes('api-key')
+		|| normalized.includes('api_key')
+		|| normalized.includes('token')
+		|| compact.includes('apikey');
+}

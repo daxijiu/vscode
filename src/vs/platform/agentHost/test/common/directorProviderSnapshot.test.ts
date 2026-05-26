@@ -6,7 +6,7 @@
 import assert from 'assert';
 import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { getDirectorProviderRegistryResourceFromGlobalStorageHome, getDirectorProviderSnapshotResource, getDirectorProviderSnapshotResourceFromGlobalStorageHome, isAuthStateUsableForModelList, makeDirectorProviderModelKey, sanitizeDirectorProviderId } from '../../common/directorProviderSnapshot.js';
+import { getDirectorProviderRegistryResourceFromGlobalStorageHome, getDirectorProviderSnapshotResource, getDirectorProviderSnapshotResourceFromGlobalStorageHome, isAuthStateUsableForModelList, makeDirectorProviderModelKey, sanitizeDirectorProviderHeaders, sanitizeDirectorProviderId } from '../../common/directorProviderSnapshot.js';
 
 suite('directorProviderSnapshot', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -23,6 +23,12 @@ suite('directorProviderSnapshot', () => {
 			modelKey: makeDirectorProviderModelKey(' My Provider! ', 'gpt-4.1'),
 			ready: isAuthStateUsableForModelList({ kind: 'ready' }),
 			missing: isAuthStateUsableForModelList({ kind: 'missing' }),
+			headers: sanitizeDirectorProviderHeaders({
+				authorization: 'nope',
+				' X-Api-Key ': 'nope',
+				'x-director-token': 'nope',
+				'x-director-trace': 'safe',
+			}),
 		}, {
 			defaultSnapshot: '/user/User/globalStorage/director/provider-snapshot.json',
 			profileSnapshot: '/user/User/globalStorage/profile-a/director/provider-snapshot.json',
@@ -31,6 +37,7 @@ suite('directorProviderSnapshot', () => {
 			modelKey: 'my-provider:gpt-4.1',
 			ready: true,
 			missing: false,
+			headers: { 'x-director-trace': 'safe' },
 		});
 	});
 });

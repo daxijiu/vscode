@@ -2,6 +2,8 @@
 
 > Handoff plan for Phase 3 of the Director Agent / Provider Backend roadmap. Execute after Phase 0-2 are accepted, committed, and pushed. Cross-reference [director-agent-provider-roadmap.md](./director-agent-provider-roadmap.md).
 
+Status: completed and manually accepted on 2026-05-26. The next active roadmap phase is Phase 4, which wraps the old Director `AgentEngine` as an AgentHost harness adapter.
+
 ## 1. Goal
 
 Port the old Director provider system into the current VS Code fork as a narrow, reusable Provider Backend layer, bring back the old usable Director Settings entry for configuring providers, and include OpenAI Codex OAuth as the Phase 3 OAuth path.
@@ -632,35 +634,45 @@ Minimum assertions:
 
 Use a fresh user-data-dir profile.
 
-Current implementation note for the first Phase 3 acceptance slice:
+Accepted Phase 3 implementation note:
 
-- `director-code.openSettings` is implemented as a QuickInput settings shell, not yet the full old `ProviderSettingsWidget` / `DirectorCodeSettingsEditor` editor pane.
+- Manual source-run acceptance completed on 2026-05-26.
+
+- `director-code.openSettings` opens a `Director Settings` editor pane backed by a practical `ProviderSettingsWidget`. The editor now follows the old Director layout more closely: `Connected Providers`, `Popular Providers`, `Models`, and `Snapshot` sections, with provider add/edit handled by an in-page modal instead of a chained QuickInput flow.
 - OpenAI Codex OAuth uses a deterministic fake Secret Storage token state for local acceptance; the real OAuth browser/device flow remains follow-up.
 - Provider setup validation is no-network by design. It verifies stored auth state and builds a redacted request template, but does not send API-key traffic through VS Code's request service.
 - AgentHost consumes a secret-free provider snapshot. API keys and OAuth token values should not appear in provider registry JSON or snapshot JSON.
 - Current review fixes: model ids are split between AgentHost picker ids and provider wire ids, provider can be inferred from a selected global model id, global default model state takes priority over per-provider defaults, snapshot writes are serialized, and known sensitive auth headers are stripped before registry/snapshot/backend exposure.
+- Current completion fixes: registry/snapshot persistence is now explicit-field allowlisted, sensitive header redaction is shared, active-profile snapshots are mirrored to the default-profile AgentHost path, and Phase 3 includes pure normalized-message request adapters for Anthropic Messages, OpenAI Chat Completions, OpenAI Codex, and Gemini.
 - Current runtime fix: `DirectorAgent` periodically refreshes its model list from the snapshot so provider/model changes are not stuck behind a full AgentHost process restart.
+- Current UI parity fixes: the settings editor has a solid modal surface, old-style provider/model sections, status summary, API-key monospace input, denser model rows, stronger tags/buttons/input contrast, model Visible/Hidden controls, Show All, and Set Default disabled for hidden models.
+- Current UX follow-up: Provider Settings keeps a stable page shell and refreshes only affected sections with scroll preservation, stale async render guards, and section-scoped disposable stores. Model visibility changes should not clear the whole editor, flash the full page, or jump back to the top. Provider modals stay open when the backdrop is clicked.
+- Current model-snapshot fix: hidden models remain in the registry for UI management but are filtered out of the AgentHost snapshot/model picker; registry and snapshot defaults are normalized to visible models.
+- Current model-refresh boundary: Phase 3 `Refresh Models` is still a no-network static/configured metadata refresh. Real credential-gated `/models` discovery is a provider-hardening follow-up unless Phase 3 is explicitly expanded.
 - Director runtime still replies with deterministic echo until Phase 4 wires the real Director `AgentEngine`.
 
 Acceptance flow:
 
 1. Build current sources.
 2. Launch Code OSS with `chat.agentHost.enabled=true` and `chat.agentHost.directorAgent.enabled=true`.
-3. Run `Director: Open Settings` or `Open Director Settings`.
-4. Add an OpenAI-compatible or Anthropic-compatible provider.
-5. Enter a test key and base URL.
-6. Save and test connection.
-7. Add or select the OpenAI Codex OAuth provider and complete login, or run the deterministic fake OAuth acceptance target if real credentials are not available.
-8. Refresh model list.
-9. Select default provider/model.
-10. Restart AgentHost or reload the window if the implementation requires it.
-11. Confirm Director appears in Agent Sessions with configured models.
-12. Send a message and confirm Phase 3 runtime behavior is either:
+3. Run `Director: Open Settings` or `Open Director Settings` and confirm the `Director Settings` editor opens.
+4. Connect an OpenAI-compatible or Anthropic-compatible provider from `Popular Providers`.
+5. In the provider modal, enter provider id/name, base URL, API key, optional headers, model IDs, and default model.
+6. Use `Validate Setup` in the modal or `Validate` on the connected row and confirm it reports a redacted no-network request template.
+7. Add or configure the OpenAI Codex OAuth provider and use the deterministic fake OAuth sign-in/out controls.
+8. Edit the newline/comma-separated model list and confirm the `Models` section updates after save.
+9. Select default provider/model from the editor.
+10. Toggle model visibility and use `Show All`; hidden models should stay manageable in Director Settings but should not be selectable as AgentHost models or defaults.
+11. While scrolled to the `Models` section, toggle `Visible` / `Hidden` and confirm the editor does not jump back to the top or flash the full page.
+12. Open a provider `Connect` / `Configure` modal, click outside the modal, and confirm it stays open. Close it with the header button, `Cancel`, or `Escape`.
+13. Restart AgentHost or reload the window if the implementation requires it. The current local AgentHost also polls for provider model changes.
+14. Confirm Director appears in Agent Sessions with configured visible models.
+15. Send a message and confirm Phase 3 runtime behavior is either:
     - still deterministic echo, with model list now real/configured; or
     - clearly gated if Phase 4 work has not started.
-13. Inspect registry JSON and the AgentHost snapshot and confirm no raw API key or OAuth token is present.
-14. Change provider/model/default/auth state and confirm the Workbench snapshot writer refreshes the AgentHost-visible metadata after the documented reload/refresh path.
-15. Disable the Director agent setting and confirm Director provider disappears.
+16. Inspect registry JSON and the AgentHost snapshot and confirm no raw API key or OAuth token is present. Hidden model metadata may be present in registry JSON, but not in the AgentHost snapshot model list.
+17. Change provider/model/default/auth state and confirm the Workbench snapshot writer refreshes the AgentHost-visible metadata after the documented reload/refresh path. The current local AgentHost polls for provider model changes.
+18. Disable the Director agent setting and confirm Director provider disappears.
 
 Also verify:
 

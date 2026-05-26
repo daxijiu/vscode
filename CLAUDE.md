@@ -1,8 +1,8 @@
-# VS Code Fork Agents Instructions
+# VS Code Fork Claude Instructions
 
 This repository is the user's VS Code fork at `E:\Projects\Director-Code-batch\vscode`.
 
-For baseline VS Code architecture, coding style, and validation rules, always read [Copilot Instructions](.github/copilot-instructions.md). This file records project-specific direction for the Director Agent / Provider Backend work.
+This file is the Claude-facing companion to [AGENTS.md](AGENTS.md). Keep both files aligned when changing repository instructions. For baseline VS Code architecture, coding style, and validation rules, always read [Copilot Instructions](.github/copilot-instructions.md).
 
 ## Current Objective
 

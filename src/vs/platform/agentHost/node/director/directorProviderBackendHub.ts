@@ -7,7 +7,7 @@ import type { IFileService } from '../../../files/common/files.js';
 import type { INativeEnvironmentService } from '../../../environment/common/environment.js';
 import type { ILogService } from '../../../log/common/log.js';
 import type { DirectorBackendResolution, DirectorProviderApiType, DirectorProviderInstance, DirectorProviderKind, DirectorProviderModel, DirectorProviderSelection, IDirectorProviderBackendHub } from '../../common/directorProviderBackend.js';
-import { getDirectorProviderSnapshotResource, isAuthStateUsableForModelList, type DirectorProviderAuthState, type DirectorProviderSnapshot, type DirectorProviderSnapshotProvider } from '../../common/directorProviderSnapshot.js';
+import { getDirectorProviderSnapshotResource, isAuthStateUsableForModelList, sanitizeDirectorProviderHeaders, type DirectorProviderAuthState, type DirectorProviderSnapshot, type DirectorProviderSnapshotProvider } from '../../common/directorProviderSnapshot.js';
 
 const defaultProviderInstances: readonly DirectorProviderInstance[] = [
 	{
@@ -172,7 +172,7 @@ export class DirectorProviderBackendHub implements IDirectorProviderBackendHub {
 				modelId: model.providerModelId ?? model.id,
 				authState,
 				...(provider.baseURL !== undefined ? { baseURL: provider.baseURL } : {}),
-				...(provider.headers !== undefined ? { headers: sanitizeHeaders(provider.headers) } : {}),
+				...(provider.headers !== undefined ? { headers: sanitizeDirectorProviderHeaders(provider.headers) } : {}),
 				...(model.capabilities !== undefined ? { capabilities: { ...model.capabilities } } : {}),
 				identityKey: `${provider.id}/${model.id}`,
 			},
@@ -284,7 +284,7 @@ export class DirectorProviderBackendHub implements IDirectorProviderBackendHub {
 function copyProviderInstance(provider: DirectorProviderInstance): DirectorProviderInstance {
 	return {
 		...provider,
-		...(provider.headers !== undefined ? { headers: sanitizeHeaders(provider.headers) } : {}),
+		...(provider.headers !== undefined ? { headers: sanitizeDirectorProviderHeaders(provider.headers) } : {}),
 	};
 }
 
@@ -316,27 +316,4 @@ function apiTypeForProviderKind(kind: DirectorProviderKind): DirectorProviderApi
 
 function isSnapshotProvider(provider: DirectorProviderInstance): provider is DirectorProviderSnapshotProvider {
 	return 'authState' in provider;
-}
-
-function sanitizeHeaders(headers: Record<string, string>): Record<string, string> | undefined {
-	const result: Record<string, string> = {};
-	for (const [key, value] of Object.entries(headers)) {
-		if (!isSensitiveHeaderName(key)) {
-			result[key] = value;
-		}
-	}
-	return Object.keys(result).length ? result : undefined;
-}
-
-function isSensitiveHeaderName(name: string): boolean {
-	switch (name.toLowerCase()) {
-		case 'authorization':
-		case 'proxy-authorization':
-		case 'x-api-key':
-		case 'x-goog-api-key':
-		case 'api-key':
-		case 'anthropic-api-key':
-			return true;
-	}
-	return false;
 }

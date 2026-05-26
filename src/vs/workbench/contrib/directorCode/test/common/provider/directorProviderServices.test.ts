@@ -13,9 +13,9 @@ import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { InMemoryFileSystemProvider } from '../../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../../platform/log/common/log.js';
 import { TestSecretStorageService } from '../../../../../../platform/secrets/test/common/testSecretStorageService.js';
-import { toUserDataProfile } from '../../../../../../platform/userDataProfile/common/userDataProfile.js';
+import { IUserDataProfilesService, toUserDataProfile } from '../../../../../../platform/userDataProfile/common/userDataProfile.js';
 import { IUserDataProfileService } from '../../../../../services/userDataProfile/common/userDataProfile.js';
-import { createDirectorProviderInstance, DirectorApiKeyService, DirectorModelResolverService, DirectorOAuthService, DirectorProviderRegistryService, DirectorProviderSnapshotService } from '../../../common/provider/directorProviderServices.js';
+import { createDirectorProviderInstance, DirectorApiKeyService, DirectorModelResolverService, DirectorOAuthService, DirectorProviderConnectionTestService, DirectorProviderRegistryService, DirectorProviderSnapshotService } from '../../../common/provider/directorProviderServices.js';
 import { getDirectorProviderRegistryResourceFromGlobalStorageHome, getDirectorProviderSnapshotResourceFromGlobalStorageHome } from '../../../../../../platform/agentHost/common/directorProviderSnapshot.js';
 
 suite('directorProviderServices', () => {
@@ -24,9 +24,12 @@ suite('directorProviderServices', () => {
 	let fileService: IFileService;
 	let secretStorageService: TestSecretStorageService;
 	let userDataProfileService: IUserDataProfileService;
+	let userDataProfilesService: IUserDataProfilesService;
 	let registryService: DirectorProviderRegistryService;
 	let apiKeyService: DirectorApiKeyService;
 	let oauthService: DirectorOAuthService;
+	let modelResolverService: DirectorModelResolverService;
+	let connectionTestService: DirectorProviderConnectionTestService;
 	let snapshotService: DirectorProviderSnapshotService;
 
 	setup(() => {
@@ -35,17 +38,36 @@ suite('directorProviderServices', () => {
 		disposables.add(fileService.registerProvider(Schemas.file, disposables.add(new InMemoryFileSystemProvider())));
 		secretStorageService = disposables.add(new TestSecretStorageService());
 		const currentProfile = toUserDataProfile('director-test', 'Director Test', URI.file('/director-test/User'), URI.file('/director-test/cache'));
+		const defaultProfile = toUserDataProfile('default', 'Default', URI.file('/director-test/DefaultUser'), URI.file('/director-test/cache-default'));
 		userDataProfileService = {
 			_serviceBrand: undefined,
 			currentProfile,
 			onDidChangeCurrentProfile: Event.None,
 			updateCurrentProfile: async () => { },
 		};
+		userDataProfilesService = {
+			_serviceBrand: undefined,
+			profilesHome: URI.file('/director-test/profiles'),
+			defaultProfile,
+			onDidChangeProfiles: Event.None,
+			profiles: [defaultProfile, currentProfile],
+			onDidResetWorkspaces: Event.None,
+			createNamedProfile: async () => currentProfile,
+			createTransientProfile: async () => currentProfile,
+			createProfile: async () => currentProfile,
+			updateProfile: async profile => profile,
+			removeProfile: async () => { },
+			setProfileForWorkspace: async () => { },
+			resetWorkspaces: async () => { },
+			cleanUp: async () => { },
+			cleanUpTransientProfiles: async () => { },
+		};
 
 		registryService = disposables.add(new DirectorProviderRegistryService(fileService, userDataProfileService, logService));
 		apiKeyService = disposables.add(new DirectorApiKeyService(secretStorageService));
 		oauthService = disposables.add(new DirectorOAuthService(secretStorageService));
-		const modelResolverService = new DirectorModelResolverService();
+		modelResolverService = new DirectorModelResolverService();
+		connectionTestService = new DirectorProviderConnectionTestService(apiKeyService, oauthService, modelResolverService);
 		snapshotService = disposables.add(new DirectorProviderSnapshotService(
 			registryService,
 			apiKeyService,
@@ -53,6 +75,7 @@ suite('directorProviderServices', () => {
 			modelResolverService,
 			fileService,
 			userDataProfileService,
+			userDataProfilesService,
 			logService,
 		));
 	});
@@ -71,8 +94,13 @@ suite('directorProviderServices', () => {
 			headers: {
 				authorization: 'Bearer should-not-persist',
 				'x-api-key': 'should-not-persist',
+				' OpenAI-Api-Key ': 'should-not-persist',
+				'X-ApiKey': 'should-not-persist',
+				'x-apiKey': 'should-not-persist',
+				'x-director-token': 'should-not-persist',
 				'x-director-trace': 'safe-metadata',
 			},
+			accessToken: 'should-not-persist',
 		};
 
 		await registryService.saveProvider(provider);
@@ -85,13 +113,15 @@ suite('directorProviderServices', () => {
 			defaultProviderId: state.defaultProviderId,
 			defaultModelId: state.defaultModelId,
 			headers: state.instances[0].headers,
-			hasSensitiveHeaderValue: registryText.includes('should-not-persist'),
+			hasSensitiveValue: registryText.includes('should-not-persist'),
+			hasUnknownTokenField: registryText.includes('accessToken'),
 		}, {
 			providerIds: ['my-provider'],
 			defaultProviderId: 'my-provider',
 			defaultModelId: 'my-provider:gpt-test',
 			headers: { 'x-director-trace': 'safe-metadata' },
-			hasSensitiveHeaderValue: false,
+			hasSensitiveValue: false,
+			hasUnknownTokenField: false,
 		});
 	});
 
@@ -128,6 +158,52 @@ suite('directorProviderServices', () => {
 		});
 	});
 
+	test('keeps hidden models out of the AgentHost snapshot default surface', async () => {
+		const base = createDirectorProviderInstance({
+			id: 'models-provider',
+			kind: 'openai-compatible',
+			displayName: 'Models Provider',
+			authKind: 'api-key',
+			apiType: 'openai-completions',
+			baseURL: 'https://api.openai.test/v1',
+			modelId: 'visible-model',
+		});
+		const provider = {
+			...base,
+			models: [
+				{ id: `${base.id}:hidden-model`, providerModelId: 'hidden-model', name: 'Hidden Model', hidden: true, maxContextWindow: 1000 },
+				{ id: `${base.id}:visible-model`, providerModelId: 'visible-model', name: 'Visible Model', maxContextWindow: 2000 },
+			],
+			defaultModelId: `${base.id}:hidden-model`,
+		};
+
+		await registryService.saveProvider(provider);
+		await apiKeyService.setProviderInstanceKey(provider.id, 'sk-director-secret');
+		const snapshot = await snapshotService.writeSnapshot();
+
+		assert.deepStrictEqual({
+			registryDefault: (await registryService.getState()).defaultModelId,
+			snapshotDefault: snapshot.defaultModelId,
+			models: snapshot.models.map(model => ({
+				id: model.id,
+				providerModelId: model.providerModelId,
+				name: model.name,
+				maxContextWindow: model.maxContextWindow,
+			})),
+			leaksHidden: JSON.stringify(snapshot).includes('hidden-model'),
+		}, {
+			registryDefault: `${base.id}:visible-model`,
+			snapshotDefault: `${base.id}:visible-model`,
+			models: [{
+				id: `${base.id}:visible-model`,
+				providerModelId: 'visible-model',
+				name: 'Visible Model',
+				maxContextWindow: 2000,
+			}],
+			leaksHidden: false,
+		});
+	});
+
 	test('tracks deterministic OpenAI Codex OAuth state without leaking the fake token', async () => {
 		const provider = createDirectorProviderInstance({
 			id: 'openai-codex',
@@ -155,6 +231,58 @@ suite('directorProviderServices', () => {
 			readyAuthState: 'ready',
 			signedOutAuthState: 'signedOut',
 			leaksFakeToken: false,
+		});
+	});
+
+	test('writes a default-profile snapshot mirror for AgentHost while keeping current profile storage', async () => {
+		const provider = createDirectorProviderInstance({
+			kind: 'openai-compatible',
+			displayName: 'OpenAI Compatible',
+			authKind: 'api-key',
+			apiType: 'openai-completions',
+			baseURL: 'https://api.openai.test/v1',
+			modelId: 'gpt-test',
+		});
+
+		await registryService.saveProvider(provider);
+		await apiKeyService.setProviderInstanceKey(provider.id, 'sk-director-secret');
+		await snapshotService.writeSnapshot();
+
+		assert.deepStrictEqual({
+			currentExists: await fileService.exists(getDirectorProviderSnapshotResourceFromGlobalStorageHome(userDataProfileService.currentProfile.globalStorageHome)),
+			defaultExists: await fileService.exists(getDirectorProviderSnapshotResourceFromGlobalStorageHome(userDataProfilesService.defaultProfile.globalStorageHome)),
+		}, {
+			currentExists: true,
+			defaultExists: true,
+		});
+	});
+
+	test('validates provider setup through a redacted no-network request template', async () => {
+		const provider = createDirectorProviderInstance({
+			kind: 'openai-compatible',
+			displayName: 'OpenAI Compatible',
+			authKind: 'api-key',
+			apiType: 'openai-completions',
+			baseURL: 'https://api.openai.test/v1',
+			modelId: 'gpt-test',
+		});
+
+		const missing = await connectionTestService.validateProviderSetup(provider);
+		await apiKeyService.setProviderInstanceKey(provider.id, 'sk-director-secret');
+		const ready = await connectionTestService.validateProviderSetup(provider);
+
+		assert.deepStrictEqual({
+			missing: missing.status,
+			ready: ready.status,
+			requestUrl: ready.request?.url,
+			requestAuth: ready.request?.headers.authorization,
+			leaksKey: JSON.stringify(ready).includes('sk-director-secret'),
+		}, {
+			missing: 'missingAuth',
+			ready: 'ok',
+			requestUrl: 'https://api.openai.test/v1/chat/completions',
+			requestAuth: 'Bearer <redacted>',
+			leaksKey: false,
 		});
 	});
 

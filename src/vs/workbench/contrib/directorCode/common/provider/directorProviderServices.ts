@@ -12,15 +12,18 @@ import { createDecorator } from '../../../../../platform/instantiation/common/in
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { ISecretStorageService } from '../../../../../platform/secrets/common/secrets.js';
+import { IUserDataProfilesService } from '../../../../../platform/userDataProfile/common/userDataProfile.js';
 import { IUserDataProfileService } from '../../../../services/userDataProfile/common/userDataProfile.js';
 import type { DirectorProviderApiType, DirectorProviderAuthKind, DirectorProviderCapabilities, DirectorProviderInstance, DirectorProviderKind } from '../../../../../platform/agentHost/common/directorProviderBackend.js';
-import { DirectorProviderSnapshotVersion, getDirectorProviderRegistryResourceFromGlobalStorageHome, getDirectorProviderSnapshotResourceFromGlobalStorageHome, makeDirectorProviderModelKey, sanitizeDirectorProviderId, type DirectorProviderAuthState, type DirectorProviderSnapshot, type DirectorProviderSnapshotModel, type DirectorProviderSnapshotProvider } from '../../../../../platform/agentHost/common/directorProviderSnapshot.js';
+import { buildDirectorConnectionTestRequest, type DirectorConnectionTestRequest } from '../../../../../platform/agentHost/common/directorProviderRequest.js';
+import { DirectorProviderSnapshotVersion, getDirectorProviderRegistryResourceFromGlobalStorageHome, getDirectorProviderSnapshotResourceFromGlobalStorageHome, makeDirectorProviderModelKey, sanitizeDirectorProviderHeaders, sanitizeDirectorProviderId, type DirectorProviderAuthState, type DirectorProviderSnapshot, type DirectorProviderSnapshotModel, type DirectorProviderSnapshotProvider } from '../../../../../platform/agentHost/common/directorProviderSnapshot.js';
 
 export const IDirectorProviderRegistryService = createDecorator<IDirectorProviderRegistryService>('directorProviderRegistryService');
 export const IDirectorApiKeyService = createDecorator<IDirectorApiKeyService>('directorApiKeyService');
 export const IDirectorOAuthService = createDecorator<IDirectorOAuthService>('directorOAuthService');
 export const IDirectorModelResolverService = createDecorator<IDirectorModelResolverService>('directorModelResolverService');
 export const IDirectorProviderSnapshotService = createDecorator<IDirectorProviderSnapshotService>('directorProviderSnapshotService');
+export const IDirectorProviderConnectionTestService = createDecorator<IDirectorProviderConnectionTestService>('directorProviderConnectionTestService');
 
 const API_KEY_PREFIX = 'director-code.providerInstanceKey';
 const OAUTH_TOKEN_PREFIX = 'director-code.oauth';
@@ -38,6 +41,7 @@ export interface DirectorStoredProviderModel {
 	readonly providerModelId?: string;
 	readonly name?: string;
 	readonly family?: string;
+	readonly hidden?: boolean;
 	readonly maxContextWindow?: number;
 	readonly supportsVision?: boolean;
 	readonly capabilities?: DirectorProviderCapabilities;
@@ -64,6 +68,7 @@ export interface IDirectorProviderRegistryService {
 export interface IDirectorApiKeyService {
 	readonly _serviceBrand: undefined;
 	readonly onDidChangeAuth: Event<string>;
+	hasProviderInstanceKey(providerInstanceId: string): Promise<boolean>;
 	getProviderInstanceKey(providerInstanceId: string): Promise<string | undefined>;
 	setProviderInstanceKey(providerInstanceId: string, value: string): Promise<void>;
 	deleteProviderInstanceKey(providerInstanceId: string): Promise<void>;
@@ -87,6 +92,18 @@ export interface IDirectorProviderSnapshotService {
 	readonly _serviceBrand: undefined;
 	writeSnapshot(): Promise<DirectorProviderSnapshot>;
 	getSnapshotResource(): Promise<string>;
+}
+
+export interface DirectorProviderConnectionTestResult {
+	readonly status: 'ok' | 'missingAuth' | 'modelUnavailable' | 'unsupported';
+	readonly message: string;
+	readonly request?: DirectorConnectionTestRequest;
+	readonly authState?: DirectorProviderAuthState;
+}
+
+export interface IDirectorProviderConnectionTestService {
+	readonly _serviceBrand: undefined;
+	validateProviderSetup(provider: DirectorStoredProviderInstance, modelId?: string): Promise<DirectorProviderConnectionTestResult>;
 }
 
 export class DirectorProviderRegistryService extends Disposable implements IDirectorProviderRegistryService {
@@ -125,11 +142,12 @@ export class DirectorProviderRegistryService extends Disposable implements IDire
 
 	async removeProvider(id: string): Promise<void> {
 		const state = await this.getState();
+		const defaultModelId = state.defaultModelId?.startsWith(`${id}:`) ? undefined : state.defaultModelId;
 		await this.writeState({
 			version: 1,
 			instances: state.instances.filter(provider => provider.id !== id),
 			defaultProviderId: state.defaultProviderId === id ? undefined : state.defaultProviderId,
-			defaultModelId: state.defaultProviderId === id ? undefined : state.defaultModelId,
+			defaultModelId: state.defaultProviderId === id ? undefined : defaultModelId,
 		});
 	}
 
@@ -179,6 +197,10 @@ export class DirectorApiKeyService extends Disposable implements IDirectorApiKey
 
 	constructor(@ISecretStorageService private readonly secretStorageService: ISecretStorageService) {
 		super();
+	}
+
+	async hasProviderInstanceKey(providerInstanceId: string): Promise<boolean> {
+		return (await this.getProviderInstanceKey(providerInstanceId)) !== undefined;
 	}
 
 	getProviderInstanceKey(providerInstanceId: string): Promise<string | undefined> {
@@ -257,7 +279,7 @@ export class DirectorModelResolverService implements IDirectorModelResolverServi
 
 	async resolveModels(provider: DirectorStoredProviderInstance): Promise<readonly DirectorProviderSnapshotModel[]> {
 		const models = provider.models?.length ? provider.models : getDefaultModels(provider.apiType);
-		return models.map(model => {
+		return models.filter(model => model.hidden !== true).map(model => {
 			const providerModelId = model.providerModelId ?? getProviderModelId(provider.id, model.id);
 			return {
 				providerInstanceId: provider.id,
@@ -287,6 +309,7 @@ export class DirectorProviderSnapshotService extends Disposable implements IDire
 		@IDirectorModelResolverService private readonly modelResolverService: IDirectorModelResolverService,
 		@IFileService private readonly fileService: IFileService,
 		@IUserDataProfileService private readonly userDataProfileService: IUserDataProfileService,
+		@IUserDataProfilesService private readonly userDataProfilesService: IUserDataProfilesService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
@@ -307,22 +330,43 @@ export class DirectorProviderSnapshotService extends Disposable implements IDire
 
 		for (const provider of state.instances) {
 			const authState = await this.getAuthState(provider);
-			providers.push({ ...provider, authState });
-			models.push(...await this.modelResolverService.resolveModels(provider));
+			const providerModels = await this.modelResolverService.resolveModels(provider);
+			const providerDefaultModelId = provider.defaultModelId && providerModels.some(model => model.id === provider.defaultModelId)
+				? provider.defaultModelId
+				: providerModels[0]?.id;
+			providers.push({
+				id: provider.id,
+				kind: provider.kind,
+				displayName: provider.displayName,
+				enabled: provider.enabled,
+				authKind: provider.authKind,
+				apiType: provider.apiType,
+				...(provider.baseURL !== undefined ? { baseURL: provider.baseURL } : {}),
+				...(provider.headers !== undefined ? { headers: provider.headers } : {}),
+				...(providerDefaultModelId !== undefined ? { defaultModelId: providerDefaultModelId } : {}),
+				authState,
+			});
+			models.push(...providerModels);
 		}
 
+		const defaultModelId = state.defaultModelId && models.some(model => model.id === state.defaultModelId)
+			? state.defaultModelId
+			: models.find(model => model.providerInstanceId === state.defaultProviderId)?.id ?? models[0]?.id;
 		const snapshot: DirectorProviderSnapshot = {
 			version: DirectorProviderSnapshotVersion,
 			updatedAt: Date.now(),
 			defaultProviderId: state.defaultProviderId,
-			defaultModelId: state.defaultModelId,
+			defaultModelId,
 			providers,
 			models,
 		};
-		const resource = getDirectorProviderSnapshotResourceFromGlobalStorageHome(this.userDataProfileService.currentProfile.globalStorageHome);
+		const resources = this.getSnapshotResources();
 		try {
-			await this.fileService.createFolder(dirname(resource));
-			await this.fileService.writeFile(resource, VSBuffer.fromString(JSON.stringify(snapshot, undefined, '\t')));
+			const content = VSBuffer.fromString(JSON.stringify(snapshot, undefined, '\t'));
+			for (const resource of resources) {
+				await this.fileService.createFolder(dirname(resource));
+				await this.fileService.writeFile(resource, content);
+			}
 		} catch (err) {
 			this.logService.error('[Director] Failed to write provider snapshot', err);
 			throw err;
@@ -332,6 +376,72 @@ export class DirectorProviderSnapshotService extends Disposable implements IDire
 
 	async getSnapshotResource(): Promise<string> {
 		return getDirectorProviderSnapshotResourceFromGlobalStorageHome(this.userDataProfileService.currentProfile.globalStorageHome).fsPath;
+	}
+
+	private getSnapshotResources(): readonly ReturnType<typeof getDirectorProviderSnapshotResourceFromGlobalStorageHome>[] {
+		const current = getDirectorProviderSnapshotResourceFromGlobalStorageHome(this.userDataProfileService.currentProfile.globalStorageHome);
+		const defaultProfile = getDirectorProviderSnapshotResourceFromGlobalStorageHome(this.userDataProfilesService.defaultProfile.globalStorageHome);
+		return current.toString() === defaultProfile.toString() ? [current] : [current, defaultProfile];
+	}
+
+	private getAuthState(provider: DirectorStoredProviderInstance): Promise<DirectorProviderAuthState> {
+		switch (provider.authKind) {
+			case 'none':
+				return Promise.resolve({ kind: 'none', updatedAt: Date.now() });
+			case 'api-key':
+				return this.apiKeyService.getAuthState(provider);
+			case 'oauth':
+			case 'bearer':
+				return this.oauthService.getAuthState(provider);
+		}
+	}
+}
+
+export class DirectorProviderConnectionTestService implements IDirectorProviderConnectionTestService {
+	declare readonly _serviceBrand: undefined;
+
+	constructor(
+		@IDirectorApiKeyService private readonly apiKeyService: IDirectorApiKeyService,
+		@IDirectorOAuthService private readonly oauthService: IDirectorOAuthService,
+		@IDirectorModelResolverService private readonly modelResolverService: IDirectorModelResolverService,
+	) { }
+
+	async validateProviderSetup(provider: DirectorStoredProviderInstance, modelId?: string): Promise<DirectorProviderConnectionTestResult> {
+		const authState = await this.getAuthState(provider);
+		if (authState.kind !== 'ready' && authState.kind !== 'none') {
+			return {
+				status: 'missingAuth',
+				message: authState.message ?? `Director provider '${provider.displayName}' credentials are not ready.`,
+				authState,
+			};
+		}
+
+		if (!provider.baseURL && provider.apiType !== 'local') {
+			return {
+				status: 'unsupported',
+				message: `Director provider '${provider.displayName}' needs a base URL before it can be validated.`,
+				authState,
+			};
+		}
+
+		const models = await this.modelResolverService.resolveModels(provider);
+		const model = models.find(model => model.id === modelId || model.providerModelId === modelId)
+			?? models.find(model => model.id === provider.defaultModelId)
+			?? models[0];
+		if (model === undefined) {
+			return {
+				status: 'modelUnavailable',
+				message: `Director provider '${provider.displayName}' has no models to validate.`,
+				authState,
+			};
+		}
+
+		return {
+			status: 'ok',
+			message: `Director provider '${provider.displayName}' is configured. No network request was sent.`,
+			request: buildDirectorConnectionTestRequest(provider.apiType, provider.baseURL ?? '', model.providerModelId ?? model.id, '<redacted>'),
+			authState,
+		};
 	}
 
 	private getAuthState(provider: DirectorStoredProviderInstance): Promise<DirectorProviderAuthState> {
@@ -384,39 +494,43 @@ function getProviderModelId(providerInstanceId: string, modelId: string): string
 
 function normalizeStoredProvider(provider: DirectorStoredProviderInstance): DirectorStoredProviderInstance {
 	const id = sanitizeDirectorProviderId(provider.id);
+	const apiType = provider.apiType ?? apiTypeForKind(provider.kind);
+	const models = provider.models?.map(model => normalizeStoredModel(id, model));
+	const requestedDefaultModelId = provider.defaultModelId !== undefined ? makeDirectorProviderModelKey(id, getProviderModelId(id, provider.defaultModelId)) : undefined;
+	const defaultModelId = models !== undefined
+		? requestedDefaultModelId !== undefined && models.some(model => model.id === requestedDefaultModelId && model.hidden !== true)
+			? requestedDefaultModelId
+			: models.find(model => model.hidden !== true)?.id
+		: requestedDefaultModelId;
 	return {
-		...provider,
 		id,
+		kind: provider.kind,
 		displayName: provider.displayName || id,
 		enabled: provider.enabled !== false,
-		apiType: provider.apiType ?? apiTypeForKind(provider.kind),
-		...(provider.headers !== undefined ? { headers: sanitizeHeaders(provider.headers) } : {}),
+		authKind: provider.authKind,
+		apiType,
+		...(provider.authVariant !== undefined ? { authVariant: provider.authVariant } : {}),
+		...(provider.baseURL !== undefined ? { baseURL: provider.baseURL } : {}),
+		...(provider.headers !== undefined ? { headers: sanitizeDirectorProviderHeaders(provider.headers) } : {}),
+		...(defaultModelId !== undefined ? { defaultModelId } : {}),
+		...(models !== undefined ? { models } : {}),
 		createdAt: provider.createdAt ?? Date.now(),
 		updatedAt: provider.updatedAt ?? Date.now(),
 	};
 }
 
-function sanitizeHeaders(headers: Record<string, string>): Record<string, string> | undefined {
-	const result: Record<string, string> = {};
-	for (const [key, value] of Object.entries(headers)) {
-		if (!isSensitiveHeaderName(key)) {
-			result[key] = value;
-		}
-	}
-	return Object.keys(result).length ? result : undefined;
-}
-
-function isSensitiveHeaderName(name: string): boolean {
-	switch (name.toLowerCase()) {
-		case 'authorization':
-		case 'proxy-authorization':
-		case 'x-api-key':
-		case 'x-goog-api-key':
-		case 'api-key':
-		case 'anthropic-api-key':
-			return true;
-	}
-	return false;
+function normalizeStoredModel(providerInstanceId: string, model: DirectorStoredProviderModel): DirectorStoredProviderModel {
+	const providerModelId = model.providerModelId ?? getProviderModelId(providerInstanceId, model.id);
+	return {
+		id: makeDirectorProviderModelKey(providerInstanceId, providerModelId),
+		providerModelId,
+		name: model.name ?? providerModelId,
+		...(model.family !== undefined ? { family: model.family } : {}),
+		...(model.hidden !== undefined ? { hidden: model.hidden } : {}),
+		...(model.maxContextWindow !== undefined ? { maxContextWindow: model.maxContextWindow } : {}),
+		...(model.supportsVision !== undefined ? { supportsVision: model.supportsVision } : {}),
+		...(model.capabilities !== undefined ? { capabilities: model.capabilities } : {}),
+	};
 }
 
 function apiTypeForKind(kind: DirectorProviderKind): DirectorProviderApiType {

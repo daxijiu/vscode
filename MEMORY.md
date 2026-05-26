@@ -211,18 +211,25 @@ Phase 2:
 
 Phase 3:
 
-- Phase 3 acceptance slice passed manual validation on 2026-05-25 and is ready to commit/push.
+- Phase 3 passed automated validation and manual source-run acceptance on 2026-05-26. The close-out state is ready to commit; next active work is Phase 4.
 - Added Workbench-owned provider registry, API-key Secret Storage wrapper, deterministic OpenAI Codex fake OAuth state, model resolver, and secret-free provider snapshot writer under `src/vs/workbench/contrib/directorCode/**`.
 - Added shared AgentHost common DTO/helpers for secret-free snapshots, protocol compatibility routing, and provider request templates under `src/vs/platform/agentHost/common/directorProvider*.ts`.
 - Updated `DirectorProviderBackendHub` to read the Workbench-written snapshot when available, while keeping explicit fake fixtures for tests and fallback startup.
-- Added a visible `director-code.openSettings` command with Command Palette, Menubar Preferences, and Chat title menu entries. The current UI is a QuickInput Phase 3 acceptance shell, not the full old `ProviderSettingsWidget` / `DirectorCodeSettingsEditor` editor-pane port yet.
-- Added a no-network provider setup validation action. It checks auth state and builds a redacted request template; it intentionally does not send API-key traffic through `IRequestService` because VS Code request logging redacts `authorization` but not every provider-specific key header.
+- Added a visible `director-code.openSettings` command with Command Palette, Menubar Preferences, and Chat title menu entries. It now opens a `Director Settings` editor pane backed by `ProviderSettingsWidget`; the UI follows the old Director section layout with Connected Providers, Popular Providers, Models, Snapshot, and in-page provider modals.
+- Added a Workbench-owned no-network provider setup validation service. It checks auth state and builds a redacted request template; it intentionally does not send API-key traffic through `IRequestService` because VS Code request logging redacts `authorization` but not every provider-specific key header.
 - Model ids are separated into AgentHost-visible unique ids and provider wire model ids via `providerModelId`, so future real traffic does not send namespaced picker ids to providers.
 - Review fixes already applied in this local slice: AgentHost infers provider from the selected global model id, global default model selection wins over per-provider defaults, snapshot writes are serialized, and known sensitive auth headers are stripped from registry/snapshot/backend metadata.
-- Runtime acceptance fix: `director-code.openSettings` must not pass `ServicesAccessor` across `await`. The command now captures all Director settings services synchronously in `Action2.run()` and passes service instances through the async QuickInput flow.
+- Runtime acceptance fix: `director-code.openSettings` must not pass `ServicesAccessor` across `await`. The command now only captures `IEditorService` synchronously in `Action2.run()` and opens the Director Settings editor.
 - Runtime acceptance fix: `DirectorAgent` now refreshes provider models periodically from the secret-free snapshot and only emits model changes when the list differs. This fixes the case where AgentHost starts before Workbench writes provider models, leaving the picker empty until a full AgentHost process restart.
 - Manual acceptance covered Director Settings, API-key provider save, dry-run provider validation, secret-free registry/snapshot inspection, fake OpenAI Codex OAuth state, AgentHost model list refresh, and expected `Director echo: ...` runtime behavior.
 - Phase 3 completion follow-up started after commit `973fdf3aae6`: added `src/vs/workbench/contrib/directorCode/test/common/provider/directorProviderServices.test.ts` covering registry secret/header stripping, API-key auth snapshot state, and deterministic OpenAI Codex fake OAuth state without token leaks.
+- Phase 3 completion follow-up now also adds shared sensitive-header redaction, explicit registry/snapshot field allowlisting, active-profile snapshot mirroring to the default-profile AgentHost path, file-backed AgentHost snapshot tests, a `DirectorProviderConnectionTestService`, old-Director-style section/modal Provider Settings UI, and pure normalized-message request adapters under `src/vs/platform/agentHost/common/directorProviderAdapters.ts`.
+- Provider Settings UI parity pass added old-style status summary, solid non-transparent modal surfaces, denser model rows, stronger tags/buttons/input contrast, API-key monospace input, model Visible/Hidden toggles, Show All, Set Default gating for hidden models, and metadata-preserving model save/visibility updates.
+- Provider Settings UX follow-up uses a stable page shell with section-scoped refreshes, scroll preservation, stale async render guards, and section-scoped disposable stores, so model Visible/Hidden changes no longer clear the whole editor or jump to the top. Provider dialogs no longer close on backdrop clicks; close them with the header button, Cancel, or Escape.
+- Hidden models are persisted in the registry for UI management but filtered out of the AgentHost snapshot/model list. Registry and snapshot defaults are normalized to visible models so AgentHost does not point at a hidden model.
+- Current `Refresh Models` remains a Phase 3 static/dry-run refresh of configured or template model metadata. Real credential-gated network model discovery belongs to the next provider hardening slice unless Phase 3 is explicitly expanded.
+- Validation passed for the completion candidate: `npm run compile-check-ts-native`, `npm run transpile-client`, `npm run valid-layers-check`, targeted `node test\unit\node\index.js --run ...director...` suites with 21 passing across the rerun target files, and `git diff --check`.
+- `npm run test-node -- --grep "directorProvider"` still runs nearly the whole node unit suite in this checkout and failed on an existing Windows `Request Service / Kerberos lookup` credential error, not on Director tests. Prefer the narrower `node test\unit\node\index.js --run <test-file>` form for this slice.
 - Real OpenAI Codex OAuth browser/device flow is still pending; the local Phase 3 target uses a deterministic fake token state stored in Secret Storage.
 - Keep AgentHost runtime provider transports under `src/vs/platform/agentHost/**`; Workbench owns Settings UI, registry, auth, secrets, model-refresh orchestration, connection-test orchestration, and the secret-free provider/model/auth-state snapshot writer.
 - Workbench must not import AgentHost node transports. Shared compatibility, request builders, and snapshot DTOs belong under `src/vs/platform/agentHost/common/**`; AgentHost Phase 3 code consumes auth state, not raw API keys or OAuth bearer tokens.
@@ -327,11 +334,8 @@ git diff --check -- <changed-doc-paths>
 
 ## Next Recommended Action
 
-Manual acceptance:
+Phase 4:
 
-- Run `.tmp/director-phase0-2-acceptance/Launch-DirectorDisabled.ps1 -Fresh` and confirm Director is not offered as an AgentHost provider.
-- Run `.tmp/director-phase0-2-acceptance/Launch-DirectorEnabled.ps1 -Fresh` and confirm Director is offered, creates an AHP `createSession` request with `provider: director`, streams deterministic echo text, and does not trigger GitHub/Copilot auth.
-
-Then review and commit/push the local Phase 0-2 implementation.
-
-After that, start Phase 3 only after deciding how to materialize or mine the old Director provider registry/auth/model resolver from the 112 replay patch.
+- Wrap the old Director `AgentEngine` as an AgentHost harness adapter.
+- Keep real provider network validation/model discovery, real OpenAI Codex OAuth browser/device flow, Claude SDK de-CAPI migration, and durable Director session history in their later roadmap scopes unless the user explicitly expands Phase 4.
+- Reuse the Phase 3 provider registry/auth/model snapshot as the non-secret model-list and auth-state boundary; design a narrow secret bridge only when real LLM turns need credentials.

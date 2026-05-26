@@ -286,6 +286,8 @@ Exit criteria:
 
 ### Phase 3 - Provider Registry and API-Key Backend
 
+Status: completed and manually accepted on 2026-05-26.
+
 Goal: port the useful old Director provider registry/auth semantics into the current fork.
 
 Full step-by-step plan: [director-agent-provider-phase3-plan.md](./director-agent-provider-phase3-plan.md).
