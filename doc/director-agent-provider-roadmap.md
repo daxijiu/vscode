@@ -345,16 +345,16 @@ Exit criteria:
 
 ### Phase 4 - Provider-Backed Director Agent Harness
 
-Status: minimal provider-backed turn slice accepted on 2026-05-26. See `doc/director-agent-provider-phase4-plan.md`.
+Status: completed locally on 2026-05-26. See `doc/director-agent-provider-phase4-plan.md`.
 
 Goal: move the old Director `AgentEngine` from old Chat Agent shape into an AgentHost harness adapter.
 
-Remaining execution order:
+Completed subphases:
 
-1. Phase 4.1 Provider Streaming.
-2. Phase 4.2 Tool Calls.
-3. Phase 4.3 Plan Mode.
-4. Phase 4.4 AgentEngine Loop Parity.
+1. Phase 4.1 Provider Streaming for OpenAI-compatible Chat Completions and Anthropic Messages, with non-streaming fallback for Gemini and OpenAI Codex Responses-shape.
+2. Phase 4.2 AgentHost client-tool calls with provider-native tool schema/result conversion, per-turn tool snapshots, advertised-tool gating, rejected/failed/disconnected handling, and bounded tool loops.
+3. Phase 4.3 Plan Mode recognition through AgentHost session config, gated with a clear visible message until old `director_present_plan` has a matching AgentHost command/action contract.
+4. Phase 4.4 AgentEngine loop parity for multi-turn history normalization, in-memory long-context trimming, retry/error classification, and no retry after side-effecting tool execution.
 
 Scope:
 
@@ -389,10 +389,10 @@ Out of scope:
 
 Exit criteria:
 
-- A Director AgentHost session can run one real provider-backed turn. Done for the Phase 4 minimal slice.
+- A Director AgentHost session can run a real provider-backed turn.
 - A Director AgentHost session can stream provider-backed content and abort cleanly.
-- Tool calls surface through AgentHost permission/tool UI with provider-native schema conversion, bounded iteration, and clean rejected/failed paths.
-- Plan Mode can present a plan or is explicitly gated off with a clear TODO.
+- Tool calls surface through AgentHost permission/tool UI with provider-native schema conversion, bounded iteration, and clean rejected/failed/disconnected paths.
+- Plan Mode is explicitly gated off with a clear AgentHost-visible message.
 - Multi-turn history, in-memory long-context trimming, retry/error classification, side-effect-safe retry behavior, and provider response normalization have focused tests.
 
 ### Phase 5 - Provider-Backed Anthropic Endpoint Proxy

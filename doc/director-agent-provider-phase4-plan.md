@@ -2,6 +2,12 @@
 
 Updated: 2026-05-26
 
+## Status
+
+Completed locally on 2026-05-26.
+
+Phase 4 now covers the AgentHost-shaped runtime slice for the old Director `AgentEngine` semantics: provider-backed turns, provider streaming, AgentHost client-tool calls, explicit Plan Mode gating, bounded tool loops, side-effect-safe retry, and in-memory context trimming. The old Director reference tree remains reference-only; the current fork's AgentHost code is the source of truth.
+
 ## Goal
 
 Move the current Director AgentHost provider from deterministic echo to a minimal provider-backed Director AgentEngine turn, while preserving the Phase 3 registry/auth/snapshot boundary.
@@ -9,10 +15,14 @@ Move the current Director AgentHost provider from deterministic echo to a minima
 ## Implemented Slice
 
 - `DirectorAgentSession` resolves the selected AgentHost model through `DirectorProviderBackendHub`.
-- `DirectorAgentEngineAdapter` converts AgentHost turns and attachments into normalized Director messages, builds the provider-native request with Phase 3 request adapters, sends one non-streaming provider request, and maps the result back into AgentHost session actions.
+- `DirectorAgentEngineAdapter` converts AgentHost turns and attachments into normalized Director messages, builds provider-native requests with Phase 3 request adapters, and maps provider output back into AgentHost session actions.
 - Runtime credentials flow through the narrow `directorRuntimeCredentials` reverse IPC channel only when a turn needs them.
 - Workbench and Sessions renderers resolve API-key or fake OpenAI Codex OAuth credentials from Secret Storage; AgentHost node receives only the credential needed for the active request.
 - Registry JSON, provider snapshots, AgentHost model metadata, and AHP logs remain secret-free.
+- OpenAI-compatible Chat Completions and Anthropic Messages stream text/thinking deltas. Gemini and OpenAI Codex Responses-shape stay on the non-streaming fallback path.
+- Provider tool calls are normalized and routed through AgentHost client-tool permission/result plumbing. The adapter only executes tool names that were advertised for the current turn, freezes the per-turn tool snapshot, handles denied/failed/disconnected client tools, and stops recursive tool loops with `maxToolIterations`.
+- Plan Mode is read from AgentHost session config and gated with a visible message. Old `director_present_plan` semantics remain deferred until there is a matching AgentHost command/action contract.
+- Multi-turn history is normalized into provider messages with an in-memory character trim guard. Provider retry is limited to pre-tool-side-effect requests.
 
 ## Reference Materialization
 
@@ -38,11 +48,13 @@ Guidelines:
 - If the materialized reference needs dependencies or build output, keep that setup inside the reference workspace. Do not let old generated-tree outputs or `node_modules` leak into this fork.
 - Re-materialize from the patch layer when evidence conflicts with the current checkout, because generated-tree experiments can drift.
 
-## Remaining Execution Order
+## Completed Subphases
 
 ### Phase 4.1 - Provider Streaming
 
 Goal: replace the current non-streaming provider request with provider delta streaming while keeping the same credential and snapshot boundaries.
+
+Status: completed for OpenAI-compatible Chat Completions and Anthropic Messages, with non-streaming fallback for Gemini and OpenAI Codex Responses-shape.
 
 Scope:
 
@@ -67,6 +79,8 @@ Acceptance:
 ### Phase 4.2 - Tool Calls
 
 Goal: reintroduce old Director tool-call semantics through AgentHost permission/tool UI rather than restoring the old Chat Agent tool UI.
+
+Status: completed for AgentHost client tools with OpenAI and Anthropic provider-native schema/result conversion, per-turn tool snapshots, advertised-tool gating, denied/failed/disconnected handling, and bounded iteration.
 
 Scope:
 
@@ -93,6 +107,8 @@ Acceptance:
 
 Goal: make old Director Plan Mode behavior explicit in AgentHost, either as a minimal supported mode or as a deliberate gate.
 
+Status: completed as an explicit AgentHost session-config gate. Real old Director plan presentation remains deferred.
+
 Recommended first slice:
 
 - Define the trigger surface before implementation. Preferred initial trigger is the existing AgentHost mode/session config path if it exposes a Plan mode; old `director_present_plan` should remain unmapped until there is an AgentHost-shaped command/action contract.
@@ -110,6 +126,8 @@ Acceptance:
 ### Phase 4.4 - AgentEngine Loop Parity
 
 Goal: bring back the most useful old `AgentEngine` loop semantics without breaking the AgentHost-shaped architecture.
+
+Status: completed for multi-turn history normalization, in-memory trimming, malformed/empty response errors, retry/error classification, and side-effect-safe retry behavior. Durable compaction and restart restore remain Phase 9.
 
 Scope:
 
@@ -161,10 +179,10 @@ Acceptance checks:
 
 Subphase-specific manual checks:
 
-- Phase 4.1: use a deterministic local streaming fixture long enough to observe incremental output, then cancel mid-turn and confirm the provider request aborts cleanly. Real-provider streaming smoke is optional.
-- Phase 4.2: use deterministic local tool-call fixtures that request one allowed tool, one rejected tool, one unsupported tool, and one repeated/recursive tool sequence that hits `maxToolIterations`.
-- Phase 4.3: trigger the documented Plan Mode entry path and confirm the unsupported-mode message appears without affecting normal Agent mode.
-- Phase 4.4: send a multi-turn prompt that depends on previous context, then a long-context prompt that exercises trimming and returns a controlled response/error.
+- Streaming: use a deterministic local streaming fixture long enough to observe incremental output, then cancel mid-turn and confirm the provider request aborts cleanly. Real-provider streaming smoke is optional.
+- Tool calls: use deterministic local tool-call fixtures that request one allowed tool, one rejected tool, one unsupported tool, and one repeated/recursive tool sequence that hits `maxToolIterations`.
+- Plan Mode: trigger the documented Plan Mode entry path and confirm the unsupported-mode message appears without affecting normal Agent mode.
+- Loop parity: send a multi-turn prompt that depends on previous context, then a long-context prompt that exercises trimming and returns a controlled response/error.
 
 ## Validation
 
@@ -180,21 +198,17 @@ npm run test-node -- --run src/vs/workbench/contrib/directorCode/test/common/pro
 git diff --check
 ```
 
-Each Phase 4 subphase must add or identify its own targeted test command before commit. Expected future targets include:
+Additional focused coverage for Phase 4 lives in:
 
 ```powershell
-npm run test-node -- --run src/vs/platform/agentHost/test/node/directorAgentStreaming.test.ts
-npm run test-node -- --run src/vs/platform/agentHost/test/node/directorAgentToolCalls.test.ts
-npm run test-node -- --run src/vs/platform/agentHost/test/node/directorAgentPlanMode.test.ts
-npm run test-node -- --run src/vs/platform/agentHost/test/node/directorAgentLoopParity.test.ts
+npm run test-node -- --run src/vs/platform/agentHost/test/node/agentSideEffects.test.ts --grep "client tool sequence flows"
 ```
 
 ## Deferred Follow-Ups
 
-- Phase 4.1: stream provider deltas instead of only non-streaming text responses.
-- Phase 4.2: reintroduce old Director tool call semantics through AgentHost permission/tool UI.
-- Phase 4.3: reintroduce or explicitly gate old Director Plan Mode as AgentHost session state.
-- Phase 4.4: improve old AgentEngine loop parity for history, in-memory context trimming, retry, and provider error classification.
+- Implement real old Director Plan Mode presentation once `director_present_plan` has an AgentHost-shaped command/action contract.
+- Add richer old Director tool catalog semantics when the current AgentHost client-tool surface can represent them cleanly.
+- Add local/custom provider runtime adapters when there is a concrete no-network/local execution contract.
 - Keep real provider-backed model discovery and network validation in Phase 7/provider hardening unless explicitly pulled forward.
 - Keep real OpenAI Codex OAuth browser/device flow and additional OAuth providers in Phase 8.
 - Keep Claude SDK de-CAPI migration, durable session restore, and public OpenAI Responses support in their later roadmap phases.

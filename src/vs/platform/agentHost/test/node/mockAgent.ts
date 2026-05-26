@@ -53,6 +53,7 @@ export class MockAgent implements IAgent {
 	readonly disposeSessionCalls: URI[] = [];
 	readonly abortSessionCalls: URI[] = [];
 	readonly respondToPermissionCalls: { requestId: string; approved: boolean }[] = [];
+	readonly clientToolCompletions: { session: URI; toolCallId: string; result: ToolCallResult }[] = [];
 	readonly changeModelCalls: { session: URI; model: ModelSelection }[] = [];
 	readonly authenticateCalls: { resource: string; token: string }[] = [];
 	readonly setClientCustomizationsCalls: { clientId: string; customizations: CustomizationRef[] }[] = [];
@@ -195,7 +196,9 @@ export class MockAgent implements IAgent {
 
 	setClientTools(): void { }
 
-	onClientToolCallComplete(): void { }
+	onClientToolCallComplete(session: URI, toolCallId: string, result: ToolCallResult): void {
+		this.clientToolCompletions.push({ session, toolCallId, result });
+	}
 
 	async shutdown(): Promise<void> { }
 

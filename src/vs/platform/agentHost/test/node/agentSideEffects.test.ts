@@ -1338,6 +1338,78 @@ suite('AgentSideEffects', () => {
 				'tool call should advance to PendingConfirmation for permission-gated tool_ready');
 		});
 
+		test('client tool sequence flows through ready, confirmation, and completion side effects', () => {
+			setupSession();
+			startTurn('turn-1');
+			disposables.add(sideEffects.registerProgressListener(agent));
+
+			agent.fireProgress({
+				kind: 'action', session: sessionUri,
+				action: {
+					type: ActionType.SessionToolCallStart, turnId: 'turn-1',
+					toolCallId: 'tc-director-1', toolName: 'director_test_tool', displayName: 'Director Test Tool', toolClientId: 'test-client',
+					_meta: { toolKind: undefined, language: undefined },
+				},
+			});
+			agent.fireProgress({
+				kind: 'action', session: sessionUri,
+				action: {
+					type: ActionType.SessionToolCallDelta, turnId: 'turn-1',
+					toolCallId: 'tc-director-1', content: '{"query":"abc"}',
+				},
+			});
+			agent.fireProgress({
+				kind: 'pending_confirmation', session: sessionUri,
+				state: {
+					status: ToolCallStatus.PendingConfirmation,
+					toolCallId: 'tc-director-1', toolName: 'director_test_tool', displayName: 'Director Test Tool',
+					invocationMessage: 'Run Director Test Tool', toolInput: '{"query":"abc"}',
+					confirmationTitle: 'Run Tool', edits: undefined,
+				},
+				permissionKind: 'custom-tool', permissionPath: 'director_test_tool',
+			});
+
+			const stateAfterReady = stateManager.getSessionState(sessionUri.toString());
+			const toolPart = stateAfterReady?.activeTurn?.responseParts.find(part => part.kind === ResponsePartKind.ToolCall);
+			assert.strictEqual(toolPart?.kind, ResponsePartKind.ToolCall);
+			assert.strictEqual(toolPart?.kind === ResponsePartKind.ToolCall ? toolPart.toolCall.status : undefined, ToolCallStatus.PendingConfirmation);
+			assert.strictEqual(toolPart?.kind === ResponsePartKind.ToolCall && toolPart.toolCall.status === ToolCallStatus.PendingConfirmation ? toolPart.toolCall.toolInput : undefined, '{"query":"abc"}');
+
+			sideEffects.handleAction(sessionUri.toString(), {
+				type: ActionType.SessionToolCallConfirmed,
+				turnId: 'turn-1',
+				toolCallId: 'tc-director-1',
+				approved: true,
+				confirmed: 'user-action' as const,
+			} as SessionAction);
+			sideEffects.handleAction(sessionUri.toString(), {
+				type: ActionType.SessionToolCallComplete,
+				turnId: 'turn-1',
+				toolCallId: 'tc-director-1',
+				result: {
+					success: true,
+					pastTenseMessage: 'Ran Director Test Tool',
+					content: [{ type: ToolResultContentType.Text, text: 'tool says abc' }],
+				},
+			} as SessionAction);
+
+			assert.deepStrictEqual({
+				respondToPermissionCalls: agent.respondToPermissionCalls,
+				clientToolCompletions: agent.clientToolCompletions.map(entry => ({
+					session: entry.session.toString(),
+					toolCallId: entry.toolCallId,
+					success: entry.result.success,
+				})),
+			}, {
+				respondToPermissionCalls: [{ requestId: 'tc-director-1', approved: true }],
+				clientToolCompletions: [{
+					session: sessionUri.toString(),
+					toolCallId: 'tc-director-1',
+					success: true,
+				}],
+			});
+		});
+
 		test('pending_confirmation for a tool inside a subagent routes to the subagent session', () => {
 			// Regression: a `pending_confirmation` signal for a client tool
 			// inside a subagent must dispatch SessionToolCallReady against
