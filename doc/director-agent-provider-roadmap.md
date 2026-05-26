@@ -349,13 +349,27 @@ Status: minimal provider-backed turn slice accepted on 2026-05-26. See `doc/dire
 
 Goal: move the old Director `AgentEngine` from old Chat Agent shape into an AgentHost harness adapter.
 
+Remaining execution order:
+
+1. Phase 4.1 Provider Streaming.
+2. Phase 4.2 Tool Calls.
+3. Phase 4.3 Plan Mode.
+4. Phase 4.4 AgentEngine Loop Parity.
+
 Scope:
 
 - Wrap old `AgentEngine` semantics as an AgentHost-owned harness adapter.
 - Feed it `ResolvedProviderBackend` instead of letting it read settings/API keys directly.
 - Map Director stream events to AgentHost `AgentSignal` / session protocol state.
+- Preserve AgentHost reducer invariants: `SessionResponsePart` must precede `SessionDelta` / `SessionReasoning` for the same part id, and final transcripts must not double-emit streamed content.
+- Keep non-streaming fallbacks for provider protocols whose streaming parser is not implemented in the current subphase.
 - Reuse AgentHost tool approval and client tool surfaces where possible.
+- Normalize tool definitions/results before converting to provider-native schemas, and gate unsupported provider/model tool combinations.
+- Bound tool-call loops with a small iteration guard and exactly one terminal action per turn.
+- Do not retry provider calls across side-effecting tool execution unless explicit idempotency/turn-step tracking exists.
 - Preserve Plan Mode semantics as Director session state.
+- Define the AgentHost Plan Mode trigger surface before wiring old `director_present_plan` semantics.
+- Materialize the old Director AgentEngine patch layer into a reference-only tree before deeper tool/Plan Mode/loop-parity work, but keep the current fork's AgentHost-shaped code as the source of truth.
 - Add a narrow runtime credential bridge that resolves Secret Storage credentials only for the active provider-backed turn and does not write secrets into snapshots or logs.
 
 Source concepts to reuse:
@@ -376,8 +390,10 @@ Out of scope:
 Exit criteria:
 
 - A Director AgentHost session can run one real provider-backed turn. Done for the Phase 4 minimal slice.
-- Tool calls surface through AgentHost permission/tool UI. Deferred follow-up.
-- Plan Mode can present a plan or is explicitly gated off with a clear TODO. Deferred follow-up.
+- A Director AgentHost session can stream provider-backed content and abort cleanly.
+- Tool calls surface through AgentHost permission/tool UI with provider-native schema conversion, bounded iteration, and clean rejected/failed paths.
+- Plan Mode can present a plan or is explicitly gated off with a clear TODO.
+- Multi-turn history, in-memory long-context trimming, retry/error classification, side-effect-safe retry behavior, and provider response normalization have focused tests.
 
 ### Phase 5 - Provider-Backed Anthropic Endpoint Proxy
 
