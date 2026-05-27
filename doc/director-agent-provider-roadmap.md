@@ -441,6 +441,7 @@ Scope:
   - provider capabilities.
 - Decide whether this is a new provider id, such as `director-claude`, or a backend mode of `DirectorAgent`.
 - Ensure a Director-backed Claude-like provider is not hidden merely because the user is logged out of GitHub Copilot.
+- Route subagent-capable tools (`runSubagent`, `execution_subagent`, and old Director subagent equivalents) to a Director-owned or Director-backed harness when invoked from a Director session. They must not silently fall back to the upstream Copilot/default Chat Agent path and must not prompt for Copilot login unless the user explicitly selected a Copilot-owned agent.
 
 Out of scope:
 
@@ -452,6 +453,7 @@ Exit criteria:
 - Claude-like SDK can create a session and send messages using a Director provider backend.
 - Existing Copilot-backed Claude path remains available or explicitly gated as legacy/experimental.
 - Copilot logout does not suppress the Director-backed Claude-like provider when a Director backend is configured.
+- Invoking a Director-owned subagent from a Director session does not require GitHub Copilot auth and produces a clear recoverable error when no Director-backed subagent runtime is configured.
 
 ### Phase 7 - Provider Settings Polish and Model Picker
 
@@ -461,6 +463,8 @@ Scope:
 
 - Polish the Provider Manager UI restored in Phase 3.
 - Project provider models into AgentHost model picker.
+- Evaluate and, if practical, expose Director Provider Backend models through VS Code's `LanguageModelChatProvider` surface so the broader VS Code model picker can see Director-managed providers without using Copilot CAPI. The provider projection should use Director Settings as its management command, return cached secret-free model metadata in silent discovery, and resolve credentials only when handling a real request.
+- Map Director model capabilities into VS Code language model metadata, including model name/family/version where available, token limits, image input, and tool-calling support.
 - Add session config schema for provider/model/harness selection if needed.
 - Preserve secret isolation: UI writes secrets to Secret Storage, registry stores references and metadata only.
 
@@ -479,6 +483,7 @@ Out of scope:
 Exit criteria:
 
 - User can configure an API-key provider and select its model for a Director/Claude-like agent session.
+- Director-managed provider models can participate in AgentHost/model-picker flows without implying Copilot login or Copilot entitlement.
 - Restart preserves provider registry and model visibility.
 
 ### Phase 8 - OAuth Hardening and Additional Provider Support
@@ -494,6 +499,7 @@ Scope:
 - Add login/logout/refresh state.
 - Resolve OAuth tokens into `ProviderAuth`.
 - Support token expiry and re-auth flows.
+- Ensure any Director `LanguageModelChatProvider` projection and Director-owned subagent harness use provider-specific OAuth identities and Secret Storage state, never GitHub Copilot protected resources or GitHub Copilot bearer tokens.
 
 Out of scope:
 
@@ -504,6 +510,7 @@ Exit criteria:
 
 - Additional OAuth providers can authenticate and produce a resolved backend.
 - Token refresh does not leak into agent harness code.
+- OAuth-backed Director models remain visible/configurable according to their own provider auth state, and Copilot logout does not force Director model or subagent login prompts.
 
 ### Phase 9 - Session Restore, Migration, and Compatibility
 

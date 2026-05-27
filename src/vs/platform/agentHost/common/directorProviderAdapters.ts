@@ -16,10 +16,16 @@ export interface DirectorNormalizedToolCall {
 export interface DirectorNormalizedMessage {
 	readonly role: DirectorNormalizedMessageRole;
 	readonly content: string;
+	readonly thinking?: string;
 	readonly toolCalls?: readonly DirectorNormalizedToolCall[];
 	readonly toolCallId?: string;
 	readonly toolName?: string;
 	readonly isError?: boolean;
+}
+
+export interface DirectorOpenAIReasoningEcho {
+	readonly field: 'reasoning_content';
+	readonly includeEmpty?: boolean;
 }
 
 export interface DirectorNormalizedToolDefinition {
@@ -50,6 +56,7 @@ export interface DirectorNativeMessageRequestOptions {
 	readonly tools?: readonly DirectorNormalizedToolDefinition[];
 	readonly maxTokens?: number;
 	readonly stream?: boolean;
+	readonly reasoningEcho?: DirectorOpenAIReasoningEcho;
 }
 
 export function buildDirectorNativeMessageRequest(options: DirectorNativeMessageRequestOptions): DirectorNativeMessageRequest {
@@ -88,7 +95,7 @@ export function buildDirectorNativeMessageRequest(options: DirectorNativeMessage
 				body: JSON.stringify({
 					model: options.modelId,
 					max_tokens: maxTokens,
-					messages: buildOpenAIChatMessages(options.messages),
+					messages: buildOpenAIChatMessages(options.messages, options.reasoningEcho),
 					...(options.tools?.length ? { tools: buildOpenAITools(options.tools), tool_choice: 'auto' } : {}),
 					stream: options.stream === true,
 				}),
@@ -148,7 +155,7 @@ function systemPrompt(messages: readonly DirectorNormalizedMessage[]): string | 
 	return content || undefined;
 }
 
-function buildOpenAIChatMessages(messages: readonly DirectorNormalizedMessage[]): readonly Record<string, unknown>[] {
+function buildOpenAIChatMessages(messages: readonly DirectorNormalizedMessage[], reasoningEcho?: DirectorOpenAIReasoningEcho): readonly Record<string, unknown>[] {
 	return messages.map(message => {
 		if (message.role === 'tool') {
 			return {
@@ -161,6 +168,7 @@ function buildOpenAIChatMessages(messages: readonly DirectorNormalizedMessage[])
 			return {
 				role: 'assistant',
 				content: message.content || null,
+				...openAIReasoningEchoField(message, reasoningEcho),
 				tool_calls: message.toolCalls.map(toolCall => ({
 					id: toolCall.id,
 					type: 'function',
@@ -174,8 +182,22 @@ function buildOpenAIChatMessages(messages: readonly DirectorNormalizedMessage[])
 		return {
 			role: message.role,
 			content: message.content,
+			...(message.role === 'assistant' ? openAIReasoningEchoField(message, reasoningEcho) : {}),
 		};
 	});
+}
+
+function openAIReasoningEchoField(message: DirectorNormalizedMessage, reasoningEcho: DirectorOpenAIReasoningEcho | undefined): Record<string, unknown> {
+	if (!reasoningEcho) {
+		return {};
+	}
+	if (message.thinking !== undefined) {
+		return { [reasoningEcho.field]: message.thinking };
+	}
+	if (reasoningEcho.includeEmpty === true) {
+		return { [reasoningEcho.field]: '' };
+	}
+	return {};
 }
 
 function buildOpenAITools(tools: readonly DirectorNormalizedToolDefinition[]): readonly Record<string, unknown>[] {

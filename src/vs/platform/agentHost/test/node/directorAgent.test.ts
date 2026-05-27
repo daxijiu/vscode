@@ -167,6 +167,22 @@ suite('DirectorAgent', () => {
 		});
 	});
 
+	test('acknowledges steering messages so unsupported injections do not stay pending', async () => {
+		const agent = createAgent();
+		const created = await agent.createSession();
+		const signals: AgentSignal[] = [];
+		disposables.add(agent.onDidSessionProgress(signal => signals.push(signal)));
+
+		agent.setPendingMessages(created.session, { id: 'steer-1', userMessage: { text: 'terminal completed' } }, []);
+		agent.setPendingMessages(created.session, { id: 'steer-1', userMessage: { text: 'terminal completed' } }, []);
+
+		assert.deepStrictEqual(signals, [{
+			kind: 'steering_consumed',
+			session: created.session,
+			id: 'steer-1',
+		}]);
+	});
+
 	test('runs a provider-backed Director AgentEngine turn and records in-memory turns', async () => {
 		const server = disposables.add(await createJsonServer({
 			status: 200,
@@ -336,14 +352,14 @@ suite('DirectorAgent', () => {
 	test('feeds approved client tool results back into the provider loop', async () => {
 		const requests: unknown[] = [];
 		const server = disposables.add(await createSequenceJsonServer([
-			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'director_test_tool', arguments: '{"query":"abc"}' } }] } }] },
+			{ choices: [{ message: { content: '', reasoning_content: 'need tool context', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'runTests', arguments: '{"query":"abc"}' } }] } }] },
 			{ choices: [{ message: { content: 'tool result observed' } }] },
 		], requests));
 		const agent = createAgent(createOpenAIFixtures(server.url, { toolCalling: true }), { kind: 'api-key', value: 'sk-test' });
 		const created = await agent.createSession();
 		agent.setClientTools(created.session, 'client-1', [{
-			name: 'director_test_tool',
-			title: 'Director Test Tool',
+			name: 'runTests',
+			title: 'Run Tests',
 			description: 'Returns a deterministic result',
 			inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
 		}]);
@@ -354,7 +370,7 @@ suite('DirectorAgent', () => {
 				agent.respondToPermissionRequest(signal.state.toolCallId, true);
 				agent.onClientToolCallComplete(created.session, signal.state.toolCallId, {
 					success: true,
-					pastTenseMessage: 'Ran Director Test Tool',
+					pastTenseMessage: 'Ran Run Tests',
 					content: [{ type: ToolResultContentType.Text, text: 'tool says abc' }],
 				});
 			}
@@ -362,11 +378,12 @@ suite('DirectorAgent', () => {
 
 		await agent.sendMessage(created.session, 'use a tool', undefined, 'turn-tool');
 		const turns = await agent.getSessionMessages(created.session);
-		const secondBody = requests[1] as { messages: Array<{ role: string; content?: string | null }> };
+		const secondBody = requests[1] as { messages: Array<{ role: string; content?: string | null; reasoning_content?: string }> };
 
 		assert.deepStrictEqual({
 			requestCount: requests.length,
-			secondRequestMessages: secondBody.messages.map(message => ({ role: message.role, content: message.content })),
+			secondRequestMessages: secondBody.messages.map(message => ({ role: message.role, content: message.content, reasoningContent: message.reasoning_content })),
+			systemPromptHasToolList: secondBody.messages[0]?.role === 'system' && secondBody.messages[0]?.content?.includes('## Available Tools') && secondBody.messages[0]?.content?.includes('**runTests**'),
 			signals: summarizeSignals(signals),
 			turns: turns.map(turn => ({
 				id: turn.id,
@@ -380,16 +397,18 @@ suite('DirectorAgent', () => {
 		}, {
 			requestCount: 2,
 			secondRequestMessages: [
-				{ role: 'system', content: 'You are Director, an AI coding assistant running inside VS Code AgentHost.\nUse the selected Director provider backend for this turn.' },
-				{ role: 'user', content: 'use a tool' },
-				{ role: 'assistant', content: null },
-				{ role: 'tool', content: 'tool says abc' },
+				{ role: 'system', content: secondBody.messages[0]?.content, reasoningContent: undefined },
+				{ role: 'user', content: 'use a tool', reasoningContent: undefined },
+				{ role: 'assistant', content: null, reasoningContent: undefined },
+				{ role: 'tool', content: 'tool says abc', reasoningContent: undefined },
 			],
+			systemPromptHasToolList: true,
 			signals: [
 				{ type: ActionType.SessionResponsePart, turnId: 'turn-tool', kind: ResponsePartKind.SystemNotification, content: 'Director AgentEngine using provider \'test-provider\' with model \'gpt-test\'.' },
-				{ type: ActionType.SessionToolCallStart, turnId: 'turn-tool', toolCallId: 'call-1', toolName: 'director_test_tool' },
+				{ type: ActionType.SessionResponsePart, turnId: 'turn-tool', kind: ResponsePartKind.Reasoning, content: undefined },
+				{ type: ActionType.SessionToolCallStart, turnId: 'turn-tool', toolCallId: 'call-1', toolName: 'runTests' },
 				{ type: ActionType.SessionToolCallDelta, turnId: 'turn-tool', toolCallId: 'call-1', content: '{"query":"abc"}' },
-				{ kind: 'pending_confirmation', toolCallId: 'call-1', toolName: 'director_test_tool' },
+				{ kind: 'pending_confirmation', toolCallId: 'call-1', toolName: 'runTests' },
 				{ type: ActionType.SessionResponsePart, turnId: 'turn-tool', kind: ResponsePartKind.Markdown, content: 'tool result observed' },
 				{ type: ActionType.SessionTurnComplete, turnId: 'turn-tool' },
 			],
@@ -402,17 +421,98 @@ suite('DirectorAgent', () => {
 		});
 	});
 
+	test('echoes empty reasoning_content for DeepSeek V4 tool-call follow-up requests', async () => {
+		const requests: unknown[] = [];
+		const server = disposables.add(await createSequenceJsonServer([
+			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-deepseek-v4', type: 'function', function: { name: 'runTests', arguments: '{"query":"v4"}' } }] } }] },
+			{ choices: [{ message: { content: 'deepseek v4 observed tool result' } }] },
+		], requests));
+		const agent = createAgent(createOpenAIFixtures(server.url, { toolCalling: true }, 'deepseek-v4-flash'), { kind: 'api-key', value: 'sk-test' });
+		const created = await agent.createSession();
+		agent.setClientTools(created.session, 'client-1', [{
+			name: 'runTests',
+			title: 'Run Tests',
+			description: 'Returns a deterministic result',
+			inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+		}]);
+		disposables.add(agent.onDidSessionProgress(signal => {
+			if (signal.kind === 'pending_confirmation') {
+				agent.respondToPermissionRequest(signal.state.toolCallId, true);
+				agent.onClientToolCallComplete(created.session, signal.state.toolCallId, {
+					success: true,
+					pastTenseMessage: 'Ran Run Tests',
+					content: [{ type: ToolResultContentType.Text, text: 'tool says v4' }],
+				});
+			}
+		}));
+
+		await agent.sendMessage(created.session, 'use a deepseek v4 tool', undefined, 'turn-deepseek-v4');
+		const secondBody = requests[1] as { messages: Array<{ role: string; reasoning_content?: string }> };
+		const assistantMessage = secondBody.messages.find(message => message.role === 'assistant');
+
+		assert.deepStrictEqual({
+			requestCount: requests.length,
+			reasoningContent: assistantMessage?.reasoning_content,
+		}, {
+			requestCount: 2,
+			reasoningContent: '',
+		});
+	});
+
+	test('retries once with reasoning_content when OpenAI-compatible provider requires it', async () => {
+		const requests: unknown[] = [];
+		const server = disposables.add(await createSequenceJsonServer([
+			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-reasoning-fallback', type: 'function', function: { name: 'runTests', arguments: '{"query":"fallback"}' } }] } }] },
+			{ status: 400, body: { error: { message: 'The reasoning_content in the thinking mode must be passed back to the API.' } } },
+			{ choices: [{ message: { content: 'fallback observed tool result' } }] },
+		], requests));
+		const agent = createAgent(createOpenAIFixtures(server.url, { toolCalling: true }, 'custom-deepseek-v4'), { kind: 'api-key', value: 'sk-test' });
+		const created = await agent.createSession();
+		agent.setClientTools(created.session, 'client-1', [{
+			name: 'runTests',
+			title: 'Run Tests',
+			description: 'Returns a deterministic result',
+			inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+		}]);
+		disposables.add(agent.onDidSessionProgress(signal => {
+			if (signal.kind === 'pending_confirmation') {
+				agent.respondToPermissionRequest(signal.state.toolCallId, true);
+				agent.onClientToolCallComplete(created.session, signal.state.toolCallId, {
+					success: true,
+					pastTenseMessage: 'Ran Run Tests',
+					content: [{ type: ToolResultContentType.Text, text: 'tool says fallback' }],
+				});
+			}
+		}));
+
+		await agent.sendMessage(created.session, 'use fallback tool', undefined, 'turn-reasoning-fallback');
+		const secondBody = requests[1] as { messages: Array<{ role: string; reasoning_content?: string }> };
+		const thirdBody = requests[2] as { messages: Array<{ role: string; reasoning_content?: string }> };
+		const secondAssistant = secondBody.messages.find(message => message.role === 'assistant');
+		const thirdAssistant = thirdBody.messages.find(message => message.role === 'assistant');
+
+		assert.deepStrictEqual({
+			requestCount: requests.length,
+			beforeFallback: secondAssistant?.reasoning_content,
+			afterFallback: thirdAssistant?.reasoning_content,
+		}, {
+			requestCount: 3,
+			beforeFallback: undefined,
+			afterFallback: '',
+		});
+	});
+
 	test('feeds denied client tool calls back as model-visible tool errors', async () => {
 		const requests: unknown[] = [];
 		const server = disposables.add(await createSequenceJsonServer([
-			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-denied', type: 'function', function: { name: 'director_test_tool', arguments: '{"query":"deny"}' } }] } }] },
+			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-denied', type: 'function', function: { name: 'runTests', arguments: '{"query":"deny"}' } }] } }] },
 			{ choices: [{ message: { content: 'denial observed' } }] },
 		], requests));
 		const agent = createAgent(createOpenAIFixtures(server.url, { toolCalling: true }), { kind: 'api-key', value: 'sk-test' });
 		const created = await agent.createSession();
 		agent.setClientTools(created.session, 'client-1', [{
-			name: 'director_test_tool',
-			title: 'Director Test Tool',
+			name: 'runTests',
+			title: 'Run Tests',
 			description: 'Returns a deterministic result',
 			inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
 		}]);
@@ -447,7 +547,7 @@ suite('DirectorAgent', () => {
 			toolMessage: {
 				role: 'tool',
 				tool_call_id: 'call-denied',
-				content: 'Director tool \'director_test_tool\' was denied by the user.\nDirector tool \'director_test_tool\' was denied by the user.',
+				content: 'Director tool \'runTests\' was denied by the user.\nDirector tool \'runTests\' was denied by the user.',
 			},
 			pendingConfirmations: 1,
 			turns: [{
@@ -459,16 +559,163 @@ suite('DirectorAgent', () => {
 		});
 	});
 
+	test('filters client tools through the Director tool policy before advertising them', async () => {
+		const requests: unknown[] = [];
+		const server = disposables.add(await createSequenceJsonServer([
+			{ choices: [{ message: { content: 'tool policy observed' } }] },
+		], requests));
+		const agent = createAgent(createOpenAIFixtures(server.url, { toolCalling: true }), { kind: 'api-key', value: 'sk-test' });
+		const created = await agent.createSession();
+		agent.setClientTools(created.session, 'client-1', [{
+			name: 'unreviewed_tool',
+			title: 'Unreviewed Tool',
+			description: 'Should not be visible to Director',
+			inputSchema: { type: 'object', properties: {} },
+		}, {
+			name: 'openBrowserPage',
+			title: 'Open Browser Page',
+			description: 'Open a new browser page in the integrated browser at the given URL.',
+			inputSchema: { type: 'object', properties: { url: { type: 'string' } } },
+		}, {
+			name: 'runTests',
+			title: 'Run Tests',
+			description: 'Run tests',
+			inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
+		}]);
+
+		await agent.sendMessage(created.session, 'list tools', undefined, 'turn-tool-policy');
+		const body = requests[0] as { tools: Array<{ function: { name: string; description: string; parameters: { properties?: Record<string, { description?: string }> } } }> };
+
+		assert.deepStrictEqual({
+			toolNames: body.tools.map(tool => tool.function.name),
+			openBrowserGuidance: body.tools.find(tool => tool.function.name === 'openBrowserPage')?.function.description.includes('never pass the workspace folder'),
+			openBrowserUrlGuidance: body.tools.find(tool => tool.function.name === 'openBrowserPage')?.function.parameters.properties?.url?.description?.includes('Do not pass VS Code workspace folders'),
+		}, {
+			toolNames: ['openBrowserPage', 'runTests'],
+			openBrowserGuidance: true,
+			openBrowserUrlGuidance: true,
+		});
+	});
+
+	test('rejects raw local paths before running openBrowserPage client tools', async () => {
+		const requests: unknown[] = [];
+		const localPath = 'E:\\Projects\\Director-Code-batch\\vscode';
+		const server = disposables.add(await createSequenceJsonServer([
+			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-open-browser', type: 'function', function: { name: 'openBrowserPage', arguments: JSON.stringify({ url: localPath }) } }] } }] },
+			{ choices: [{ message: { content: 'Please provide a webpage URL.' } }] },
+		], requests));
+		const agent = createAgent(createOpenAIFixtures(server.url, { toolCalling: true }), { kind: 'api-key', value: 'sk-test' });
+		const created = await agent.createSession();
+		agent.setClientTools(created.session, 'client-1', [{
+			name: 'openBrowserPage',
+			title: 'Open Browser Page',
+			description: 'Open a new browser page in the integrated browser at the given URL.',
+			inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+		}]);
+		const signals: AgentSignal[] = [];
+		disposables.add(agent.onDidSessionProgress(signal => {
+			signals.push(signal);
+			if (signal.kind === 'pending_confirmation') {
+				agent.respondToPermissionRequest(signal.state.toolCallId, false);
+			}
+		}));
+
+		await agent.sendMessage(created.session, 'open the docs webpage', undefined, 'turn-open-browser');
+		const turns = await agent.getSessionMessages(created.session);
+		const secondBody = requests[1] as { messages: Array<{ role: string; content?: string }> };
+		const toolMessage = secondBody.messages.find(message => message.role === 'tool');
+
+		assert.deepStrictEqual({
+			requestCount: requests.length,
+			pendingConfirmations: signals.filter(signal => signal.kind === 'pending_confirmation').length,
+			toolMessageIncludesValidationError: toolMessage?.content?.includes('Do not pass a raw local filesystem path or workspace directory'),
+			turns: turns.map(turn => ({
+				id: turn.id,
+				state: turn.state,
+				toolStatus: turn.responseParts.find(part => part.kind === ResponsePartKind.ToolCall)?.toolCall.status,
+				responseText: turn.responseParts
+					.filter(part => part.kind === ResponsePartKind.Markdown)
+					.map(part => part.content)
+					.join(''),
+			})),
+		}, {
+			requestCount: 2,
+			pendingConfirmations: 0,
+			toolMessageIncludesValidationError: true,
+			turns: [{
+				id: 'turn-open-browser',
+				state: TurnState.Complete,
+				toolStatus: ToolCallStatus.Completed,
+				responseText: 'Please provide a webpage URL.',
+			}],
+		});
+	});
+
+	test('rejects file URIs before running openBrowserPage client tools', async () => {
+		const requests: unknown[] = [];
+		const fileUri = URI.file('E:/Projects/Director-Code-batch/vscode/README.md').toString();
+		const server = disposables.add(await createSequenceJsonServer([
+			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-open-file-uri', type: 'function', function: { name: 'openBrowserPage', arguments: JSON.stringify({ url: fileUri }) } }] } }] },
+			{ choices: [{ message: { content: 'I will use workspace file tools instead.' } }] },
+		], requests));
+		const agent = createAgent(createOpenAIFixtures(server.url, { toolCalling: true }), { kind: 'api-key', value: 'sk-test' });
+		const created = await agent.createSession();
+		agent.setClientTools(created.session, 'client-1', [{
+			name: 'openBrowserPage',
+			title: 'Open Browser Page',
+			description: 'Open a new browser page in the integrated browser at the given URL.',
+			inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+		}]);
+		const signals: AgentSignal[] = [];
+		disposables.add(agent.onDidSessionProgress(signal => {
+			signals.push(signal);
+			if (signal.kind === 'pending_confirmation') {
+				agent.respondToPermissionRequest(signal.state.toolCallId, false);
+			}
+		}));
+
+		await agent.sendMessage(created.session, 'open the local file', undefined, 'turn-open-file-uri');
+		const turns = await agent.getSessionMessages(created.session);
+		const secondBody = requests[1] as { messages: Array<{ role: string; content?: string }> };
+		const toolMessage = secondBody.messages.find(message => message.role === 'tool');
+
+		assert.deepStrictEqual({
+			requestCount: requests.length,
+			pendingConfirmations: signals.filter(signal => signal.kind === 'pending_confirmation').length,
+			toolMessageIncludesValidationError: toolMessage?.content?.includes('unsupported URL scheme \'file\''),
+			turns: turns.map(turn => ({
+				id: turn.id,
+				state: turn.state,
+				toolStatus: turn.responseParts.find(part => part.kind === ResponsePartKind.ToolCall)?.toolCall.status,
+				responseText: turn.responseParts
+					.filter(part => part.kind === ResponsePartKind.Markdown)
+					.map(part => part.content)
+					.join(''),
+			})),
+		}, {
+			requestCount: 2,
+			pendingConfirmations: 0,
+			toolMessageIncludesValidationError: true,
+			turns: [{
+				id: 'turn-open-file-uri',
+				state: TurnState.Complete,
+				toolStatus: ToolCallStatus.Completed,
+				responseText: 'I will use workspace file tools instead.',
+			}],
+		});
+	});
+
 	test('does not execute tool calls that were not advertised to the provider', async () => {
 		const requests: unknown[] = [];
 		const server = disposables.add(await createSequenceJsonServer([
-			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-unadvertised', type: 'function', function: { name: 'director_test_tool', arguments: '{"query":"oops"}' } }] } }] },
+			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-unadvertised', type: 'function', function: { name: 'runTests', arguments: '{"query":"oops"}' } }] } }] },
+			{ choices: [{ message: { content: 'I cannot run that tool here.' } }] },
 		], requests));
 		const agent = createAgent(createOpenAIFixtures(server.url, { toolCalling: false }), { kind: 'api-key', value: 'sk-test' });
 		const created = await agent.createSession();
 		agent.setClientTools(created.session, 'client-1', [{
-			name: 'director_test_tool',
-			title: 'Director Test Tool',
+			name: 'runTests',
+			title: 'Run Tests',
 			description: 'Returns a deterministic result',
 			inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
 		}]);
@@ -477,25 +724,30 @@ suite('DirectorAgent', () => {
 
 		await agent.sendMessage(created.session, 'unadvertised tool', undefined, 'turn-unadvertised-tool');
 		const turns = await agent.getSessionMessages(created.session);
+		const secondBody = requests[1] as { messages: Array<{ role: string; content?: string }> };
 
 		assert.deepStrictEqual({
 			requestCount: requests.length,
 			pendingConfirmations: signals.filter(signal => signal.kind === 'pending_confirmation').length,
 			errorSignals: signals.filter(signal => signal.kind === 'action' && signal.action.type === ActionType.SessionError)
 				.map(signal => signal.kind === 'action' && signal.action.type === ActionType.SessionError ? signal.action.error.message : undefined),
+			toolMessageIncludesError: secondBody.messages.some(message => message.role === 'tool' && message.content?.includes('Tool not found: runTests')),
 			turns: turns.map(turn => ({
 				id: turn.id,
 				state: turn.state,
 				toolParts: turn.responseParts.filter(part => part.kind === ResponsePartKind.ToolCall).length,
+				responseText: turn.responseParts.find(part => part.kind === ResponsePartKind.Markdown)?.content,
 			})),
 		}, {
-			requestCount: 1,
+			requestCount: 2,
 			pendingConfirmations: 0,
-			errorSignals: ['Director provider \'test-provider\' requested unsupported tool \'director_test_tool\'.'],
+			errorSignals: [],
+			toolMessageIncludesError: true,
 			turns: [{
 				id: 'turn-unadvertised-tool',
-				state: TurnState.Error,
+				state: TurnState.Complete,
 				toolParts: 0,
+				responseText: 'I cannot run that tool here.',
 			}],
 		});
 	});
@@ -503,14 +755,14 @@ suite('DirectorAgent', () => {
 	test('executes client tool calls against the per-turn tool snapshot', async () => {
 		const requests: unknown[] = [];
 		const server = disposables.add(await createSequenceJsonServer([
-			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-snapshot', type: 'function', function: { name: 'director_test_tool', arguments: '{"query":"snapshot"}' } }] } }] },
+			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-snapshot', type: 'function', function: { name: 'runTests', arguments: '{"query":"snapshot"}' } }] } }] },
 			{ choices: [{ message: { content: 'snapshot result observed' } }] },
 		], requests));
 		const agent = createAgent(createOpenAIFixtures(server.url, { toolCalling: true }), { kind: 'api-key', value: 'sk-test' });
 		const created = await agent.createSession();
 		agent.setClientTools(created.session, 'client-1', [{
-			name: 'director_test_tool',
-			title: 'Director Test Tool',
+			name: 'runTests',
+			title: 'Run Tests',
 			description: 'Returns a deterministic result',
 			inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
 		}]);
@@ -526,7 +778,7 @@ suite('DirectorAgent', () => {
 				agent.respondToPermissionRequest(signal.state.toolCallId, true);
 				agent.onClientToolCallComplete(created.session, signal.state.toolCallId, {
 					success: true,
-					pastTenseMessage: 'Ran Director Test Tool',
+					pastTenseMessage: 'Ran Run Tests',
 					content: [{ type: ToolResultContentType.Text, text: 'snapshot tool result' }],
 				});
 			}
@@ -562,14 +814,14 @@ suite('DirectorAgent', () => {
 	test('fails in-flight client tools when the owning client disconnects', async () => {
 		const requests: unknown[] = [];
 		const server = disposables.add(await createSequenceJsonServer([
-			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-disconnect', type: 'function', function: { name: 'director_test_tool', arguments: '{"query":"disconnect"}' } }] } }] },
+			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-disconnect', type: 'function', function: { name: 'runTests', arguments: '{"query":"disconnect"}' } }] } }] },
 			{ choices: [{ message: { content: 'disconnect observed' } }] },
 		], requests));
 		const agent = createAgent(createOpenAIFixtures(server.url, { toolCalling: true }), { kind: 'api-key', value: 'sk-test' });
 		const created = await agent.createSession();
 		agent.setClientTools(created.session, 'client-1', [{
-			name: 'director_test_tool',
-			title: 'Director Test Tool',
+			name: 'runTests',
+			title: 'Run Tests',
 			description: 'Returns a deterministic result',
 			inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
 		}]);
@@ -618,15 +870,15 @@ suite('DirectorAgent', () => {
 	test('does not retry provider requests after an AgentHost tool side effect', async () => {
 		const requests: unknown[] = [];
 		const server = disposables.add(await createSequenceJsonServer([
-			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-side-effect', type: 'function', function: { name: 'director_test_tool', arguments: '{"query":"side-effect"}' } }] } }] },
+			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-side-effect', type: 'function', function: { name: 'runTests', arguments: '{"query":"side-effect"}' } }] } }] },
 			{ status: 500, body: { error: 'transient failure with sk-test' } },
 			{ choices: [{ message: { content: 'must not be reached' } }] },
 		], requests));
 		const agent = createAgent(createOpenAIFixtures(server.url, { toolCalling: true }), { kind: 'api-key', value: 'sk-test' });
 		const created = await agent.createSession();
 		agent.setClientTools(created.session, 'client-1', [{
-			name: 'director_test_tool',
-			title: 'Director Test Tool',
+			name: 'runTests',
+			title: 'Run Tests',
 			description: 'Returns a deterministic result',
 			inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
 		}]);
@@ -637,7 +889,7 @@ suite('DirectorAgent', () => {
 				agent.respondToPermissionRequest(signal.state.toolCallId, true);
 				agent.onClientToolCallComplete(created.session, signal.state.toolCallId, {
 					success: true,
-					pastTenseMessage: 'Ran Director Test Tool',
+					pastTenseMessage: 'Ran Run Tests',
 					content: [{ type: ToolResultContentType.Text, text: 'tool side effect completed' }],
 				});
 			}
@@ -674,18 +926,19 @@ suite('DirectorAgent', () => {
 		});
 	});
 
-	test('stops recursive tool loops with a clear iteration guard', async () => {
+	test('allows more than four distinct tool iterations in a long tool task', async () => {
 		const requests: unknown[] = [];
 		const server = disposables.add(await createSequenceJsonServer([
-			...Array.from({ length: 6 }, (_, index) => ({
-				choices: [{ message: { content: '', tool_calls: [{ id: `call-loop-${index + 1}`, type: 'function', function: { name: 'director_test_tool', arguments: `{"query":"${index + 1}"}` } }] } }],
+			...Array.from({ length: 5 }, (_, index) => ({
+				choices: [{ message: { content: '', tool_calls: [{ id: `call-long-${index + 1}`, type: 'function', function: { name: 'runTests', arguments: `{"query":"${index + 1}"}` } }] } }],
 			})),
+			{ choices: [{ message: { content: 'long tool task complete' } }] },
 		], requests));
 		const agent = createAgent(createOpenAIFixtures(server.url, { toolCalling: true }), { kind: 'api-key', value: 'sk-test' });
 		const created = await agent.createSession();
 		agent.setClientTools(created.session, 'client-1', [{
-			name: 'director_test_tool',
-			title: 'Director Test Tool',
+			name: 'runTests',
+			title: 'Run Tests',
 			description: 'Returns a deterministic result',
 			inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
 		}]);
@@ -696,7 +949,64 @@ suite('DirectorAgent', () => {
 				agent.respondToPermissionRequest(signal.state.toolCallId, true);
 				agent.onClientToolCallComplete(created.session, signal.state.toolCallId, {
 					success: true,
-					pastTenseMessage: 'Ran Director Test Tool',
+					pastTenseMessage: 'Ran Run Tests',
+					content: [{ type: ToolResultContentType.Text, text: `result for ${signal.state.toolCallId}` }],
+				});
+			}
+		}));
+
+		await agent.sendMessage(created.session, 'use several tools', undefined, 'turn-long-tool-task');
+		const turns = await agent.getSessionMessages(created.session);
+
+		assert.deepStrictEqual({
+			requestCount: requests.length,
+			pendingConfirmations: signals.filter(signal => signal.kind === 'pending_confirmation').length,
+			errorSignals: signals.filter(signal => signal.kind === 'action' && signal.action.type === ActionType.SessionError).length,
+			turns: turns.map(turn => ({
+				id: turn.id,
+				state: turn.state,
+				completedToolParts: turn.responseParts.filter(part => part.kind === ResponsePartKind.ToolCall && part.toolCall.status === ToolCallStatus.Completed).length,
+				responseText: turn.responseParts
+					.filter(part => part.kind === ResponsePartKind.Markdown)
+					.map(part => part.content)
+					.join(''),
+			})),
+		}, {
+			requestCount: 6,
+			pendingConfirmations: 5,
+			errorSignals: 0,
+			turns: [{
+				id: 'turn-long-tool-task',
+				state: TurnState.Complete,
+				completedToolParts: 5,
+				responseText: 'long tool task complete',
+			}],
+		});
+	});
+
+	test('stops repeated identical tool calls with a clear loop guard', async () => {
+		const requests: unknown[] = [];
+		const server = disposables.add(await createSequenceJsonServer([
+			...Array.from({ length: 6 }, (_, index) => ({
+				choices: [{ message: { content: '', tool_calls: [{ id: `call-loop-${index + 1}`, type: 'function', function: { name: 'runTests', arguments: '{"query":"same"}' } }] } }],
+			})),
+		], requests));
+		const agent = createAgent(createOpenAIFixtures(server.url, { toolCalling: true }), { kind: 'api-key', value: 'sk-test' });
+		const created = await agent.createSession();
+		agent.setClientTools(created.session, 'client-1', [{
+			name: 'runTests',
+			title: 'Run Tests',
+			description: 'Returns a deterministic result',
+			inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+		}]);
+		const signals: AgentSignal[] = [];
+		disposables.add(agent.onDidSessionProgress(signal => {
+			signals.push(signal);
+			if (signal.kind === 'pending_confirmation') {
+				agent.respondToPermissionRequest(signal.state.toolCallId, true);
+				agent.onClientToolCallComplete(created.session, signal.state.toolCallId, {
+					success: true,
+					pastTenseMessage: 'Ran Run Tests',
 					content: [{ type: ToolResultContentType.Text, text: `result for ${signal.state.toolCallId}` }],
 				});
 			}
@@ -708,21 +1018,25 @@ suite('DirectorAgent', () => {
 		assert.deepStrictEqual({
 			requestCount: requests.length,
 			pendingConfirmations: signals.filter(signal => signal.kind === 'pending_confirmation').length,
-			errorSignals: signals.filter(signal => signal.kind === 'action' && signal.action.type === ActionType.SessionError)
-				.map(signal => signal.kind === 'action' && signal.action.type === ActionType.SessionError ? signal.action.error.message : undefined),
+			errorSignals: signals.filter(signal => signal.kind === 'action' && signal.action.type === ActionType.SessionError).length,
 			turns: turns.map(turn => ({
 				id: turn.id,
 				state: turn.state,
 				completedToolParts: turn.responseParts.filter(part => part.kind === ResponsePartKind.ToolCall && part.toolCall.status === ToolCallStatus.Completed).length,
+				responseText: turn.responseParts
+					.filter(part => part.kind === ResponsePartKind.Markdown)
+					.map(part => part.content)
+					.join(''),
 			})),
 		}, {
-			requestCount: 5,
-			pendingConfirmations: 4,
-			errorSignals: ['Director AgentEngine stopped after 4 tool iterations to avoid an infinite tool loop.'],
+			requestCount: 4,
+			pendingConfirmations: 3,
+			errorSignals: 0,
 			turns: [{
 				id: 'turn-tool-loop',
-				state: TurnState.Error,
-				completedToolParts: 4,
+				state: TurnState.Complete,
+				completedToolParts: 3,
+				responseText: 'Director AgentEngine stopped because provider \'test-provider\' repeatedly requested tool \'runTests\' with the same input 4 times.',
 			}],
 		});
 	});
@@ -849,10 +1163,10 @@ class TestAgentConfigurationService implements IAgentConfigurationService {
 	persistRootConfig(): void { }
 }
 
-function createOpenAIFixtures(baseURL: string, capabilities?: { readonly streaming?: boolean; readonly toolCalling?: boolean }): DirectorProviderBackendHubFixtures {
+function createOpenAIFixtures(baseURL: string, capabilities?: { readonly streaming?: boolean; readonly toolCalling?: boolean }, modelId = 'gpt-test'): DirectorProviderBackendHubFixtures {
 	return {
 		defaultProviderId: 'test-provider',
-		defaultModelId: 'test-provider:gpt-test',
+		defaultModelId: `test-provider:${modelId}`,
 		providerInstances: [{
 			id: 'test-provider',
 			kind: 'openai-compatible',
@@ -861,14 +1175,14 @@ function createOpenAIFixtures(baseURL: string, capabilities?: { readonly streami
 			authKind: 'api-key',
 			apiType: 'openai-completions',
 			baseURL,
-			defaultModelId: 'test-provider:gpt-test',
+			defaultModelId: `test-provider:${modelId}`,
 			authState: { kind: 'ready' },
 		}],
 		models: [{
 			providerInstanceId: 'test-provider',
-			id: 'test-provider:gpt-test',
-			providerModelId: 'gpt-test',
-			name: 'GPT Test',
+			id: `test-provider:${modelId}`,
+			providerModelId: modelId,
+			name: modelId,
 			supportsVision: false,
 			...(capabilities !== undefined ? { capabilities } : {}),
 		}],

@@ -15,6 +15,7 @@ import { PendingRequestRegistry } from '../../common/pendingRequestRegistry.js';
 import { IDirectorProviderBackendHub, isResolvedBackend } from '../../common/directorProviderBackend.js';
 import { IDirectorRuntimeCredentialService } from '../../common/directorRuntimeCredentials.js';
 import { DirectorNormalizedToolCall, DirectorNormalizedToolDefinition } from '../../common/directorProviderAdapters.js';
+import { normalizeDirectorClientToolDefinitions, validateDirectorToolCallInput } from '../../common/directorToolPolicy.js';
 import { AgentSignal, IAgentSessionMetadata, IAgentSessionProjectInfo } from '../../common/agentService.js';
 import { ActionType } from '../../common/state/sessionActions.js';
 import { MessageAttachment, ModelSelection, ToolCallPendingConfirmationState, ToolDefinition } from '../../common/state/protocol/state.js';
@@ -497,7 +498,7 @@ export class DirectorAgentSession extends Disposable {
 	}
 
 	private _captureClientToolsSnapshot(): IDirectorClientToolsSnapshot {
-		const tools = [...this._clientTools];
+		const tools = [...normalizeDirectorClientToolDefinitions(this._clientTools)];
 		return {
 			clientId: this._toolClientId,
 			tools,
@@ -526,6 +527,15 @@ export class DirectorAgentSession extends Disposable {
 			const result = failedToolResult(`Director tool '${toolCall.name}' is not available in the active AgentHost client.`);
 			this._emitToolCallStart(inFlight, toolCall, tool, undefined);
 			this._emitToolCallReady(inFlight, toolCall, result.pastTenseMessage.toString(), ToolCallConfirmationReason.NotNeeded, undefined);
+			this._emitToolCallComplete(inFlight, toolCall, result);
+			return stringifyDirectorToolResult(result);
+		}
+
+		const validationError = validateDirectorToolCallInput(toolCall.name, toolCall.input);
+		if (validationError) {
+			const result = failedToolResult(validationError);
+			this._emitToolCallStart(inFlight, toolCall, tool, inFlight.clientToolsSnapshot.clientId);
+			this._emitToolCallReady(inFlight, toolCall, result.pastTenseMessage.toString(), ToolCallConfirmationReason.NotNeeded, inFlight.clientToolsSnapshot.clientId);
 			this._emitToolCallComplete(inFlight, toolCall, result);
 			return stringifyDirectorToolResult(result);
 		}

@@ -7,7 +7,7 @@ import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { Disposable, DisposableStore, IDisposable, IReference, toDisposable } from '../../../../../../base/common/lifecycle.js';
 import { URI, UriComponents } from '../../../../../../base/common/uri.js';
 import { Registry } from '../../../../../../platform/registry/common/platform.js';
-import { IAgentConnection, IAgentCreateSessionConfig, IAgentResolveSessionConfigParams, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata, AuthenticateParams, AuthenticateResult, AgentHostIpcLoggingSettingId } from '../../../../../../platform/agentHost/common/agentService.js';
+import { IAgentConnection, IAgentCreateSessionConfig, IAgentListSessionsOptions, IAgentResolveSessionConfigParams, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata, AuthenticateParams, AuthenticateResult, AgentHostIpcLoggingSettingId } from '../../../../../../platform/agentHost/common/agentService.js';
 import type { IAgentSubscription } from '../../../../../../platform/agentHost/common/state/agentSubscription.js';
 import { StateComponents, type ComponentToState, type RootState } from '../../../../../../platform/agentHost/common/state/sessionState.js';
 import type { ActionEnvelope, IRootConfigChangedAction, SessionAction, TerminalAction, INotification } from '../../../../../../platform/agentHost/common/state/sessionActions.js';
@@ -176,8 +176,8 @@ export class LoggingAgentConnection extends Disposable implements IAgentConnecti
 		return this._logCall('authenticate', params, () => this._inner.authenticate(params));
 	}
 
-	async listSessions(): Promise<IAgentSessionMetadata[]> {
-		return this._logCall('listSessions', undefined, () => this._inner.listSessions());
+	async listSessions(options?: IAgentListSessionsOptions): Promise<IAgentSessionMetadata[]> {
+		return this._logCall('listSessions', options, () => this._inner.listSessions(options));
 	}
 
 	async createSession(config?: IAgentCreateSessionConfig): Promise<URI> {

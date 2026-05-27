@@ -5,9 +5,10 @@
 
 import { CancellationError } from '../../../../base/common/errors.js';
 import { ResponsePartKind, ToolResultContentType, type MessageAttachment, type ToolCallResult, type ToolResultContent, type Turn, type UsageInfo } from '../../common/state/sessionState.js';
-import { buildDirectorNativeMessageRequest, type DirectorNormalizedMessage, type DirectorNormalizedToolCall, type DirectorNormalizedToolDefinition } from '../../common/directorProviderAdapters.js';
+import { buildDirectorNativeMessageRequest, type DirectorNormalizedMessage, type DirectorNormalizedToolCall, type DirectorNormalizedToolDefinition, type DirectorOpenAIReasoningEcho } from '../../common/directorProviderAdapters.js';
 import type { DirectorResolvedProviderBackend } from '../../common/directorProviderBackend.js';
 import type { DirectorRuntimeCredential, IDirectorRuntimeCredentialService } from '../../common/directorRuntimeCredentials.js';
+import { isDirectorReadOnlyTool } from '../../common/directorToolPolicy.js';
 
 export type DirectorAgentEngineEvent =
 	| { readonly type: 'system'; readonly message: string }
@@ -16,13 +17,16 @@ export type DirectorAgentEngineEvent =
 	| { readonly type: 'thinking'; readonly thinking: string }
 	| { readonly type: 'thinkingDelta'; readonly thinking: string }
 	| { readonly type: 'usage'; readonly usage: UsageInfo }
-	| { readonly type: 'result'; readonly subtype: 'success' };
+	| { readonly type: 'result'; readonly subtype: 'success' | 'error_max_turns' };
 
 export interface DirectorAgentToolExecution {
 	readonly success: boolean;
 	readonly content: string;
 	readonly isError?: boolean;
 }
+
+const DEFAULT_MAX_TOOL_ITERATIONS = 100;
+const MAX_REPEATED_TOOL_CALLS = 3;
 
 export interface DirectorAgentEngineTurnOptions {
 	readonly backend: DirectorResolvedProviderBackend;
@@ -72,27 +76,42 @@ export class DirectorAgentEngineAdapter {
 			message: `Director AgentEngine using provider '${backend.providerInstanceId}' with model '${backend.modelId}'.`,
 		};
 
-		const authHeader = credentialToHeaderValue(credential);
-		const messages = [...this.buildMessages(options)];
 		const tools = supportsToolCalling(backend) ? options.tools ?? [] : [];
+		const authHeader = credentialToHeaderValue(credential);
+		const messages = [...this.buildMessages(options, tools)];
 		const advertisedToolNames = new Set(tools.map(tool => tool.name));
-		const maxToolIterations = options.maxToolIterations ?? 4;
+		const maxToolIterations = options.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS;
 		let toolSideEffectOccurred = false;
 		let toolIterations = 0;
+		const toolCallSignatureCounts = new Map<string, number>();
+		let reasoningEcho = getOpenAIReasoningEchoForBackend(backend);
 
 		while (true) {
 			const stream = toolIterations === 0 && tools.length === 0 && supportsStreaming(backend);
-			const request = buildDirectorNativeMessageRequest({
-				apiType: backend.apiType,
-				baseURL: backend.baseURL,
-				modelId: backend.modelId,
-				authHeader,
-				messages,
-				tools: tools.length ? tools : undefined,
-				maxTokens: 2048,
-				stream,
-			});
-			const response = await this.fetchProviderWithRetry(request, backend, credential, options.abortSignal, toolSideEffectOccurred);
+			let response: Response;
+			while (true) {
+				const request = buildDirectorNativeMessageRequest({
+					apiType: backend.apiType,
+					baseURL: backend.baseURL,
+					modelId: backend.modelId,
+					authHeader,
+					messages,
+					tools: tools.length ? tools : undefined,
+					maxTokens: 2048,
+					stream,
+					reasoningEcho,
+				});
+				try {
+					response = await this.fetchProviderWithRetry(request, backend, credential, options.abortSignal, toolSideEffectOccurred);
+					break;
+				} catch (err) {
+					if (!reasoningEcho && canApplyOpenAIReasoningEchoFallback(backend, err)) {
+						reasoningEcho = { field: 'reasoning_content', includeEmpty: true };
+						continue;
+					}
+					throw err;
+				}
+			}
 			if (stream) {
 				const streamed = yield* this.streamProviderResponse(backend, response, options.abortSignal);
 				if (!streamed.text.trim() && !streamed.thinking?.trim()) {
@@ -114,25 +133,28 @@ export class DirectorAgentEngineAdapter {
 				yield { type: 'text', text: parsed.text };
 			}
 			if (parsed.toolCalls.length) {
-				if (!options.executeToolCall) {
-					throw new Error(`Director provider '${backend.providerInstanceId}' requested tools, but the AgentHost tool bridge is not available.`);
-				}
-				const unsupportedToolCall = parsed.toolCalls.find(toolCall => !advertisedToolNames.has(toolCall.name));
-				if (unsupportedToolCall) {
-					throw new Error(`Director provider '${backend.providerInstanceId}' requested unsupported tool '${unsupportedToolCall.name}'.`);
+				const repeatedToolCall = findRepeatedToolCall(parsed.toolCalls, toolCallSignatureCounts);
+				if (repeatedToolCall) {
+					yield { type: 'text', text: `Director AgentEngine stopped because provider '${backend.providerInstanceId}' repeatedly requested tool '${repeatedToolCall.name}' with the same input ${MAX_REPEATED_TOOL_CALLS + 1} times.` };
+					yield { type: 'result', subtype: 'error_max_turns' };
+					return;
 				}
 				toolIterations++;
 				if (toolIterations > maxToolIterations) {
-					throw new Error(`Director AgentEngine stopped after ${maxToolIterations} tool iterations to avoid an infinite tool loop.`);
+					yield { type: 'text', text: `Director AgentEngine stopped after ${maxToolIterations} tool iterations because the per-turn tool budget was exhausted. Last requested tools: ${parsed.toolCalls.map(toolCall => toolCall.name).join(', ') || 'none'}. This can happen on long tool-heavy requests; continue in a follow-up turn rather than repeating the same tool call.` };
+					yield { type: 'result', subtype: 'error_max_turns' };
+					return;
 				}
 				messages.push({
 					role: 'assistant',
 					content: parsed.text,
+					thinking: parsed.thinking,
 					toolCalls: parsed.toolCalls,
 				});
-				for (const toolCall of parsed.toolCalls) {
-					const result = await options.executeToolCall(toolCall);
-					toolSideEffectOccurred = true;
+				for (const { toolCall, result } of await executeToolCalls(parsed.toolCalls, advertisedToolNames, options.executeToolCall)) {
+					if (advertisedToolNames.has(toolCall.name)) {
+						toolSideEffectOccurred = true;
+					}
 					messages.push({
 						role: 'tool',
 						content: result.content,
@@ -165,10 +187,10 @@ export class DirectorAgentEngineAdapter {
 		});
 	}
 
-	private buildMessages(options: DirectorAgentEngineTurnOptions): readonly DirectorNormalizedMessage[] {
+	private buildMessages(options: DirectorAgentEngineTurnOptions, tools: readonly DirectorNormalizedToolDefinition[]): readonly DirectorNormalizedMessage[] {
 		const messages: DirectorNormalizedMessage[] = [{
 			role: 'system',
-			content: buildDirectorSystemPrompt(options.cwd),
+			content: buildDirectorSystemPrompt(options.cwd, tools),
 		}];
 
 		messages.push(...buildHistoryMessages(options.turns));
@@ -307,12 +329,46 @@ function truncateHistoryContent(content: string): string {
 	].join('\n\n');
 }
 
-function buildDirectorSystemPrompt(cwd: string | undefined): string {
-	return [
-		'You are Director, an AI coding assistant running inside VS Code AgentHost.',
-		'Use the selected Director provider backend for this turn.',
-		cwd ? `Working directory: ${cwd}` : undefined,
-	].filter((line): line is string => line !== undefined).join('\n');
+function buildDirectorSystemPrompt(cwd: string | undefined, tools: readonly DirectorNormalizedToolDefinition[]): string {
+	const parts = [
+		'You are Director, an expert AI coding assistant running inside VS Code AgentHost.',
+		'',
+		'## Guidelines',
+		'- Use tools proactively when they help you understand the codebase or accomplish the task.',
+		'- Read files before modifying them to understand the existing code.',
+		'- Explain your reasoning briefly before taking actions.',
+		'- If a tool call fails, analyze the error and try a different approach.',
+		'- Do not repeat the same tool call with the same input after an error or unsupported result.',
+		'- When writing code, follow the existing code style and conventions in the project.',
+		'- Be concise in your responses and focus on what matters.',
+		'',
+		'## Execution Guidance',
+		'- For terminal commands, shell execution, package installs, builds, tests, and task-like command execution, prefer execution_subagent when it is available.',
+		'- Do not use runSubagent for terminal commands, builds, tests, package installs, shell execution, or command output collection.',
+		'- Use runSubagent only for generic non-terminal research, context-gathering, or delegation tasks.',
+		'- Use runInTerminal only in rare cases when the entire output of a single command is needed without summarization or truncation.',
+		'- When directly calling runInTerminal in sync mode, always include timeout in milliseconds from 1 to 600000. Use 30000 for short commands, 120000 for ordinary builds/tests, and 600000 for package installs, full builds, or long test suites. Do not omit timeout and do not use timeout=0.',
+		'- If execution_subagent reports that a command timed out, moved to background, or needed input and includes a terminal id, immediately continue with getTerminalOutput using that exact id until the command has completed, failed, or clearly needs user input.',
+		'- Use mode="async" only for servers, watchers, dev daemons, or other commands that should keep running while you continue other work.',
+		'- Do not call execution_subagent multiple times in parallel. Invoke one execution subagent and wait for its response before starting another execution task.',
+		'- Do not call runInTerminal multiple times in parallel. Run one command and wait for output before running the next command.',
+		'- Use runTask or createAndRunTask when the request is better represented as a VS Code task and the expected task lifecycle is appropriate for the current timeout behavior.',
+		'',
+		'## Working Directory',
+		cwd ?? '(no workspace directory)',
+		'',
+		'The working directory is local filesystem context, not a URL.',
+		'For browser tools, openBrowserPage.url must be a complete http:// or https:// URL for webpages; never pass a workspace folder, current working directory, file:// URI, or raw local filesystem path as a browser URL. Use readFile, listDirectory, fileSearch, or textSearch for local workspace files.',
+	];
+
+	if (tools.length > 0) {
+		parts.push('', '## Available Tools');
+		for (const tool of tools) {
+			parts.push(`- **${tool.name}**: ${tool.description ?? tool.title ?? 'Available Director tool.'}`);
+		}
+	}
+
+	return parts.join('\n');
 }
 
 function summarizeAttachments(attachments: readonly MessageAttachment[] | undefined): string | undefined {
@@ -646,6 +702,108 @@ function supportsStreaming(backend: DirectorResolvedProviderBackend): boolean {
 
 function supportsToolCalling(backend: DirectorResolvedProviderBackend): boolean {
 	return backend.capabilities?.toolCalling === true && (backend.apiType === 'openai-completions' || backend.apiType === 'anthropic-messages');
+}
+
+async function executeToolCalls(
+	toolCalls: readonly DirectorNormalizedToolCall[],
+	advertisedToolNames: ReadonlySet<string>,
+	executeToolCall: ((toolCall: DirectorNormalizedToolCall) => Promise<DirectorAgentToolExecution>) | undefined,
+): Promise<readonly { readonly toolCall: DirectorNormalizedToolCall; readonly result: DirectorAgentToolExecution }[]> {
+	const results = new Array<{ readonly toolCall: DirectorNormalizedToolCall; readonly result: DirectorAgentToolExecution }>(toolCalls.length);
+	const readOnlyIndices: number[] = [];
+	const mutationIndices: number[] = [];
+
+	for (let index = 0; index < toolCalls.length; index++) {
+		if (!advertisedToolNames.has(toolCalls[index].name) || !executeToolCall) {
+			results[index] = {
+				toolCall: toolCalls[index],
+				result: {
+					success: false,
+					isError: true,
+					content: !executeToolCall
+						? `Error: No tool executor configured for "${toolCalls[index].name}"`
+						: `Error: Tool not found: ${toolCalls[index].name}`,
+				},
+			};
+		} else if (isDirectorReadOnlyTool(toolCalls[index].name)) {
+			readOnlyIndices.push(index);
+		} else {
+			mutationIndices.push(index);
+		}
+	}
+
+	const maxConcurrency = 10;
+	const invokeAdvertisedTool = executeToolCall;
+	if (!invokeAdvertisedTool && (readOnlyIndices.length || mutationIndices.length)) {
+		throw new Error('Director AgentHost tool executor is unexpectedly unavailable.');
+	}
+	for (let index = 0; index < readOnlyIndices.length; index += maxConcurrency) {
+		const batch = readOnlyIndices.slice(index, index + maxConcurrency);
+		const batchResults = await Promise.all(batch.map(async toolCallIndex => ({
+			toolCall: toolCalls[toolCallIndex],
+			result: await invokeAdvertisedTool!(toolCalls[toolCallIndex]),
+		})));
+		for (let batchIndex = 0; batchIndex < batch.length; batchIndex++) {
+			results[batch[batchIndex]] = batchResults[batchIndex];
+		}
+	}
+
+	for (const toolCallIndex of mutationIndices) {
+		const toolCall = toolCalls[toolCallIndex];
+		results[toolCallIndex] = {
+			toolCall,
+			result: await invokeAdvertisedTool!(toolCall),
+		};
+	}
+
+	return results;
+}
+
+function findRepeatedToolCall(toolCalls: readonly DirectorNormalizedToolCall[], counts: Map<string, number>): DirectorNormalizedToolCall | undefined {
+	for (const toolCall of toolCalls) {
+		const signature = stableToolCallSignature(toolCall);
+		const count = (counts.get(signature) ?? 0) + 1;
+		counts.set(signature, count);
+		if (count > MAX_REPEATED_TOOL_CALLS) {
+			return toolCall;
+		}
+	}
+	return undefined;
+}
+
+function stableToolCallSignature(toolCall: DirectorNormalizedToolCall): string {
+	return `${toolCall.name}\n${stableJsonObjectString(toolCall.input)}`;
+}
+
+function stableJsonObjectString(value: string): string {
+	try {
+		const parsed = JSON.parse(value) as unknown;
+		return stableStringify(parsed);
+	} catch {
+		return value;
+	}
+}
+
+function getOpenAIReasoningEchoForBackend(backend: DirectorResolvedProviderBackend): DirectorOpenAIReasoningEcho | undefined {
+	if (backend.apiType !== 'openai-completions' || backend.providerKind !== 'openai-compatible') {
+		return undefined;
+	}
+	const modelId = backend.modelId.trim().toLowerCase();
+	return modelId === 'deepseek-v4-flash' || modelId === 'deepseek-v4-pro'
+		? { field: 'reasoning_content', includeEmpty: true }
+		: undefined;
+}
+
+function canApplyOpenAIReasoningEchoFallback(backend: DirectorResolvedProviderBackend, err: unknown): boolean {
+	if (backend.apiType !== 'openai-completions' || backend.providerKind !== 'openai-compatible') {
+		return false;
+	}
+	if (!(err instanceof DirectorProviderHttpError) || err.status !== 400) {
+		return false;
+	}
+	return /reasoning_content/i.test(err.message)
+		&& /must be passed back/i.test(err.message)
+		&& !/must\s+not/i.test(err.message);
 }
 
 function shouldRetryStatus(status: number): boolean {

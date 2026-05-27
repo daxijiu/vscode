@@ -105,6 +105,7 @@ export class AgentHostSessionListController extends Disposable implements IChatS
 		private readonly _connection: IAgentConnection,
 		private readonly _description: string | undefined,
 		_connectionAuthority: string,
+		private readonly _canListSessions: () => boolean = () => true,
 		@IProductService private readonly _productService: IProductService,
 		@IAgentHostUntitledProvisionalSessionService private readonly _provisional: IAgentHostUntitledProvisionalSessionService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
@@ -225,11 +226,14 @@ export class AgentHostSessionListController extends Disposable implements IChatS
 			}
 			return;
 		}
+		if (!this._canListSessions()) {
+			return;
+		}
 		const previousResources = this._items.map(item => item.resource);
 		const startGeneration = this._mutationGeneration;
 		let sessions;
 		try {
-			sessions = await this._connection.listSessions();
+			sessions = await this._connection.listSessions({ provider: this._provider });
 		} catch {
 			// If notifications mutated the list while we were fetching,
 			// the in-memory state is more up-to-date than our (now failed)

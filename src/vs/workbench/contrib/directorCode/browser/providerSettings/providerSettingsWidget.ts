@@ -8,7 +8,7 @@ import { Disposable, DisposableStore } from '../../../../../base/common/lifecycl
 import { localize } from '../../../../../nls.js';
 import { DirectorProviderApiType, DirectorProviderAuthKind, DirectorProviderKind } from '../../../../../platform/agentHost/common/directorProviderBackend.js';
 import { buildDirectorConnectionTestRequest } from '../../../../../platform/agentHost/common/directorProviderRequest.js';
-import { DirectorProviderAuthState, makeDirectorProviderModelKey, sanitizeDirectorProviderId } from '../../../../../platform/agentHost/common/directorProviderSnapshot.js';
+import { DirectorProviderAuthState, makeDirectorProviderModelKey, sanitizeDirectorProviderHeaders, sanitizeDirectorProviderId } from '../../../../../platform/agentHost/common/directorProviderSnapshot.js';
 import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
 import { createDirectorProviderInstance, DirectorProviderRegistryState, DirectorStoredProviderInstance, DirectorStoredProviderModel, IDirectorApiKeyService, IDirectorModelResolverService, IDirectorOAuthService, IDirectorProviderConnectionTestService, IDirectorProviderRegistryService, IDirectorProviderSnapshotService } from '../../common/provider/directorProviderServices.js';
 
@@ -640,10 +640,15 @@ export class ProviderSettingsWidget extends Disposable {
 			});
 			this.addModalAction(footer, localize('directorSettings.refreshModels', "Refresh Models"), 'secondary', () => {
 				void this.refreshModelFieldsFromDialog({
+					existing: provider,
+					stateProviders: state.instances,
 					idInput,
 					displayNameInput,
+					enabledInput,
+					keyInput,
 					providerSelect,
 					baseURLInput,
+					headersTextArea,
 					modelsTextArea,
 					defaultModelSelect,
 					status: setStatus,
@@ -770,7 +775,7 @@ export class ProviderSettingsWidget extends Disposable {
 			authKind: 'api-key',
 			apiType: this.apiTypeForKind(kind),
 			baseURL: args.baseURLInput.value.trim() || undefined,
-			headers: parseHeadersValue(args.headersTextArea.value),
+			headers: sanitizeDirectorProviderHeaders(parseHeadersValue(args.headersTextArea.value)),
 			models,
 			defaultModelId,
 			createdAt: args.existing?.createdAt ?? now,
@@ -795,10 +800,15 @@ export class ProviderSettingsWidget extends Disposable {
 	}
 
 	private async refreshModelFieldsFromDialog(args: {
+		readonly existing: DirectorStoredProviderInstance | undefined;
+		readonly stateProviders: readonly DirectorStoredProviderInstance[];
 		readonly idInput: HTMLInputElement;
 		readonly displayNameInput: HTMLInputElement;
+		readonly enabledInput: HTMLInputElement;
+		readonly keyInput: HTMLInputElement;
 		readonly providerSelect: HTMLSelectElement;
 		readonly baseURLInput: HTMLInputElement;
+		readonly headersTextArea: HTMLTextAreaElement;
 		readonly modelsTextArea: HTMLTextAreaElement;
 		readonly defaultModelSelect: HTMLSelectElement;
 		readonly status: (message: string, kind?: StatusKind) => void;
@@ -806,6 +816,15 @@ export class ProviderSettingsWidget extends Disposable {
 		const id = sanitizeDirectorProviderId(args.idInput.value);
 		if (!id) {
 			args.status(localize('directorSettings.providerIdRequired', "Provider ID is required."), 'error');
+			return;
+		}
+		if (!args.existing && args.stateProviders.some(provider => provider.id === id)) {
+			args.status(localize('directorSettings.providerIdDuplicate', "Provider ID already exists."), 'error');
+			return;
+		}
+		const existingHasKey = args.existing ? await this.apiKeyService.hasProviderInstanceKey(args.existing.id) : false;
+		if (!args.keyInput.value.trim() && !existingHasKey) {
+			args.status(localize('directorSettings.refreshModelsMissingCredential', "A saved API key is required before models can be refreshed."), 'error');
 			return;
 		}
 
@@ -818,19 +837,52 @@ export class ProviderSettingsWidget extends Disposable {
 			id,
 			kind,
 			displayName: args.displayNameInput.value.trim() || providerLabels[kind] || id,
-			enabled: true,
+			enabled: args.enabledInput.checked,
 			authKind: 'api-key',
 			apiType: this.apiTypeForKind(kind),
-			baseURL: args.baseURLInput.value.trim() || template?.baseURL,
-			models: this.buildModelEntries(id, seedModelIds),
+			baseURL: args.baseURLInput.value.trim() || undefined,
+			headers: sanitizeDirectorProviderHeaders(parseHeadersValue(args.headersTextArea.value)),
+			models: this.buildModelEntries(id, seedModelIds, args.existing?.models),
 			defaultModelId: seedModelIds[0] ? makeDirectorProviderModelKey(id, seedModelIds[0]) : undefined,
-			createdAt: now,
+			createdAt: args.existing?.createdAt ?? now,
 			updatedAt: now,
 		};
-		const models = await this.modelResolverService.resolveModels(provider);
-		const providerModelIds = models.map(model => model.providerModelId ?? getProviderModelId(provider.id, model.id));
+		args.status(localize('directorSettings.refreshingModels', "Refreshing models..."));
+		const nextApiKey = args.keyInput.value.trim();
+		this.refreshSuppression++;
+		try {
+			await this.registryService.saveProvider(provider);
+			if (nextApiKey) {
+				await this.apiKeyService.setProviderInstanceKey(provider.id, nextApiKey);
+				args.keyInput.value = '';
+			}
+		} finally {
+			this.refreshSuppression--;
+		}
+		let refreshedModels: readonly DirectorStoredProviderModel[];
+		try {
+			refreshedModels = await this.modelResolverService.refreshModels(provider);
+		} catch (err) {
+			args.status(err instanceof Error ? err.message : String(err), 'error');
+			return;
+		}
+		const preferredModelId = args.defaultModelSelect.value || seedModelIds[0];
+		const defaultModelId = this.pickDefaultStoredModel(refreshedModels, preferredModelId)?.id;
+		await this.runLocalMutation(async () => {
+			await this.registryService.saveProvider({
+				...provider,
+				models: refreshedModels,
+				...(defaultModelId !== undefined ? { defaultModelId } : {}),
+				updatedAt: Date.now(),
+			});
+			if (!(await this.registryService.getState()).defaultProviderId) {
+				await this.registryService.setDefaults(provider.id, defaultModelId);
+			}
+			await this.snapshotService.writeSnapshot();
+		}, 'providersAndModels');
+		const providerModelIds = refreshedModels.map(model => model.providerModelId ?? getProviderModelId(provider.id, model.id));
 		args.modelsTextArea.value = providerModelIds.join('\n');
-		this.populateDefaultModelSelect(args.defaultModelSelect, providerModelIds, providerModelIds[0]);
+		this.populateDefaultModelSelect(args.defaultModelSelect, providerModelIds, defaultModelId ? getProviderModelId(provider.id, defaultModelId) : providerModelIds[0]);
 		args.status(localize('directorSettings.refreshModelsSuccess', "Refreshed {0} models.", providerModelIds.length), 'success');
 	}
 
@@ -903,12 +955,25 @@ export class ProviderSettingsWidget extends Disposable {
 	}
 
 	private async refreshModels(provider: DirectorStoredProviderInstance): Promise<void> {
-		const models = await this.getProviderModelRows(provider);
+		const refreshedModels = await this.modelResolverService.refreshModels(provider);
+		const previousByProviderModelId = new Map<string, DirectorStoredProviderModel>();
+		for (const model of provider.models ?? []) {
+			previousByProviderModelId.set(model.providerModelId ?? getProviderModelId(provider.id, model.id), model);
+		}
+		const models = refreshedModels.map(model => {
+			const previous = previousByProviderModelId.get(model.providerModelId ?? getProviderModelId(provider.id, model.id));
+			return {
+				...model,
+				...(previous?.hidden !== undefined ? { hidden: previous.hidden } : {}),
+			};
+		});
+		const preferredModelId = provider.defaultModelId ? getProviderModelId(provider.id, provider.defaultModelId) : undefined;
+		const defaultModelId = this.pickDefaultStoredModel(models, preferredModelId)?.id;
 		await this.runLocalMutation(async () => {
 			await this.registryService.saveProvider({
 				...provider,
-				models: this.toStoredModels(models),
-				defaultModelId: provider.defaultModelId ?? models.find(model => model.hidden !== true)?.id ?? models[0]?.id,
+				models,
+				...(defaultModelId !== undefined ? { defaultModelId } : {}),
 				updatedAt: Date.now(),
 			});
 			await this.snapshotService.writeSnapshot();

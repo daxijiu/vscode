@@ -758,8 +758,8 @@ export class ProtocolServerHandler extends Disposable {
 		resourceWrite: async (_client, params) => {
 			return this._agentService.resourceWrite(params);
 		},
-		listSessions: async () => {
-			const sessions = await this._agentService.listSessions();
+		listSessions: async (_client, params) => {
+			const sessions = await this._agentService.listSessions({ provider: params?.filter?.provider });
 			const items = sessions.map(s => {
 				const provider = AgentSession.provider(s.session);
 				if (!provider) {

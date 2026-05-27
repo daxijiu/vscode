@@ -12,6 +12,17 @@ Phase 4 now covers the AgentHost-shaped runtime slice for the old Director `Agen
 
 Move the current Director AgentHost provider from deterministic echo to a minimal provider-backed Director AgentEngine turn, while preserving the Phase 3 registry/auth/snapshot boundary.
 
+## Porting Standard
+
+Old Director's accepted agent implementation is the default source of truth for agent-core and tool behavior. Phase 4 and its follow-ups should reuse old semantics for the AgentEngine loop, tool registry, tool prompts/descriptions, tool execution, tool result handling, tool loop limits, progress surfaces, and Plan Mode unless there is a concrete conflict with:
+
+- the current AgentHost session/action/client-tool architecture;
+- Director-owned provider/auth/Secret Storage boundaries;
+- Copilot isolation and the rule against Copilot CAPI/GitHub Copilot auth dependencies;
+- changed VS Code service APIs or missing current-platform capability.
+
+When there is no conflict, port the old implementation rather than inventing a narrower substitute. When there is a conflict, document the conflict and the adapted boundary in this plan. If a tool cannot be represented safely yet, do not advertise it as a Director-ready default tool; gate or defer it instead of exposing a half-compatible surface.
+
 ## Implemented Slice
 
 - `DirectorAgentSession` resolves the selected AgentHost model through `DirectorProviderBackendHub`.
@@ -20,7 +31,8 @@ Move the current Director AgentHost provider from deterministic echo to a minima
 - Workbench and Sessions renderers resolve API-key or fake OpenAI Codex OAuth credentials from Secret Storage; AgentHost node receives only the credential needed for the active request.
 - Registry JSON, provider snapshots, AgentHost model metadata, and AHP logs remain secret-free.
 - OpenAI-compatible Chat Completions and Anthropic Messages stream text/thinking deltas. Gemini and OpenAI Codex Responses-shape stay on the non-streaming fallback path.
-- Provider tool calls are normalized and routed through AgentHost client-tool permission/result plumbing. The adapter only executes tool names that were advertised for the current turn, freezes the per-turn tool snapshot, handles denied/failed/disconnected client tools, and stops recursive tool loops with `maxToolIterations`.
+- Provider tool calls are normalized and routed through AgentHost client-tool permission/result plumbing. The adapter only executes tool names that were advertised for the current turn, freezes the per-turn tool snapshot, handles denied/failed/disconnected client tools, executes read-only tools concurrently while preserving provider order, executes mutation tools serially, and ends repeated/max-turn loops as visible AgentEngine results instead of session-fatal errors.
+- The first old Director tool-surface parity slice restores Director-owned read/context implementations (`readFile`, `listDirectory`, `fileSearch`, `textSearch`, `problems`, `changes`, `viewImage`, `githubRepo`) in the AgentHost client-tool path, passes AgentHost working directories into tool invocation context, restores the old Agent-mode tool allowlist as Director's default client-tool candidate list, and prevents `openBrowserPage` from being used for local paths or `file://` URIs.
 - Plan Mode is read from AgentHost session config and gated with a visible message. Old `director_present_plan` semantics remain deferred until there is a matching AgentHost command/action contract.
 - Multi-turn history is normalized into provider messages with an in-memory character trim guard. Provider retry is limited to pre-tool-side-effect requests.
 
@@ -82,6 +94,8 @@ Goal: reintroduce old Director tool-call semantics through AgentHost permission/
 
 Status: completed for AgentHost client tools with OpenAI and Anthropic provider-native schema/result conversion, per-turn tool snapshots, advertised-tool gating, denied/failed/disconnected handling, and bounded iteration.
 
+Follow-up status: the first old Director tool-surface parity slice is also implemented for read/context tools. The old generated implementation was ported into current AgentHost-shaped registration instead of copying the generated tree as a source of truth.
+
 Scope:
 
 - Mine old `toolBridge.ts` for request/result semantics, not UI structure.
@@ -90,7 +104,7 @@ Scope:
 - Gate tool support by provider/model capability so unsupported provider protocols do not receive invalid tool schema fields.
 - Feed tool results back into the next provider request using the normalized message/request adapter layer.
 - Handle rejected, failed, and unsupported tool calls without hanging the turn.
-- Add a small `maxToolIterations` guard for the first slice so repeated or recursive tool calls terminate with a clear error instead of keeping the session in-flight forever.
+- Keep the old AgentEngine shape for loop exhaustion: repeated or recursive tool calls terminate the turn with a visible AgentEngine result instead of a session-fatal error.
 - Ensure each turn emits exactly one terminal action: complete, cancelled, or error.
 
 Acceptance:
@@ -102,6 +116,35 @@ Acceptance:
 - Unsupported tool calls produce an explicit result or error and do not bypass the permission path.
 - Tests cover provider-native schema conversion and compatibility gating for at least OpenAI-compatible and Anthropic tool shapes.
 - The implementation stays narrow and does not broaden ownership across `src/vs/sessions/**`.
+
+### Phase 4.2a - Read/Context Tool Surface Parity
+
+Goal: restore the old Director read/context tool surface that prevents the model from misusing browser navigation for local workspace inspection.
+
+Status: implemented for the directly portable old read/context tools.
+
+Implemented:
+
+- Ported old Director-owned `readFile`, `listDirectory`, `fileSearch`, `textSearch`, `problems`, `changes`, `viewImage`, and `githubRepo` tool semantics into `src/vs/workbench/contrib/directorCode/common/agentEngine/directorReadOnlyTools.ts`.
+- Registered those tools in the Workbench/Sessions shared chat contribution path through `directorReadOnlyTools.contribution.ts`.
+- Added Director provider-scoped default client-tool names based on the old Director Agent-mode allowlist, so registered AgentHost tools such as browser, terminal, task, fetch/repo, and read/context tools are exposed through the same reviewed Director policy instead of a hand-invented narrow subset.
+- Passed the resolved AgentHost session working directory into client tool invocation context so relative paths resolve against the session/worktree context when available.
+- Added model-facing and validator-facing browser guidance so `openBrowserPage` accepts only `http://` or `https://` URLs and rejects raw local paths and `file://` URIs before tool execution.
+
+Deferred from this read/context slice:
+
+- Old Director reviewable edit tools (`apply_patch`, `createFile`, `createDirectory`, `replace_string_in_file`, `multi_replace_string_in_file`) until their Chat Editing review transaction semantics are mapped cleanly into AgentHost.
+- Old `execution_subagent` remains conditional on an AgentHost-owned client tool implementation being registered; the policy keeps the old model-facing name and description so it appears automatically once the tool exists.
+- Old `director_present_plan` until Plan Mode has an AgentHost-shaped command/action contract.
+- Full old image-result fidelity for `viewImage`; this slice preserves the old textual metadata fallback and structured data path, while provider follow-up requests may still stringify embedded resources.
+- Full remote GitHub search for `githubRepo`; this slice preserves the old controlled `not-supported-v1` result and directs models to local `textSearch`.
+
+Acceptance:
+
+- A Director provider-backed turn can see and call `readFile`, `listDirectory`, `fileSearch`, and `textSearch` without relying on Copilot auth or Copilot CAPI.
+- A request that previously tried to open the workspace folder in the browser should instead use the workspace read/search tools.
+- A malicious or mistaken `openBrowserPage` call with a Windows path, POSIX path, relative path, or `file://` URI is rejected before the browser tool runs.
+- Non-Director AgentHost providers do not receive the Director default read/context tools unless configured separately.
 
 ### Phase 4.3 - Plan Mode
 
@@ -180,7 +223,7 @@ Acceptance checks:
 Subphase-specific manual checks:
 
 - Streaming: use a deterministic local streaming fixture long enough to observe incremental output, then cancel mid-turn and confirm the provider request aborts cleanly. Real-provider streaming smoke is optional.
-- Tool calls: use deterministic local tool-call fixtures that request one allowed tool, one rejected tool, one unsupported tool, and one repeated/recursive tool sequence that hits `maxToolIterations`.
+- Tool calls: use deterministic local tool-call fixtures that request one allowed tool, one rejected tool, one unsupported tool, one multi-tool read-only batch, and one repeated/recursive tool sequence that ends with a visible AgentEngine loop result instead of a session fatal error.
 - Plan Mode: trigger the documented Plan Mode entry path and confirm the unsupported-mode message appears without affecting normal Agent mode.
 - Loop parity: send a multi-turn prompt that depends on previous context, then a long-context prompt that exercises trimming and returns a controlled response/error.
 
@@ -207,7 +250,7 @@ npm run test-node -- --run src/vs/platform/agentHost/test/node/agentSideEffects.
 ## Deferred Follow-Ups
 
 - Implement real old Director Plan Mode presentation once `director_present_plan` has an AgentHost-shaped command/action contract.
-- Add richer old Director tool catalog semantics when the current AgentHost client-tool surface can represent them cleanly.
+- Add the remaining old Director tool catalog semantics when the current AgentHost client-tool surface can represent them cleanly: reviewable edit tools, `execution_subagent`, and real `director_present_plan`.
 - Add local/custom provider runtime adapters when there is a concrete no-network/local execution contract.
 - Keep real provider-backed model discovery and network validation in Phase 7/provider hardening unless explicitly pulled forward.
 - Keep real OpenAI Codex OAuth browser/device flow and additional OAuth providers in Phase 8.

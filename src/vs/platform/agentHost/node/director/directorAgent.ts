@@ -38,6 +38,7 @@ export class DirectorAgent extends Disposable implements IAgent {
 	private readonly _sessionSequencer = new SequencerByKey<string>();
 	private readonly _disposeSequencer = new SequencerByKey<string>();
 	private readonly _modelRefreshTimer = this._register(new IntervalTimer());
+	private readonly _consumedSteeringMessages = new Set<string>();
 	private _modelRefreshPromise: Promise<void> | undefined;
 
 	constructor(
@@ -166,7 +167,27 @@ export class DirectorAgent extends Disposable implements IAgent {
 		});
 	}
 
-	setPendingMessages(_session: URI, _steeringMessage: PendingMessage | undefined, _queuedMessages: readonly PendingMessage[]): void { }
+	setPendingMessages(session: URI, steeringMessage: PendingMessage | undefined, _queuedMessages: readonly PendingMessage[]): void {
+		if (!steeringMessage) {
+			return;
+		}
+
+		// The Phase 4 Director harness does not yet support injecting a
+		// steering message into an in-flight provider stream. Acknowledge
+		// system-generated steering messages (for example terminal completion
+		// notifications) so they do not remain as stale chat pending requests.
+		const key = `${session.toString()}:${steeringMessage.id}`;
+		if (this._consumedSteeringMessages.has(key)) {
+			return;
+		}
+		this._consumedSteeringMessages.add(key);
+		this._logService.info(`[Director] Acknowledging unsupported steering message ${steeringMessage.id} for ${session.toString()}`);
+		this._onDidSessionProgress.fire({
+			kind: 'steering_consumed',
+			session,
+			id: steeringMessage.id,
+		});
+	}
 
 	async getSessionMessages(session: URI): Promise<readonly Turn[]> {
 		return this._sessions.get(AgentSession.id(session))?.session.getTurns() ?? [];

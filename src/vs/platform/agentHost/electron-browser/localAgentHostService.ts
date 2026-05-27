@@ -15,7 +15,7 @@ import { IInstantiationService } from '../../instantiation/common/instantiation.
 import { IConfigurationService } from '../../configuration/common/configuration.js';
 import { IEnvironmentService } from '../../environment/common/environment.js';
 import { ILogService } from '../../log/common/log.js';
-import { AgentHostAhpJsonlLoggingSettingId, AgentHostEnabledSettingId, AgentHostIpcChannels, IAgentCreateSessionConfig, IAgentHostInspectInfo, IAgentHostService, IAgentResolveSessionConfigParams, IAgentService, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata, AuthenticateParams, AuthenticateResult, IAgentHostSocketInfo, IConnectionTrackerService } from '../common/agentService.js';
+import { AgentHostAhpJsonlLoggingSettingId, AgentHostEnabledSettingId, AgentHostIpcChannels, IAgentCreateSessionConfig, IAgentHostInspectInfo, IAgentHostService, IAgentListSessionsOptions, IAgentResolveSessionConfigParams, IAgentService, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata, AuthenticateParams, AuthenticateResult, IAgentHostSocketInfo, IConnectionTrackerService } from '../common/agentService.js';
 import { AhpJsonlLogger } from '../common/ahpJsonlLogger.js';
 import { wrapAgentServiceWithAhpLogging } from './localAhpJsonlLogging.js';
 import { AgentSubscriptionManager, type IAgentSubscription } from '../common/state/agentSubscription.js';
@@ -27,7 +27,7 @@ import { revive } from '../../../base/common/marshalling.js';
 import { URI } from '../../../base/common/uri.js';
 import { IFileService } from '../../files/common/files.js';
 import { AGENT_HOST_CLIENT_RESOURCE_CHANNEL, AgentHostClientResourceChannel } from '../common/agentHostClientResourceChannel.js';
-import { DirectorRuntimeCredentialChannel, DirectorRuntimeCredentialChannelName, IDirectorRuntimeCredentialService } from '../common/directorRuntimeCredentials.js';
+import { DirectorRuntimeCredentialChannel, DirectorRuntimeCredentialChannelName, IDirectorRuntimeCredentialService, type DirectorRuntimeCredential, type DirectorRuntimeCredentialRequest } from '../common/directorRuntimeCredentials.js';
 import { TELEMETRY_CRASH_REPORTER_SETTING_ID, TELEMETRY_OLD_SETTING_ID, TELEMETRY_SETTING_ID } from '../../telemetry/common/telemetry.js';
 import { getTelemetryLevel } from '../../telemetry/common/telemetryUtils.js';
 import { AgentHostTelemetryLevelConfigKey, AgentHostSessionSyncEnabledConfigKey, SESSION_SYNC_ENABLED_SETTING_ID, telemetryLevelToAgentHostConfigValue } from '../common/agentHostSchema.js';
@@ -146,7 +146,7 @@ export class LocalAgentHostServiceClient extends Disposable implements IAgentHos
 		// AgentHostClientFileSystemProvider that calls back through this channel.
 		client.registerChannel(AGENT_HOST_CLIENT_RESOURCE_CHANNEL, new AgentHostClientResourceChannel(this._fileService, this._ahpLogger));
 		client.registerChannel(DirectorRuntimeCredentialChannelName, new DirectorRuntimeCredentialChannel(
-			this._getDirectorRuntimeCredentialService(this._instantiationService) ?? NoopDirectorRuntimeCredentialService
+			new LazyDirectorRuntimeCredentialService(this._instantiationService)
 		));
 		this._clientEventually.complete(client);
 		this._updateTelemetryLevel();
@@ -179,14 +179,6 @@ export class LocalAgentHostServiceClient extends Disposable implements IAgentHos
 		});
 	}
 
-	private _getDirectorRuntimeCredentialService(instantiationService: IInstantiationService): IDirectorRuntimeCredentialService | undefined {
-		try {
-			return instantiationService.invokeFunction(accessor => accessor.get(IDirectorRuntimeCredentialService));
-		} catch {
-			return undefined;
-		}
-	}
-
 	private _updateTelemetryLevel(): void {
 		this.dispatchAction(ROOT_STATE_URI, {
 			type: ActionType.RootConfigChanged,
@@ -207,8 +199,8 @@ export class LocalAgentHostServiceClient extends Disposable implements IAgentHos
 	authenticate(params: AuthenticateParams): Promise<AuthenticateResult> {
 		return this._proxy.authenticate(params);
 	}
-	listSessions(): Promise<IAgentSessionMetadata[]> {
-		return this._proxy.listSessions();
+	listSessions(options?: IAgentListSessionsOptions): Promise<IAgentSessionMetadata[]> {
+		return this._proxy.listSessions(options);
 	}
 	createSession(config?: IAgentCreateSessionConfig): Promise<URI> {
 		return this._proxy.createSession(config);
@@ -300,10 +292,20 @@ export class LocalAgentHostServiceClient extends Disposable implements IAgentHos
 	}
 }
 
-const NoopDirectorRuntimeCredentialService: IDirectorRuntimeCredentialService = {
-	_serviceBrand: undefined,
-	resolveCredential: async request => ({
-		kind: 'missing',
-		message: `Director provider '${request.providerInstanceId}' credentials are not available in this window.`,
-	}),
-};
+class LazyDirectorRuntimeCredentialService implements IDirectorRuntimeCredentialService {
+	declare readonly _serviceBrand: undefined;
+
+	constructor(private readonly instantiationService: IInstantiationService) { }
+
+	async resolveCredential(request: DirectorRuntimeCredentialRequest): Promise<DirectorRuntimeCredential> {
+		try {
+			const service = this.instantiationService.invokeFunction(accessor => accessor.get(IDirectorRuntimeCredentialService));
+			return service.resolveCredential(request);
+		} catch {
+			return {
+				kind: 'missing',
+				message: `Director provider '${request.providerInstanceId}' credentials are not available in this window.`,
+			};
+		}
+	}
+}

@@ -8,6 +8,7 @@ import { Disposable, DisposableStore, IDisposable, MutableDisposable, toDisposab
 import { DeferredPromise, disposableTimeout } from '../../base/common/async.js';
 import { createDecorator, IInstantiationService } from '../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../platform/log/common/log.js';
+import { AgentHostDirectorAgentEnabledSettingId } from '../../platform/agentHost/common/agentService.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../platform/storage/common/storage.js';
 import { IUserDataProfileStorageService } from '../../platform/userDataProfile/common/userDataProfileStorageService.js';
 import { IUserDataProfilesService } from '../../platform/userDataProfile/common/userDataProfile.js';
@@ -100,6 +101,14 @@ class SessionsSetUpWidget extends Disposable {
 		}
 
 		if (shouldSkipSessionsWelcome(this.environmentService)) {
+			this.onCompleted();
+			return;
+		}
+
+		if (this.configurationService.getValue<boolean>(AgentHostDirectorAgentEnabledSettingId)) {
+			this.logService.info('[sessions welcome] Director agent enabled, skipping Copilot sign-in welcome');
+			this.storageService.store(WELCOME_COMPLETE_KEY, true, StorageScope.APPLICATION, StorageTarget.MACHINE);
+			this.serviceMarkDone();
 			this.onCompleted();
 			return;
 		}

@@ -85,6 +85,7 @@ export interface IDirectorOAuthService {
 export interface IDirectorModelResolverService {
 	readonly _serviceBrand: undefined;
 	resolveModels(provider: DirectorStoredProviderInstance): Promise<readonly DirectorProviderSnapshotModel[]>;
+	refreshModels(provider: DirectorStoredProviderInstance): Promise<readonly DirectorStoredProviderModel[]>;
 }
 
 export interface IDirectorProviderSnapshotService {
@@ -307,8 +308,16 @@ export class DirectorRuntimeCredentialService implements IDirectorRuntimeCredent
 	}
 }
 
+const DirectorModelRefreshTimeoutMs = 15_000;
+const DirectorModelRefreshErrorBodyLimit = 200;
+
 export class DirectorModelResolverService implements IDirectorModelResolverService {
 	declare readonly _serviceBrand: undefined;
+
+	constructor(
+		@IDirectorApiKeyService private readonly apiKeyService: IDirectorApiKeyService,
+		@IDirectorOAuthService private readonly oauthService: IDirectorOAuthService,
+	) { }
 
 	async resolveModels(provider: DirectorStoredProviderInstance): Promise<readonly DirectorProviderSnapshotModel[]> {
 		const models = provider.models?.length ? provider.models : getDefaultModels(provider.apiType);
@@ -327,6 +336,149 @@ export class DirectorModelResolverService implements IDirectorModelResolverServi
 				providerDisplayName: provider.displayName,
 			};
 		});
+	}
+
+	async refreshModels(provider: DirectorStoredProviderInstance): Promise<readonly DirectorStoredProviderModel[]> {
+		const credential = await this.resolveModelRefreshCredential(provider);
+		if (credential === undefined) {
+			throw new Error(`Director provider '${provider.displayName}' needs a saved credential before models can be refreshed.`);
+		}
+		if (!provider.baseURL && provider.apiType !== 'local') {
+			throw new Error(`Director provider '${provider.displayName}' needs a base URL before models can be refreshed.`);
+		}
+
+		const models = await this.fetchProviderModels(provider, credential);
+		if (!models.length) {
+			throw new Error(`Director provider '${provider.displayName}' did not return any models. Enter model IDs manually if this endpoint does not expose model discovery.`);
+		}
+		return models;
+	}
+
+	private async resolveModelRefreshCredential(provider: DirectorStoredProviderInstance): Promise<DirectorModelRefreshCredential | undefined> {
+		switch (provider.authKind) {
+			case 'none':
+				return { kind: 'none', value: '', identityKey: `none:${provider.id}` };
+			case 'api-key': {
+				const value = await this.apiKeyService.getProviderInstanceKey(provider.id);
+				return value ? { kind: 'api-key', value, identityKey: `api-key:${provider.id}` } : undefined;
+			}
+			case 'oauth':
+			case 'bearer': {
+				const value = await this.oauthService.getOpenAICodexAccessToken(provider.id);
+				return value ? { kind: 'bearer', value, identityKey: `oauth:${provider.id}` } : undefined;
+			}
+		}
+	}
+
+	private async fetchProviderModels(provider: DirectorStoredProviderInstance, credential: DirectorModelRefreshCredential): Promise<readonly DirectorStoredProviderModel[]> {
+		switch (provider.apiType) {
+			case 'openai-completions':
+				return this.fetchOpenAICompatibleModels(provider, credential);
+			case 'anthropic-messages':
+				return this.fetchAnthropicModels(provider, credential);
+			case 'gemini-generative':
+				return this.fetchGeminiModels(provider, credential);
+			case 'openai-codex':
+				return this.fetchOpenAICodexModels(provider, credential);
+			case 'local':
+			case 'custom-http':
+				throw new Error(`Director provider '${provider.displayName}' does not support model discovery for '${provider.apiType}'.`);
+		}
+	}
+
+	private async fetchOpenAICompatibleModels(provider: DirectorStoredProviderInstance, credential: DirectorModelRefreshCredential): Promise<readonly DirectorStoredProviderModel[]> {
+		const response = await fetchDirectorJson<DirectorOpenAIModelList>(
+			`${normalizeOpenAIModelBaseURL(provider)}/models`,
+			{
+				method: 'GET',
+				headers: {
+					...(provider.headers ?? {}),
+					authorization: `Bearer ${credential.value}`,
+				},
+			},
+			credential,
+		);
+		const models = Array.isArray(response.data) ? response.data : [];
+		return models
+			.filter(model => typeof model.id === 'string' && model.id.trim().length > 0 && isRelevantOpenAIModel(model.id, provider.kind))
+			.map(model => createStoredModel(provider.id, model.id));
+	}
+
+	private async fetchAnthropicModels(provider: DirectorStoredProviderInstance, credential: DirectorModelRefreshCredential): Promise<readonly DirectorStoredProviderModel[]> {
+		const headers: Record<string, string> = {
+			...(provider.headers ?? {}),
+			'anthropic-version': '2023-06-01',
+		};
+		if (credential.kind === 'bearer') {
+			headers.authorization = `Bearer ${credential.value}`;
+		} else {
+			headers['x-api-key'] = credential.value;
+		}
+		const response = await fetchDirectorJson<DirectorAnthropicModelList>(
+			`${normalizeAnthropicBaseURL(provider.baseURL)}/v1/models?limit=1000`,
+			{ method: 'GET', headers },
+			credential,
+		);
+		const models = Array.isArray(response.data) ? response.data : [];
+		return models
+			.filter(model => typeof model.id === 'string' && model.id.trim().length > 0)
+			.map(model => createStoredModel(provider.id, model.id!.trim(), {
+				name: model.display_name,
+				family: model.id!.includes('claude') ? 'claude' : provider.kind,
+				maxContextWindow: model.max_input_tokens,
+			}));
+	}
+
+	private async fetchGeminiModels(provider: DirectorStoredProviderInstance, credential: DirectorModelRefreshCredential): Promise<readonly DirectorStoredProviderModel[]> {
+		const response = await fetchDirectorJson<DirectorGeminiModelList>(
+			`${normalizeGeminiModelBaseURL(provider.baseURL)}/models`,
+			{
+				method: 'GET',
+				headers: {
+					...(provider.headers ?? {}),
+					'x-goog-api-key': credential.value,
+				},
+			},
+			credential,
+		);
+		const models = Array.isArray(response.models) ? response.models : [];
+		return models
+			.filter(model => typeof model.name === 'string' && model.name.includes('gemini') && model.supportedGenerationMethods?.includes('generateContent') === true)
+			.map(model => {
+				const providerModelId = model.name.replace(/^models\//, '');
+				return createStoredModel(provider.id, providerModelId, {
+					name: model.displayName,
+					family: 'gemini',
+					maxContextWindow: model.inputTokenLimit,
+				});
+			});
+	}
+
+	private async fetchOpenAICodexModels(provider: DirectorStoredProviderInstance, credential: DirectorModelRefreshCredential): Promise<readonly DirectorStoredProviderModel[]> {
+		const response = await fetchDirectorJson<DirectorOpenAICodexModelList>(
+			`${normalizeBaseURL(provider.baseURL)}/models?client_version=1.0.0`,
+			{
+				method: 'GET',
+				headers: {
+					...(provider.headers ?? {}),
+					authorization: `Bearer ${credential.value}`,
+					'openai-beta': 'responses=experimental',
+					originator: 'director-code',
+				},
+			},
+			credential,
+		);
+		const models = Array.isArray(response.models) ? response.models : [];
+		return models
+			.filter(model => typeof model.slug === 'string' && model.slug.trim().length > 0)
+			.filter(model => model.supported_in_api !== false)
+			.filter(model => !['hide', 'hidden'].includes((model.visibility ?? '').trim().toLowerCase()))
+			.sort((a, b) => (typeof a.priority === 'number' ? a.priority : 10_000) - (typeof b.priority === 'number' ? b.priority : 10_000) || a.slug!.localeCompare(b.slug!))
+			.map(model => createStoredModel(provider.id, model.slug!.trim(), {
+				name: model.display_name,
+				family: 'openai-codex',
+				maxContextWindow: model.max_context_window ?? model.context_window,
+			}));
 	}
 }
 
@@ -608,4 +760,136 @@ function defaultCapabilities(apiType: DirectorProviderApiType): DirectorProvider
 		vision: false,
 		agentMode: true,
 	};
+}
+
+interface DirectorModelRefreshCredential {
+	readonly kind: 'none' | 'api-key' | 'bearer';
+	readonly value: string;
+	readonly identityKey: string;
+}
+
+interface DirectorOpenAIModelList {
+	readonly data?: readonly { readonly id?: string }[];
+}
+
+interface DirectorAnthropicModelList {
+	readonly data?: readonly {
+		readonly id?: string;
+		readonly display_name?: string;
+		readonly max_input_tokens?: number;
+		readonly max_tokens?: number;
+	}[];
+}
+
+interface DirectorGeminiModelList {
+	readonly models?: readonly {
+		readonly name?: string;
+		readonly displayName?: string;
+		readonly inputTokenLimit?: number;
+		readonly outputTokenLimit?: number;
+		readonly supportedGenerationMethods?: readonly string[];
+	}[];
+}
+
+interface DirectorOpenAICodexModelList {
+	readonly models?: readonly {
+		readonly slug?: string;
+		readonly display_name?: string;
+		readonly visibility?: string;
+		readonly supported_in_api?: boolean;
+		readonly context_window?: number;
+		readonly max_context_window?: number;
+		readonly priority?: number;
+	}[];
+}
+
+function createStoredModel(providerInstanceId: string, providerModelId: string, options: {
+	readonly name?: string;
+	readonly family?: string;
+	readonly maxContextWindow?: number;
+	readonly supportsVision?: boolean;
+} = {}): DirectorStoredProviderModel {
+	const trimmedModelId = providerModelId.trim();
+	return {
+		id: makeDirectorProviderModelKey(providerInstanceId, trimmedModelId),
+		providerModelId: trimmedModelId,
+		name: options.name ?? trimmedModelId,
+		...(options.family !== undefined ? { family: options.family } : {}),
+		...(options.maxContextWindow !== undefined ? { maxContextWindow: options.maxContextWindow } : {}),
+		...(options.supportsVision !== undefined ? { supportsVision: options.supportsVision } : {}),
+	};
+}
+
+async function fetchDirectorJson<T>(url: string, init: RequestInit, credential: DirectorModelRefreshCredential): Promise<T> {
+	if (typeof fetch !== 'function') {
+		throw new Error('Director model refresh is not available in this environment.');
+	}
+
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), DirectorModelRefreshTimeoutMs);
+	try {
+		const response = await fetch(url, { ...init, signal: controller.signal });
+		const body = await response.text();
+		if (!response.ok) {
+			throw new Error(`HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}${body ? `: ${redactCredential(limitBodySnippet(body), credential)}` : ''}`);
+		}
+		try {
+			return JSON.parse(body) as T;
+		} catch {
+			throw new Error(`Failed to parse JSON response: ${redactCredential(limitBodySnippet(body), credential)}`);
+		}
+	} catch (err) {
+		if (err instanceof Error && err.name === 'AbortError') {
+			throw new Error(`Director model refresh timed out after ${DirectorModelRefreshTimeoutMs}ms.`);
+		}
+		if (err instanceof Error) {
+			throw new Error(redactCredential(err.message, credential));
+		}
+		throw err;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+function limitBodySnippet(body: string): string {
+	return body.slice(0, DirectorModelRefreshErrorBodyLimit);
+}
+
+function redactCredential(value: string, credential: DirectorModelRefreshCredential): string {
+	return credential.value ? value.split(credential.value).join('<redacted>') : value;
+}
+
+function normalizeBaseURL(baseURL: string | undefined): string {
+	return (baseURL ?? '').trim().replace(/\/+$/, '');
+}
+
+function normalizeOpenAIModelBaseURL(provider: DirectorStoredProviderInstance): string {
+	const base = normalizeBaseURL(provider.baseURL);
+	if (provider.kind === 'openai' && !base.endsWith('/v1')) {
+		return `${base}/v1`;
+	}
+	return base;
+}
+
+function normalizeAnthropicBaseURL(baseURL: string | undefined): string {
+	return normalizeBaseURL(baseURL).replace(/\/v1$/, '');
+}
+
+function normalizeGeminiModelBaseURL(baseURL: string | undefined): string {
+	const base = normalizeBaseURL(baseURL);
+	return base.endsWith('/v1beta') ? base : `${base}/v1beta`;
+}
+
+function isRelevantOpenAIModel(id: string, providerKind: DirectorProviderKind): boolean {
+	const lower = id.toLowerCase();
+	if (lower.includes('embed')) {
+		return false;
+	}
+	if (providerKind === 'openai-compatible') {
+		return true;
+	}
+	if (['moderation', 'tts', 'whisper', 'dall-e'].some(excluded => lower.includes(excluded))) {
+		return false;
+	}
+	return /^(gpt-|o1|o3|o4|chatgpt-)/.test(id);
 }

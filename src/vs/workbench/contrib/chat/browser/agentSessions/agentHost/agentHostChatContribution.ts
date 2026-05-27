@@ -10,7 +10,7 @@ import { equals } from '../../../../../../base/common/objects.js';
 import { observableValue } from '../../../../../../base/common/observable.js';
 import { ThemeIcon } from '../../../../../../base/common/themables.js';
 import { localize } from '../../../../../../nls.js';
-import { AgentHostEnabledSettingId, IAgentHostService, type AgentProvider } from '../../../../../../platform/agentHost/common/agentService.js';
+import { AgentHostDirectorAgentEnabledSettingId, AgentHostEnabledSettingId, IAgentHostService, type AgentProvider } from '../../../../../../platform/agentHost/common/agentService.js';
 import { type ProtectedResourceMetadata } from '../../../../../../platform/agentHost/common/state/protocol/state.js';
 import { type AgentInfo, type CustomizationRef, type RootState } from '../../../../../../platform/agentHost/common/state/sessionState.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
@@ -75,7 +75,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 		@ILanguageModelsService private readonly _languageModelsService: ILanguageModelsService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IAgentHostFileSystemService _agentHostFileSystemService: IAgentHostFileSystemService,
-		@IConfigurationService configurationService: IConfigurationService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@ICustomizationHarnessService private readonly _customizationHarnessService: ICustomizationHarnessService,
 		@IStorageService private readonly _storageService: IStorageService,
 		@IAgentPluginService private readonly _agentPluginService: IAgentPluginService,
@@ -87,7 +87,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 
 		this._isSessionsWindow = environmentService.isSessionsWindow;
 
-		if (!configurationService.getValue<boolean>(AgentHostEnabledSettingId)) {
+		if (!this._configurationService.getValue<boolean>(AgentHostEnabledSettingId)) {
 			return;
 		}
 
@@ -135,7 +135,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 		}
 
 		// Authenticate using protectedResources from agent info
-		this._authenticateWithServer(rootState.agents)
+		this._authenticateWithServer(this._autoAuthenticatedAgents(rootState.agents))
 			.catch(() => { /* best-effort */ });
 
 		// Register new agents and push model updates to existing ones
@@ -184,7 +184,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 		}));
 
 		// Session list controller
-		const listController = store.add(this._instantiationService.createInstance(AgentHostSessionListController, sessionType, agent.provider, this._loggedConnection!, undefined, 'local'));
+		const listController = store.add(this._instantiationService.createInstance(AgentHostSessionListController, sessionType, agent.provider, this._loggedConnection!, undefined, 'local', () => this._canAutoListAgentSessions(agent)));
 		this._listControllers.set(agent.provider, listController);
 		store.add({ dispose: () => this._listControllers.delete(agent.provider) });
 		store.add(this._chatSessionsService.registerChatSessionItemController(sessionType, listController));
@@ -257,11 +257,11 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 
 		// Re-authenticate when credentials change
 		store.add(this._defaultAccountService.onDidChangeDefaultAccount(() => {
-			const agents = this._getRootAgents();
+			const agents = this._autoAuthenticatedAgents(this._getRootAgents());
 			this._authenticateWithServer(agents).catch(() => { /* best-effort */ });
 		}));
 		store.add(this._authenticationService.onDidChangeSessions(() => {
-			const agents = this._getRootAgents();
+			const agents = this._autoAuthenticatedAgents(this._getRootAgents());
 			this._authenticateWithServer(agents).catch(() => { /* best-effort */ });
 		}));
 	}
@@ -269,6 +269,22 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 	private _getRootAgents(): readonly AgentInfo[] {
 		const rootState = this._agentHostService.rootState.value;
 		return (rootState && !(rootState instanceof Error)) ? rootState.agents : [];
+	}
+
+	private _autoAuthenticatedAgents(agents: readonly AgentInfo[]): readonly AgentInfo[] {
+		if (!this._configurationService.getValue<boolean>(AgentHostDirectorAgentEnabledSettingId)) {
+			return agents;
+		}
+		return agents.filter(agent => !this._hasRequiredProtectedResources(agent));
+	}
+
+	private _canAutoListAgentSessions(agent: AgentInfo): boolean {
+		return !this._configurationService.getValue<boolean>(AgentHostDirectorAgentEnabledSettingId)
+			|| !this._hasRequiredProtectedResources(agent);
+	}
+
+	private _hasRequiredProtectedResources(agent: AgentInfo): boolean {
+		return agent.protectedResources?.some(resource => resource.required !== false) ?? false;
 	}
 
 	/**

@@ -266,11 +266,12 @@ registerWorkbenchContribution2(OpenWorkspaceInAgentsContribution.ID, OpenWorkspa
 // to start.
 const AGENT_HOST_REGISTRATION_TIMEOUT_MS = 30_000;
 
-function getCopilotAgentInfo(rootState: RootState | Error | undefined): AgentInfo | undefined {
+function getPreferredAgentHostAgentInfo(rootState: RootState | Error | undefined): AgentInfo | undefined {
 	if (!rootState || rootState instanceof Error) {
 		return undefined;
 	}
-	return rootState.agents.find(a => a.provider === 'copilotcli');
+	return rootState.agents.find(a => a.provider === 'director' && !a.protectedResources?.some(resource => resource.required !== false))
+		?? rootState.agents.find(a => a.provider === 'copilotcli');
 }
 
 /**
@@ -283,7 +284,7 @@ function getCopilotAgentInfo(rootState: RootState | Error | undefined): AgentInf
  * no content provider and fall back to a fresh local chat session.
  */
 async function resolveAgentHostSessionType(agentHostService: IAgentHostService): Promise<string> {
-	const agent = getCopilotAgentInfo(agentHostService.rootState.value);
+	const agent = getPreferredAgentHostAgentInfo(agentHostService.rootState.value);
 	if (agent) {
 		return `agent-host-${agent.provider}`;
 	}
@@ -293,7 +294,7 @@ async function resolveAgentHostSessionType(agentHostService: IAgentHostService):
 	const cts = new CancellationTokenSource();
 	const waitForAgent = new Promise<AgentInfo | undefined>(res => {
 		const sub = agentHostService.rootState.onDidChange(state => {
-			const found = getCopilotAgentInfo(state);
+			const found = getPreferredAgentHostAgentInfo(state);
 			if (found) {
 				sub.dispose();
 				res(found);
@@ -313,7 +314,7 @@ async function resolveAgentHostSessionType(agentHostService: IAgentHostService):
 		}),
 	]);
 	if (!resolved) {
-		throw new Error('Agent host did not register a copilotcli agent within the timeout period. Ensure the agent host is enabled and running.');
+		throw new Error('Agent host did not register a usable local agent within the timeout period. Ensure the agent host is enabled and running.');
 	}
 	return `agent-host-${resolved.provider}`;
 }

@@ -140,6 +140,13 @@ Accepted Phase 3 implementation:
 
 Phase 4 should wrap the old Director `AgentEngine` as an AgentHost harness adapter. Keep Claude SDK de-CAPI migration, additional OAuth providers beyond OpenAI Codex OAuth, public OpenAI Responses support, and session restore in their later roadmap phases unless the user explicitly expands the scope.
 
+Director Agent core/tool porting rule:
+
+- Old Director agent core, AgentEngine loop, tool registry, tool prompts/descriptions, tool execution, tool result handling, and Plan Mode semantics are the default source of truth because they were already accepted in the old Director line.
+- Reuse old semantics directly unless they conflict with the current AgentHost architecture, Director-owned provider/auth/secrets boundary, Copilot isolation, or changed VS Code APIs.
+- If a tool's old behavior cannot be represented safely in the current AgentHost slice, do not advertise a half-compatible tool as Director-ready. Gate or defer it with a documented reason.
+- Any deviation from the old implementation must be documented in the phase plan with the concrete AgentHost/security/API reason. Avoid inventing narrower prompts, loop limits, or tool behavior without evidence.
+
 Accepted Phase 4 implementation:
 
 - `DirectorAgentSession` now resolves a `DirectorResolvedProviderBackend` from the Phase 3 secret-free snapshot and routes the turn through an AgentHost-owned `DirectorAgentEngineAdapter`.
@@ -147,6 +154,7 @@ Accepted Phase 4 implementation:
 - The Workbench and Sessions renderers provide the runtime credential bridge from Secret Storage. AgentHost node owns runtime HTTP/provider adapter code and never imports Workbench provider UI or Copilot CAPI.
 - OpenAI-compatible Chat Completions and Anthropic Messages can stream text/thinking deltas into stable AgentHost response parts. OpenAI Codex Responses-shape and Gemini remain non-streaming fallbacks in this phase.
 - Tool calls flow through AgentHost client-tool and permission plumbing with provider-native schema conversion, advertised-tool gating, per-turn tool snapshots, rejected/failed/disconnected client handling, and a bounded iteration guard.
+- The first old Director tool-surface parity slice restores Director-owned read/context implementations (`readFile`, `listDirectory`, `fileSearch`, `textSearch`, `problems`, `changes`, `viewImage`, `githubRepo`) in the AgentHost client-tool path, restores the old Agent-mode tool allowlist as Director's default client-tool candidate list, passes AgentHost working directories into tool invocation context, and rejects `openBrowserPage` calls that try to open local paths or `file://` URIs.
 - Plan Mode is recognized through AgentHost session config and deliberately gated with a clear message until old `director_present_plan` semantics have an AgentHost-shaped command/action contract.
 - Multi-turn history is normalized into provider messages with an in-memory trim guard; provider retry is side-effect-safe and does not replay calls after a tool side effect has run.
-- Deferred beyond Phase 4: real old Director Plan Mode presentation, durable compaction/session restore, local/custom runtime adapters, public OpenAI Responses support separate from OpenAI Codex, Claude SDK de-CAPI, and additional OAuth hardening.
+- Deferred beyond Phase 4 / later tool-parity slices: old Director reviewable edit tools, real old Director Plan Mode presentation, durable compaction/session restore, local/custom runtime adapters, public OpenAI Responses support separate from OpenAI Codex, Claude SDK de-CAPI, and additional OAuth hardening. `execution_subagent` remains policy-listed and will surface when its AgentHost client-tool implementation is registered.

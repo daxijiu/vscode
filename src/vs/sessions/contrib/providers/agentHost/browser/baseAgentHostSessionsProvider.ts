@@ -16,7 +16,7 @@ import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { localize } from '../../../../../nls.js';
-import { AgentSession, IAgentConnection, IAgentSessionMetadata } from '../../../../../platform/agentHost/common/agentService.js';
+import { AgentHostDirectorAgentEnabledSettingId, AgentSession, IAgentConnection, IAgentSessionMetadata } from '../../../../../platform/agentHost/common/agentService.js';
 import { buildSessionChangesetUri, buildUncommittedChangesetUri } from '../../../../../platform/agentHost/common/changesetUri.js';
 import { KNOWN_AUTO_APPROVE_VALUES, SessionConfigKey } from '../../../../../platform/agentHost/common/sessionConfigKeys.js';
 import { ResolveSessionConfigResult } from '../../../../../platform/agentHost/common/state/protocol/commands.js';
@@ -936,6 +936,7 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 
 	get sessionTypes(): readonly ISessionType[] { return this._sessionTypes; }
 	protected _sessionTypes: ISessionType[] = [];
+	private readonly _sessionTypesWithRequiredAuth = new Set<string>();
 
 	protected readonly _onDidChangeSessionTypes = this._register(new Emitter<void>());
 	readonly onDidChangeSessionTypes: Event<void> = this._onDidChangeSessionTypes.event;
@@ -1148,7 +1149,18 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 	 */
 	protected _syncSessionTypesFromRootState(rootState: RootState): void {
 		this._onDidChangeCustomAgents.fire();
-		const next = rootState.agents.map((agent): ISessionType => ({
+		this._sessionTypesWithRequiredAuth.clear();
+		const orderedAgents = [...rootState.agents].sort((a, b) => {
+			const aDirector = a.provider === 'director' && !a.protectedResources?.some(resource => resource.required !== false);
+			const bDirector = b.provider === 'director' && !b.protectedResources?.some(resource => resource.required !== false);
+			return Number(bDirector) - Number(aDirector);
+		});
+		for (const agent of orderedAgents) {
+			if (agent.protectedResources?.some(resource => resource.required !== false)) {
+				this._sessionTypesWithRequiredAuth.add(agent.provider);
+			}
+		}
+		const next = orderedAgents.map((agent): ISessionType => ({
 			id: agent.provider,
 			label: this._formatSessionTypeLabel(agent.displayName?.trim() || agent.provider),
 			icon: this.iconForAgentProvider(agent.provider) ?? this.icon,
@@ -2041,7 +2053,11 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 			return;
 		}
 		try {
-			const sessions = await connection.listSessions();
+			const sessionTypes = this.sessionTypes.filter(sessionType => this._canAutoListSessionType(sessionType));
+			const results = await Promise.allSettled(
+				sessionTypes.map(sessionType => connection.listSessions({ provider: sessionType.id }))
+			);
+			const sessions = results.flatMap(result => result.status === 'fulfilled' ? result.value : []);
 			const currentKeys = new Set<string>();
 			const added: ISession[] = [];
 			const changed: ISession[] = [];
@@ -2077,6 +2093,11 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 		} catch {
 			// Connection may not be ready yet
 		}
+	}
+
+	private _canAutoListSessionType(sessionType: ISessionType): boolean {
+		return !this._baseConfigurationService.getValue<boolean>(AgentHostDirectorAgentEnabledSettingId)
+			|| !this._sessionTypesWithRequiredAuth.has(sessionType.id);
 	}
 
 	private async _waitForNewSession(existingKeys: Set<string>): Promise<ISession | undefined> {
