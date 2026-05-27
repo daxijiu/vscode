@@ -10,13 +10,14 @@ import { ExternalAcpAgentSnapshotAgent } from '../../common/acpAgentConfig.js';
 import { AcpConnection } from './acpConnection.js';
 import { acpProcessExitedError, acpProcessNotFoundError, acpUnsupportedProtocolVersionError, isAcpError, redactAcpDiagnostic, AcpError, AcpErrorCode } from './acpErrors.js';
 import { resolveAcpRuntimeEnvironment } from './acpRuntimeEnvironment.js';
-import { AcpCancelSessionParams, AcpInitializeParams, AcpInitializeResult, AcpJsonRpcNotification, AcpMethod, AcpNewSessionParams, AcpNewSessionResult, AcpPromptParams, AcpPromptResult, AcpProtocolVersion } from './acpProtocol.js';
+import { AcpAuthenticateParams, AcpAuthenticateResult, AcpAuthMethod, AcpCancelSessionParams, AcpInitializeParams, AcpInitializeResult, AcpJsonRpcNotification, AcpMethod, AcpNewSessionParams, AcpNewSessionResult, AcpPromptParams, AcpPromptResult, AcpProtocolVersion } from './acpProtocol.js';
 
 export interface AcpProcessOptions {
 	readonly agent: ExternalAcpAgentSnapshotAgent;
 	readonly workspaceCwd?: string;
 	readonly hostEnv?: NodeJS.ProcessEnv;
 	readonly initializeTimeoutMs?: number;
+	readonly authenticateTimeoutMs?: number;
 	readonly sessionRequestTimeoutMs?: number;
 	readonly promptTimeoutMs?: number;
 }
@@ -33,6 +34,7 @@ export interface AcpProcessDiagnostic {
 
 const MaxStderrLength = 8192;
 const DefaultInitializeTimeoutMs = 10_000;
+const DefaultAuthenticateTimeoutMs = 10_000;
 const DefaultSessionRequestTimeoutMs = 10_000;
 const DefaultPromptTimeoutMs = 30 * 60 * 1000;
 
@@ -42,6 +44,7 @@ export class AcpProcess extends Disposable {
 	private cwd: string | undefined;
 	private stderr = '';
 	private redactionValues: readonly string[] = [];
+	private authMethods: readonly AcpAuthMethod[] = [];
 	private exitCode: number | null | undefined;
 	private signal: string | null | undefined;
 	private disposed = false;
@@ -70,11 +73,26 @@ export class AcpProcess extends Disposable {
 			if (result.protocolVersion !== AcpProtocolVersion) {
 				throw acpUnsupportedProtocolVersionError(result.protocolVersion);
 			}
+			this.authMethods = result.authMethods ?? [];
 			return result;
 		} catch (err) {
 			this.dispose();
 			throw err;
 		}
+	}
+
+	getAuthMethods(): readonly AcpAuthMethod[] {
+		return this.authMethods;
+	}
+
+	async authenticate(methodId: string): Promise<AcpAuthenticateResult> {
+		this.start();
+		const params: AcpAuthenticateParams = { methodId };
+		return this.connection.value!.request<AcpAuthenticateParams, AcpAuthenticateResult>(
+			AcpMethod.Authenticate,
+			params,
+			this.options.authenticateTimeoutMs ?? DefaultAuthenticateTimeoutMs,
+		);
 	}
 
 	get onDidNotification(): Event<AcpJsonRpcNotification> {

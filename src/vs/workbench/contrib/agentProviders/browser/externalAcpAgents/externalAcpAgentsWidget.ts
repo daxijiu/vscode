@@ -5,10 +5,13 @@
 
 import * as DOM from '../../../../../base/browser/dom.js';
 import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { URI } from '../../../../../base/common/uri.js';
 import { localize } from '../../../../../nls.js';
-import { ExternalAcpAgentCapability, ExternalAcpAgentConfig, ExternalAcpAgentCwdPolicy, createExternalAcpAgentConfig, sanitizeExternalAcpAgentId, toExternalAcpAgentSnapshot, validateExternalAcpAgentConfig } from '../../../../../platform/agentHost/common/acpAgentConfig.js';
+import { ExternalAcpAgentCapability, ExternalAcpAgentConfig, ExternalAcpAgentConnectionStatus, ExternalAcpAgentCwdPolicy, createExternalAcpAgentConfig, isExternalAcpLoginHelpUrlAllowed, sanitizeExternalAcpAgentId, toExternalAcpAgentSnapshot, validateExternalAcpAgentConfig } from '../../../../../platform/agentHost/common/acpAgentConfig.js';
+import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
-import { IExternalAcpAgentRegistryService, IExternalAcpAgentSnapshotService } from '../../common/externalAcpAgentProviderService.js';
+import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
+import { IExternalAcpAgentConnectionTestService, IExternalAcpAgentRegistryService, IExternalAcpAgentSnapshotService } from '../../common/externalAcpAgentProviderService.js';
 
 const $ = DOM.$;
 
@@ -47,6 +50,9 @@ export class ExternalAcpAgentsWidget extends Disposable {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IExternalAcpAgentRegistryService private readonly registryService: IExternalAcpAgentRegistryService,
 		@IExternalAcpAgentSnapshotService private readonly snapshotService: IExternalAcpAgentSnapshotService,
+		@IExternalAcpAgentConnectionTestService private readonly connectionTestService: IExternalAcpAgentConnectionTestService,
+		@IClipboardService private readonly clipboardService: IClipboardService,
+		@IOpenerService private readonly openerService: IOpenerService,
 	) {
 		super();
 		this._register(this.registryService.onDidChangeAgents(() => { void this.refresh({ preserveScroll: true }); }));
@@ -168,6 +174,7 @@ export class ExternalAcpAgentsWidget extends Disposable {
 		this.createTag(tags, agent.trusted ? localize('externalAcpAgents.trusted', "Trusted") : localize('externalAcpAgents.untrusted', "Trust Required"), agent.trusted ? 'success' : 'danger');
 		this.createTag(tags, this.cwdPolicyLabel(agent.cwdPolicy), 'neutral');
 		this.createTag(tags, agent.applyState === 'pendingRestart' ? localize('externalAcpAgents.pendingRestartTag', "Pending Restart") : localize('externalAcpAgents.applyStateCleanTag', "Snapshot Written"), agent.applyState === 'pendingRestart' ? 'accent' : 'neutral');
+		this.createTag(tags, this.connectionStatusLabel(agent.connectionStatus), this.connectionStatusTone(agent.connectionStatus));
 		for (const capability of agent.capabilities) {
 			this.createTag(tags, this.capabilityLabel(capability), this.isSideEffectCapability(capability) ? 'warning' : 'neutral');
 		}
@@ -188,8 +195,27 @@ export class ExternalAcpAgentsWidget extends Disposable {
 		if (agent.loginHint) {
 			this.appendDetail(details, localize('externalAcpAgents.detailLogin', "Login Hint"), agent.loginHint);
 		}
+		if (agent.loginCommand) {
+			this.appendDetail(details, localize('externalAcpAgents.detailLoginCommand', "Login Command"), agent.loginCommand);
+		}
+		if (agent.loginHelpUrl) {
+			this.appendDetail(details, localize('externalAcpAgents.detailLoginHelp', "Login Help"), agent.loginHelpUrl);
+		}
+		if (agent.connectionStatus) {
+			this.appendDetail(details, localize('externalAcpAgents.detailConnectionStatus', "Connection Status"), this.connectionStatusDetail(agent.connectionStatus));
+		}
 
 		const actions = DOM.append(row, $('.eaa-agent-actions'));
+		this.addAction(actions, this.connectionActionLabel(agent.connectionStatus), 'secondary', () => this.testConnection(agent), disposables);
+		if (agent.loginCommand) {
+			this.addAction(actions, localize('externalAcpAgents.copyLoginCommand', "Copy Login Command"), 'secondary', () => this.copyLoginCommand(agent), disposables);
+		}
+		if (agent.loginHelpUrl) {
+			this.addAction(actions, localize('externalAcpAgents.openLoginHelp', "Open Login Help"), 'secondary', () => this.openLoginHelp(agent), disposables);
+		}
+		if (agent.connectionStatus) {
+			this.addAction(actions, localize('externalAcpAgents.clearLoginStatus', "Clear Login Status"), 'secondary', () => this.clearLoginStatus(agent), disposables);
+		}
 		this.addAction(actions, localize('externalAcpAgents.edit', "Edit"), 'secondary', () => this.showAgentDialog({ kind: 'edit', agent }), disposables);
 		this.addAction(actions, agent.enabled ? localize('externalAcpAgents.disable', "Disable") : localize('externalAcpAgents.enable', "Enable"), 'secondary', () => this.toggleEnabled(agent), disposables);
 		this.addAction(actions, agent.trusted ? localize('externalAcpAgents.untrust', "Untrust") : localize('externalAcpAgents.trust', "Trust"), 'secondary', () => this.toggleTrusted(agent), disposables);
@@ -218,6 +244,53 @@ export class ExternalAcpAgentsWidget extends Disposable {
 		await this.refresh({ preserveScroll: true });
 	}
 
+	private async testConnection(agent: ExternalAcpAgentConfig): Promise<void> {
+		const status = await this.connectionTestService.testConnection(agent.id);
+		this.notificationService.info(status.message ?? this.connectionStatusLabel(status));
+		await this.refresh({ preserveScroll: true });
+	}
+
+	private async copyLoginCommand(agent: ExternalAcpAgentConfig): Promise<void> {
+		if (!agent.loginCommand) {
+			return;
+		}
+		await this.clipboardService.writeText(agent.loginCommand);
+		await this.registryService.updateConnectionStatus(agent.id, {
+			kind: 'loginHelpShown',
+			source: 'userAction',
+			updatedAt: Date.now(),
+			message: localize('externalAcpAgents.loginCommandCopied', "Vendor login command copied. Run it outside VS Code, then retry the ACP connection."),
+			authMethods: agent.connectionStatus?.authMethods,
+		});
+		this.notificationService.info(localize('externalAcpAgents.loginCommandCopiedNotification', "Login command copied."));
+		await this.refresh({ preserveScroll: true });
+	}
+
+	private async openLoginHelp(agent: ExternalAcpAgentConfig): Promise<void> {
+		if (!agent.loginHelpUrl) {
+			return;
+		}
+		if (!isExternalAcpLoginHelpUrlAllowed(agent.loginHelpUrl)) {
+			this.notificationService.error(localize('externalAcpAgents.loginHelpUrlBlocked', "Login help URL was blocked. Only http and https login help URLs are allowed."));
+			return;
+		}
+		await this.openerService.open(URI.parse(agent.loginHelpUrl), { openExternal: true, fromUserGesture: true });
+		await this.registryService.updateConnectionStatus(agent.id, {
+			kind: 'loginHelpShown',
+			source: 'userAction',
+			updatedAt: Date.now(),
+			message: localize('externalAcpAgents.loginHelpOpened', "Vendor login help opened. Complete the vendor-owned login flow, then retry the ACP connection."),
+			authMethods: agent.connectionStatus?.authMethods,
+		});
+		await this.refresh({ preserveScroll: true });
+	}
+
+	private async clearLoginStatus(agent: ExternalAcpAgentConfig): Promise<void> {
+		await this.connectionTestService.clearConnectionStatus(agent.id);
+		this.notificationService.info(localize('externalAcpAgents.loginStatusCleared', "External ACP agent login status cleared."));
+		await this.refresh({ preserveScroll: true });
+	}
+
 	private async showSnapshotLocation(): Promise<void> {
 		this.notificationService.info(await this.snapshotService.getSnapshotResource());
 	}
@@ -238,6 +311,8 @@ export class ExternalAcpAgentsWidget extends Disposable {
 			const cwdInput = this.createInputRow(form, localize('externalAcpAgents.formCwd', "Fixed CWD"), 'C:\\path\\to\\workspace');
 			const vendorInput = this.createInputRow(form, localize('externalAcpAgents.formVendorLabel', "Subscription Label"), localize('externalAcpAgents.formVendorPlaceholder', "uses your Cursor subscription"));
 			const loginHintInput = this.createTextAreaRow(form, localize('externalAcpAgents.formLoginHint', "Login Hint"), localize('externalAcpAgents.formLoginPlaceholder', "Run the vendor CLI login command outside VS Code."), 2);
+			const loginCommandInput = this.createInputRow(form, localize('externalAcpAgents.formLoginCommand', "Login Command"), 'cursor-agent login');
+			const loginHelpUrlInput = this.createInputRow(form, localize('externalAcpAgents.formLoginHelpUrl', "Login Help URL"), 'https://example.com/login-help');
 			const envInput = this.createTextAreaRow(form, localize('externalAcpAgents.formEnvNames', "Env Variable Names"), localize('externalAcpAgents.formEnvPlaceholder', "HTTPS_PROXY\nNO_PROXY"), 2);
 			const secretRefsInput = this.createTextAreaRow(form, localize('externalAcpAgents.formSecretRefs', "Secret References"), localize('externalAcpAgents.formSecretPlaceholder', "secret://vendor/account"), 2);
 			const enabledInput = this.createCheckboxRow(form, localize('externalAcpAgents.formEnabled', "Enabled"));
@@ -253,6 +328,8 @@ export class ExternalAcpAgentsWidget extends Disposable {
 			cwdInput.value = existing?.cwd ?? '';
 			vendorInput.value = existing?.vendorLabel ?? '';
 			loginHintInput.value = existing?.loginHint ?? '';
+			loginCommandInput.value = existing?.loginCommand ?? '';
+			loginHelpUrlInput.value = existing?.loginHelpUrl ?? '';
 			envInput.value = existing?.envVariableNames?.join('\n') ?? '';
 			secretRefsInput.value = existing?.secretRefs?.join('\n') ?? '';
 			enabledInput.checked = existing?.enabled ?? false;
@@ -275,6 +352,8 @@ export class ExternalAcpAgentsWidget extends Disposable {
 					cwd: cwdInput.value,
 					vendorLabel: vendorInput.value,
 					loginHint: loginHintInput.value,
+					loginCommand: loginCommandInput.value,
+					loginHelpUrl: loginHelpUrlInput.value,
 					enabled: enabledInput.checked,
 					trusted: trustedInput.checked,
 					capabilities: capabilityInputs.filter(input => input.input.checked).map(input => input.capability),
@@ -453,5 +532,60 @@ export class ExternalAcpAgentsWidget extends Disposable {
 
 	private isSideEffectCapability(capability: ExternalAcpAgentCapability): boolean {
 		return capability === ExternalAcpAgentCapability.Tools || capability === ExternalAcpAgentCapability.Files || capability === ExternalAcpAgentCapability.Terminal;
+	}
+
+	private connectionActionLabel(status: ExternalAcpAgentConnectionStatus | undefined): string {
+		if (status?.kind === 'authRequired' || status?.kind === 'testFailed' || status?.kind === 'timeout') {
+			return localize('externalAcpAgents.retryConnection', "Retry Connection");
+		}
+		return localize('externalAcpAgents.testConnection', "Test Connection");
+	}
+
+	private connectionStatusLabel(status: ExternalAcpAgentConnectionStatus | undefined): string {
+		switch (status?.kind) {
+			case 'authRequired':
+				return localize('externalAcpAgents.status.authRequired', "Auth Required");
+			case 'loginHelpShown':
+				return localize('externalAcpAgents.status.loginHelpShown', "Login Help Shown");
+			case 'testSucceeded':
+				return localize('externalAcpAgents.status.testSucceeded', "Test Succeeded");
+			case 'testFailed':
+				return localize('externalAcpAgents.status.testFailed', "Test Failed");
+			case 'processNotFound':
+				return localize('externalAcpAgents.status.processNotFound', "Process Not Found");
+			case 'missingRuntimeEnv':
+				return localize('externalAcpAgents.status.missingRuntimeEnv', "Missing Runtime Env");
+			case 'timeout':
+				return localize('externalAcpAgents.status.timeout', "Timeout");
+			case 'unknown':
+			default:
+				return localize('externalAcpAgents.status.unknown', "Status Unknown");
+		}
+	}
+
+	private connectionStatusDetail(status: ExternalAcpAgentConnectionStatus): string {
+		const parts = [
+			this.connectionStatusLabel(status),
+			status.message,
+			status.authMethods?.length ? localize('externalAcpAgents.status.authMethods', "Auth Methods: {0}", status.authMethods.map(method => method.label ?? method.id).join(', ')) : undefined,
+		].filter((part): part is string => !!part);
+		return parts.join(' - ');
+	}
+
+	private connectionStatusTone(status: ExternalAcpAgentConnectionStatus | undefined): 'neutral' | 'accent' | 'success' | 'danger' | 'muted' | 'warning' {
+		switch (status?.kind) {
+			case 'testSucceeded':
+				return 'success';
+			case 'authRequired':
+			case 'loginHelpShown':
+			case 'missingRuntimeEnv':
+			case 'timeout':
+				return 'warning';
+			case 'testFailed':
+			case 'processNotFound':
+				return 'danger';
+			default:
+				return 'muted';
+		}
 	}
 }

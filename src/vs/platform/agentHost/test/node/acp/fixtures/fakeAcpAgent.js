@@ -60,7 +60,12 @@ function handleLine(line) {
 			case 'success':
 			case 'text-stream':
 			case 'reasoning-stream':
+			case 'auth-methods':
+			case 'authenticate-success':
+			case 'authenticate-fail':
+			case 'authenticate-timeout':
 			case 'auth-on-session-new':
+			case 'auth-on-session-new-with-methods':
 			case 'prompt-error':
 			case 'cancel-race':
 			case 'late-update-after-complete':
@@ -101,9 +106,30 @@ function handleLine(line) {
 		return;
 	}
 
+	if (request.method === 'authenticate') {
+		switch (mode) {
+			case 'authenticate-success':
+				writeResponse(request.id, { authenticated: true });
+				break;
+			case 'authenticate-fail':
+				writeError(request.id, -32000, 'Authentication failed token=abc123', {
+					authMethods: [{ id: 'fake-token-abc123', label: 'Fake Login token=abc123' }],
+				});
+				break;
+			case 'authenticate-timeout':
+				break;
+			default:
+				writeError(request.id, -32601, 'Unsupported authenticate');
+				break;
+		}
+		return;
+	}
+
 	if (request.method === 'session/new') {
-		if (mode === 'auth-on-session-new' || (mode === 'dispose-marker-fail-second-session-new' && startedProcessCount() > 1)) {
-			writeError(request.id, -32000, 'Authentication required');
+		if (mode === 'auth-on-session-new' || mode === 'auth-on-session-new-with-methods' || (mode === 'dispose-marker-fail-second-session-new' && startedProcessCount() > 1)) {
+			writeError(request.id, -32000, 'Authentication required', {
+				authMethods: [{ id: 'fake-token-abc123', label: 'Fake Login token=abc123' }],
+			});
 			return;
 		}
 		activeSessionId = `fake-session-${request.id}`;
@@ -195,7 +221,7 @@ function writeInitialize(id, protocolVersion) {
 	writeResponse(id, {
 		protocolVersion,
 		agentCapabilities: {},
-		authMethods: [],
+		authMethods: authMethodsForMode(),
 		agentInfo: {
 			name: 'fake-acp-agent',
 			title: 'Fake ACP Agent',
@@ -208,8 +234,8 @@ function writeResponse(id, result) {
 	process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`);
 }
 
-function writeError(id, code, message) {
-	process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } })}\n`);
+function writeError(id, code, message, data) {
+	process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code, message, ...(data !== undefined ? { data } : {}) } })}\n`);
 }
 
 function writeSessionUpdate(sessionId, update) {
@@ -227,5 +253,23 @@ function startedProcessCount() {
 			.length;
 	} catch {
 		return 0;
+	}
+}
+
+function authMethodsForMode() {
+	switch (mode) {
+		case 'authenticate-success':
+		case 'authenticate-fail':
+		case 'authenticate-timeout':
+			return [
+				{ id: 'fake-login', name: 'Fake Login', description: 'Uses vendor-owned fake login', safeForTestConnection: true },
+			];
+		case 'auth-methods':
+		case 'auth-on-session-new-with-methods':
+			return [
+				{ id: 'fake-login', name: 'Fake Login', description: 'Uses vendor-owned fake login' },
+			];
+		default:
+			return [];
 	}
 }

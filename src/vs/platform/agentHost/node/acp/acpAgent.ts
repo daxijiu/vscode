@@ -88,7 +88,7 @@ export class AcpAgent extends Disposable implements IAgent {
 		});
 		let store: DisposableStore | undefined;
 		try {
-			await process.initialize();
+			const initializeResult = await process.initialize();
 			const newSession = await process.newSession(process.sessionCwd());
 			const createdAt = Date.now();
 			const workingDirectory = this._resolveWorkingDirectory(config.workingDirectory);
@@ -97,7 +97,12 @@ export class AcpAgent extends Disposable implements IAgent {
 				sessionUri,
 				createdAt,
 				workingDirectory,
-				this.agent.vendorLabel ?? this.agent.displayName,
+				{
+					vendorLabel: this.agent.vendorLabel ?? this.agent.displayName,
+					...(this.agent.loginCommand ? { loginCommand: this.agent.loginCommand } : {}),
+					...(this.agent.loginHelpUrl ? { loginHelpUrl: this.agent.loginHelpUrl } : {}),
+					...(initializeResult.authMethods ? { authMethods: initializeResult.authMethods } : {}),
+				},
 				process,
 			);
 			store = new DisposableStore();
@@ -114,7 +119,12 @@ export class AcpAgent extends Disposable implements IAgent {
 		} catch (err) {
 			store?.dispose();
 			process.dispose();
-			throw new Error(toAcpUserMessage(err, this.agent.vendorLabel ?? this.agent.displayName));
+			throw new Error(toAcpUserMessage(err, {
+				vendorLabel: this.agent.vendorLabel ?? this.agent.displayName,
+				...(this.agent.loginCommand ? { loginCommand: this.agent.loginCommand } : {}),
+				...(this.agent.loginHelpUrl ? { loginHelpUrl: this.agent.loginHelpUrl } : {}),
+				...(process.getAuthMethods().length ? { authMethods: process.getAuthMethods() } : {}),
+			}));
 		}
 	}
 

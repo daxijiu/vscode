@@ -8,7 +8,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { dirname } from '../../../../base/common/resources.js';
-import { ExternalAcpAgentConfig, ExternalAcpAgentConfigVersion, ExternalAcpAgentRegistry, ExternalAcpAgentSnapshot, createExternalAcpAgentConfig, getExternalAcpAgentRegistryResourceFromGlobalStorageHome, getExternalAcpAgentSnapshotResourceFromGlobalStorageHome, normalizeExternalAcpAgentConfig, sanitizeExternalAcpAgentId, toExternalAcpAgentSnapshot, validateExternalAcpAgentConfig } from '../../../../platform/agentHost/common/acpAgentConfig.js';
+import { ExternalAcpAgentConfig, ExternalAcpAgentConfigVersion, ExternalAcpAgentConnectionStatus, ExternalAcpAgentRegistry, ExternalAcpAgentSnapshot, createExternalAcpAgentConfig, getExternalAcpAgentRegistryResourceFromGlobalStorageHome, getExternalAcpAgentSnapshotResourceFromGlobalStorageHome, normalizeConnectionStatus, normalizeExternalAcpAgentConfig, sanitizeExternalAcpAgentId, toExternalAcpAgentSnapshot, validateExternalAcpAgentConfig } from '../../../../platform/agentHost/common/acpAgentConfig.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -17,6 +17,7 @@ import { IUserDataProfileService } from '../../../services/userDataProfile/commo
 
 export const IExternalAcpAgentRegistryService = createDecorator<IExternalAcpAgentRegistryService>('externalAcpAgentRegistryService');
 export const IExternalAcpAgentSnapshotService = createDecorator<IExternalAcpAgentSnapshotService>('externalAcpAgentSnapshotService');
+export const IExternalAcpAgentConnectionTestService = createDecorator<IExternalAcpAgentConnectionTestService>('externalAcpAgentConnectionTestService');
 
 export interface IExternalAcpAgentRegistryService {
 	readonly _serviceBrand: undefined;
@@ -27,6 +28,8 @@ export interface IExternalAcpAgentRegistryService {
 	removeAgent(id: string): Promise<void>;
 	setEnabled(id: string, enabled: boolean): Promise<void>;
 	setTrusted(id: string, trusted: boolean): Promise<void>;
+	updateConnectionStatus(id: string, status: ExternalAcpAgentConnectionStatus): Promise<void>;
+	clearConnectionStatus(id: string): Promise<void>;
 	getState(): Promise<ExternalAcpAgentRegistry>;
 }
 
@@ -34,6 +37,12 @@ export interface IExternalAcpAgentSnapshotService {
 	readonly _serviceBrand: undefined;
 	writeSnapshot(): Promise<ExternalAcpAgentSnapshot>;
 	getSnapshotResource(): Promise<string>;
+}
+
+export interface IExternalAcpAgentConnectionTestService {
+	readonly _serviceBrand: undefined;
+	testConnection(id: string): Promise<ExternalAcpAgentConnectionStatus>;
+	clearConnectionStatus(id: string): Promise<void>;
 }
 
 export class ExternalAcpAgentRegistryService extends Disposable implements IExternalAcpAgentRegistryService {
@@ -95,6 +104,24 @@ export class ExternalAcpAgentRegistryService extends Disposable implements IExte
 		await this.updateAgent(id, agent => ({ ...agent, trusted, applyState: 'pendingRestart', updatedAt: Date.now() }));
 	}
 
+	async updateConnectionStatus(id: string, status: ExternalAcpAgentConnectionStatus): Promise<void> {
+		await this.updateAgentPreservingApplyState(id, agent => ({
+			...agent,
+			connectionStatus: normalizeConnectionStatus(status),
+			updatedAt: Date.now(),
+		}));
+	}
+
+	async clearConnectionStatus(id: string): Promise<void> {
+		await this.updateAgentPreservingApplyState(id, agent => {
+			const { connectionStatus, ...rest } = agent;
+			return {
+				...rest,
+				updatedAt: Date.now(),
+			};
+		});
+	}
+
 	async getState(): Promise<ExternalAcpAgentRegistry> {
 		const resource = getExternalAcpAgentRegistryResourceFromGlobalStorageHome(this.userDataProfileService.currentProfile.globalStorageHome);
 		try {
@@ -123,6 +150,27 @@ export class ExternalAcpAgentRegistryService extends Disposable implements IExte
 			throw new Error(`External ACP agent '${normalizedId}' does not exist.`);
 		}
 		await this.saveAgent(update(agent));
+	}
+
+	private async updateAgentPreservingApplyState(id: string, update: (agent: ExternalAcpAgentConfig) => ExternalAcpAgentConfig): Promise<void> {
+		const normalizedId = sanitizeExternalAcpAgentId(id);
+		const state = await this.getState();
+		const agent = state.agents.find(candidate => candidate.id === normalizedId);
+		if (!agent) {
+			throw new Error(`External ACP agent '${normalizedId}' does not exist.`);
+		}
+		const updated = normalizeExternalAcpAgentConfig(update(agent));
+		const validation = validateExternalAcpAgentConfig(updated);
+		if (!validation.valid) {
+			throw new Error(validation.message ?? `External ACP agent '${updated.id}' is invalid.`);
+		}
+		await this.writeState({
+			version: ExternalAcpAgentConfigVersion,
+			agents: [
+				...state.agents.filter(candidate => candidate.id !== normalizedId),
+				updated,
+			].sort(sortAgents),
+		});
 	}
 
 	private async writeState(state: ExternalAcpAgentRegistry): Promise<void> {
@@ -181,6 +229,27 @@ export class ExternalAcpAgentSnapshotService extends Disposable implements IExte
 		const current = getExternalAcpAgentSnapshotResourceFromGlobalStorageHome(this.userDataProfileService.currentProfile.globalStorageHome);
 		const defaultProfile = getExternalAcpAgentSnapshotResourceFromGlobalStorageHome(this.userDataProfilesService.defaultProfile.globalStorageHome);
 		return current.toString() === defaultProfile.toString() ? [current] : [current, defaultProfile];
+	}
+}
+
+export class UnavailableExternalAcpAgentConnectionTestService implements IExternalAcpAgentConnectionTestService {
+	declare readonly _serviceBrand: undefined;
+
+	constructor(@IExternalAcpAgentRegistryService private readonly registryService: IExternalAcpAgentRegistryService) { }
+
+	async testConnection(id: string): Promise<ExternalAcpAgentConnectionStatus> {
+		const status = normalizeConnectionStatus({
+			kind: 'testFailed',
+			source: 'testConnection',
+			updatedAt: Date.now(),
+			message: 'ACP connection tests are only available in the desktop workbench.',
+		});
+		await this.registryService.updateConnectionStatus(id, status);
+		return status;
+	}
+
+	async clearConnectionStatus(id: string): Promise<void> {
+		await this.registryService.clearConnectionStatus(id);
 	}
 }
 

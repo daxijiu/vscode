@@ -8,14 +8,14 @@ import { Event } from '../../../../../base/common/event.js';
 import { Schemas } from '../../../../../base/common/network.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ExternalAcpAgentCapability, ExternalAcpAgentCwdPolicy, createExternalAcpAgentConfig, getExternalAcpAgentRegistryResourceFromGlobalStorageHome, getExternalAcpAgentSnapshotResourceFromGlobalStorageHome, sanitizeExternalAcpAgentId } from '../../../../../platform/agentHost/common/acpAgentConfig.js';
+import { ExternalAcpAgentCapability, ExternalAcpAgentCwdPolicy, createExternalAcpAgentConfig, getExternalAcpAgentRegistryResourceFromGlobalStorageHome, getExternalAcpAgentSnapshotResourceFromGlobalStorageHome, isExternalAcpLoginHelpUrlAllowed, sanitizeExternalAcpAgentId } from '../../../../../platform/agentHost/common/acpAgentConfig.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IUserDataProfilesService, toUserDataProfile } from '../../../../../platform/userDataProfile/common/userDataProfile.js';
 import { IUserDataProfileService } from '../../../../services/userDataProfile/common/userDataProfile.js';
-import { ExternalAcpAgentRegistryService, ExternalAcpAgentSnapshotService } from '../../common/externalAcpAgentProviderService.js';
+import { ExternalAcpAgentRegistryService, ExternalAcpAgentSnapshotService, UnavailableExternalAcpAgentConnectionTestService } from '../../common/externalAcpAgentProviderService.js';
 
 suite('externalAcpAgentProviderService', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
@@ -87,6 +87,8 @@ suite('externalAcpAgentProviderService', () => {
 			args: ['acp', '--flag'],
 			vendorLabel: 'uses your Cursor subscription',
 			loginHint: 'Run cursor-agent login in your terminal.',
+			loginCommand: 'cursor-agent login',
+			loginHelpUrl: 'https://cursor.example/login',
 			enabled: true,
 			trusted: true,
 			capabilities: [
@@ -121,13 +123,150 @@ suite('externalAcpAgentProviderService', () => {
 		assert.deepStrictEqual({
 			snapshotAgents: snapshot.agents.map(agent => agent.id),
 			envNames: snapshot.agents[0].envVariableNames,
+			loginCommand: snapshot.agents[0].loginCommand,
+			loginHelpUrl: snapshot.agents[0].loginHelpUrl,
 			capabilities: snapshot.agents[0].capabilities,
 			leaksRawEnvValue: snapshotText.includes('should-not-persist') || registryText.includes('should-not-persist'),
 		}, {
 			snapshotAgents: ['cursor'],
 			envNames: ['CURSOR_TOKEN', 'HTTPS_PROXY'],
+			loginCommand: 'cursor-agent login',
+			loginHelpUrl: 'https://cursor.example/login',
 			capabilities: [ExternalAcpAgentCapability.Text, ExternalAcpAgentCapability.Reasoning],
 			leaksRawEnvValue: false,
+		});
+	});
+
+	test('does not persist suspicious login command or help URL secrets', async () => {
+		await registryService.saveAgent(createExternalAcpAgentConfig({
+			id: 'cursor',
+			displayName: 'Cursor Agent',
+			command: 'cursor-agent',
+			args: ['acp'],
+			loginCommand: 'cursor-agent login --token super-secret-token',
+			loginHelpUrl: 'https://cursor.example/login?api_key=super-secret-token',
+			enabled: true,
+			trusted: true,
+		}));
+
+		const snapshot = await snapshotService.writeSnapshot();
+		const registryText = JSON.stringify(await readJson(getExternalAcpAgentRegistryResourceFromGlobalStorageHome(userDataProfileService.currentProfile.globalStorageHome)));
+		const snapshotText = JSON.stringify(await readJson(getExternalAcpAgentSnapshotResourceFromGlobalStorageHome(userDataProfileService.currentProfile.globalStorageHome)));
+
+		assert.deepStrictEqual({
+			registryAgent: await registryService.getAgent('cursor'),
+			snapshotAgent: snapshot.agents[0],
+			leaksSecret: registryText.includes('super-secret-token') || snapshotText.includes('super-secret-token'),
+		}, {
+			registryAgent: {
+				id: 'cursor',
+				displayName: 'Cursor Agent',
+				command: 'cursor-agent',
+				args: ['acp'],
+				cwdPolicy: ExternalAcpAgentCwdPolicy.Workspace,
+				enabled: true,
+				trusted: true,
+				capabilities: [ExternalAcpAgentCapability.Text, ExternalAcpAgentCapability.Reasoning],
+				applyState: 'pendingRestart',
+				createdAt: (await registryService.getAgent('cursor'))?.createdAt,
+				updatedAt: (await registryService.getAgent('cursor'))?.updatedAt,
+			},
+			snapshotAgent: {
+				id: 'cursor',
+				displayName: 'Cursor Agent',
+				command: 'cursor-agent',
+				args: ['acp'],
+				cwdPolicy: ExternalAcpAgentCwdPolicy.Workspace,
+				capabilities: [ExternalAcpAgentCapability.Text, ExternalAcpAgentCapability.Reasoning],
+			},
+			leaksSecret: false,
+		});
+	});
+
+	test('login help URL allowlist only accepts http and https URLs without suspicious secrets', () => {
+		assert.deepStrictEqual([
+			isExternalAcpLoginHelpUrlAllowed('https://cursor.example/login'),
+			isExternalAcpLoginHelpUrlAllowed('http://localhost:1234/login'),
+			isExternalAcpLoginHelpUrlAllowed('file:///tmp/login.html'),
+			isExternalAcpLoginHelpUrlAllowed('vscode://cursor/login'),
+			isExternalAcpLoginHelpUrlAllowed('cursor-login://start'),
+			isExternalAcpLoginHelpUrlAllowed('not a url'),
+			isExternalAcpLoginHelpUrlAllowed('https://cursor.example/login?token=super-secret-token'),
+		], [
+			true,
+			true,
+			false,
+			false,
+			false,
+			false,
+			false,
+		]);
+	});
+
+	test('caches redacted connection status without changing apply state or launching ACP processes', async () => {
+		await registryService.saveAgent(createExternalAcpAgentConfig({
+			id: 'cursor',
+			displayName: 'Cursor Agent',
+			command: 'definitely-not-launched-for-status-cache',
+			enabled: true,
+			trusted: true,
+		}));
+
+		await registryService.updateConnectionStatus('cursor', {
+			kind: 'authRequired',
+			source: 'runtimeError',
+			updatedAt: 123,
+			message: 'Authentication failed token=super-secret-token',
+			authMethods: [{ id: 'fake-token-super-secret-token', label: 'Fake token=super-secret-token' }],
+		});
+
+		const agent = await registryService.getAgent('cursor');
+		const snapshot = await snapshotService.writeSnapshot();
+
+		assert.deepStrictEqual({
+			applyState: agent?.applyState,
+			status: agent?.connectionStatus,
+			snapshotStatus: snapshot.agents[0].connectionStatus,
+			leaksStatusSecret: JSON.stringify(await readJson(getExternalAcpAgentRegistryResourceFromGlobalStorageHome(userDataProfileService.currentProfile.globalStorageHome))).includes('token=super-secret-token'),
+		}, {
+			applyState: 'pendingRestart',
+			status: {
+				kind: 'authRequired',
+				source: 'runtimeError',
+				updatedAt: 123,
+				message: 'Authentication failed token=[redacted]',
+				authMethods: [{ id: 'fake-token-[redacted]', label: 'Fake token=[redacted]' }],
+			},
+			snapshotStatus: {
+				kind: 'authRequired',
+				source: 'runtimeError',
+				updatedAt: 123,
+				message: 'Authentication failed token=[redacted]',
+				authMethods: [{ id: 'fake-token-[redacted]', label: 'Fake token=[redacted]' }],
+			},
+			leaksStatusSecret: false,
+		});
+	});
+
+	test('unavailable connection tester updates cached status only when explicitly called', async () => {
+		await registryService.saveAgent(createExternalAcpAgentConfig({
+			id: 'cursor',
+			displayName: 'Cursor Agent',
+			command: 'definitely-not-launched-by-render',
+			enabled: true,
+			trusted: true,
+		}));
+		const tester = new UnavailableExternalAcpAgentConnectionTestService(registryService);
+
+		assert.strictEqual((await registryService.getAgent('cursor'))?.connectionStatus, undefined);
+		const status = await tester.testConnection('cursor');
+
+		assert.deepStrictEqual({
+			statusKind: status.kind,
+			cachedKind: (await registryService.getAgent('cursor'))?.connectionStatus?.kind,
+		}, {
+			statusKind: 'testFailed',
+			cachedKind: 'testFailed',
 		});
 	});
 

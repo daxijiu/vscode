@@ -7,6 +7,7 @@ export const AcpProtocolVersion = 1;
 
 export const enum AcpMethod {
 	Initialize = 'initialize',
+	Authenticate = 'authenticate',
 	SessionNew = 'session/new',
 	SessionPrompt = 'session/prompt',
 	SessionCancel = 'session/cancel',
@@ -84,6 +85,15 @@ export interface AcpInitializeResult extends AcpJsonObject {
 	readonly agentCapabilities?: AcpAgentCapabilities;
 	readonly authMethods?: readonly AcpAuthMethod[];
 	readonly agentInfo?: AcpImplementation;
+	readonly _meta?: AcpJsonObject;
+}
+
+export interface AcpAuthenticateParams extends AcpJsonObject {
+	readonly methodId: string;
+}
+
+export interface AcpAuthenticateResult extends AcpJsonObject {
+	readonly authenticated?: boolean;
 	readonly _meta?: AcpJsonObject;
 }
 

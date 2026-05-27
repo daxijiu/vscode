@@ -191,6 +191,9 @@ import './contrib/emergencyAlert/electron-browser/emergencyAlert.contribution.js
 // MCP
 import './contrib/mcp/electron-browser/mcp.contribution.js';
 
+// Agent Providers
+import './contrib/agentProviders/electron-browser/externalAcpAgentConnectionTestService.js';
+
 // Policy Export
 import './contrib/policyExport/electron-browser/policyExport.contribution.js';
 

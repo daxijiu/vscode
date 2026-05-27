@@ -35,8 +35,8 @@ export function isAcpError(err: unknown): err is AcpError {
 	return err instanceof AcpError;
 }
 
-export function acpAuthRequiredError(): AcpError {
-	return new AcpError(AcpErrorCode.AuthRequired, 'ACP agent requires authentication.');
+export function acpAuthRequiredError(data?: AcpErrorData): AcpError {
+	return new AcpError(AcpErrorCode.AuthRequired, 'ACP agent requires authentication.', data);
 }
 
 export function acpProcessNotFoundError(command: string): AcpError {
@@ -72,12 +72,19 @@ export function acpProcessExitedError(exitCode?: number | null, signal?: string 
 
 export function acpErrorFromJsonRpcError(error: AcpJsonRpcError): AcpError {
 	if (error.code === AcpJsonRpcErrorCode.AuthRequired) {
-		return acpAuthRequiredError();
+		return acpAuthRequiredError(toAcpErrorData(error.data));
 	}
 	if (error.code === AcpJsonRpcErrorCode.ParseError) {
 		return acpMalformedJsonError();
 	}
 	return new AcpError(AcpErrorCode.ProcessExited, 'ACP request failed.', { jsonRpcCode: error.code });
+}
+
+function toAcpErrorData(data: AcpJsonValue | undefined): AcpErrorData | undefined {
+	if (!data || typeof data !== 'object' || Array.isArray(data)) {
+		return undefined;
+	}
+	return data as AcpErrorData;
 }
 
 export function redactAcpDiagnostic(value: string, secretValues: readonly string[] = []): string {

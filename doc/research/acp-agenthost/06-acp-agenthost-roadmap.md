@@ -1,6 +1,6 @@
 # ACP AgentHost Roadmap
 
-Updated: 2026-05-27
+Updated: 2026-05-28
 
 ## Product Anchor
 
@@ -247,6 +247,12 @@ Acceptance:
 - UI does not imply VS Code, Director, or Copilot owns the external subscription.
 - Logs do not expose auth tokens or API keys.
 - Terminal-auth is not required for Phase 5 acceptance.
+
+Implementation status:
+
+- 2026-05-28: implemented the Phase 5A guided recovery slice with ACP `authenticate`, redacted auth method retention, vendor-owned auth-required copy, cached login/test status, explicit Copy Login Command/Open Login Help/Clear Login Status/Test or Retry Connection actions, and Cursor/CodeBuddy smoke checklist docs.
+- Test Connection is user-triggered only, enabled + trusted gated, timeout-bounded, prompt-free, and disposes the ACP process. Render/refresh/AgentHost registration/picker paths remain no-probe.
+- Terminal-auth, tools/files/terminal, model/mode switching, registry install, session restore, Director Provider Backend, and Copilot CAPI remain out of scope.
 
 Difficulty: medium-high.
 

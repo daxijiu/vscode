@@ -150,9 +150,29 @@ suite('AcpAgent', () => {
 	});
 
 	test('reports vendor login message when session/new requires auth', async () => {
-		const agent = disposables.add(new AcpAgent(fakeAgent('auth-on-session-new', { vendorLabel: 'Cursor' })));
+		const agent = disposables.add(new AcpAgent(fakeAgent('auth-on-session-new', {
+			vendorLabel: 'Cursor',
+			loginCommand: 'cursor-agent login',
+			loginHelpUrl: 'https://cursor.example/login',
+		})));
 
-		await assert.rejects(agent.createSession({ workingDirectory: URI.file(process.cwd()) }), /Please sign in with Cursor in its CLI\/app, then retry\./);
+		await assert.rejects(agent.createSession({ workingDirectory: URI.file(process.cwd()) }), /Sign in with Cursor using the vendor-owned login flow, then retry this ACP agent\. Login command: cursor-agent login Login help: https:\/\/cursor\.example\/login/);
+	});
+
+	test('reports redacted auth method hints when session/new requires auth', async () => {
+		const agent = disposables.add(new AcpAgent(fakeAgent('auth-on-session-new-with-methods', { vendorLabel: 'Cursor' })));
+
+		await assert.rejects(agent.createSession({ workingDirectory: URI.file(process.cwd()) }), (err: unknown) => {
+			assert.ok(err instanceof Error);
+			assert.deepStrictEqual({
+				hasAuthMethods: err.message.includes('Advertised auth methods: Fake Login'),
+				leaksToken: err.message.includes('abc123'),
+			}, {
+				hasAuthMethods: true,
+				leaksToken: false,
+			});
+			return true;
+		});
 	});
 
 	test('recreating the same session URI disposes the previous ACP process', async () => {
@@ -183,7 +203,7 @@ suite('AcpAgent', () => {
 	});
 
 	test('failed replacement during session/new keeps the previous ACP session and process', async () => {
-		await assertFailedReplacementKeepsExistingSession('dispose-marker-fail-second-session-new', /Please sign in with Cursor in its CLI\/app, then retry\./);
+		await assertFailedReplacementKeepsExistingSession('dispose-marker-fail-second-session-new', /Sign in with Cursor using the vendor-owned login flow, then retry this ACP agent\./);
 	});
 
 	test('maps prompt error to terminal error turn', async () => {

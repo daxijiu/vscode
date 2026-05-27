@@ -9,13 +9,21 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
+import { ExternalAcpAgentAuthMethodInfo, redactExternalAcpAgentStatusMessage } from '../../common/acpAgentConfig.js';
 import { AgentSignal, IAgentSessionMetadata, IAgentSessionProjectInfo } from '../../common/agentService.js';
 import { ActionType, SessionAction } from '../../common/state/sessionActions.js';
 import { MessageAttachment, ResponsePart, ResponsePartKind, Turn, TurnState, UsageInfo } from '../../common/state/protocol/state.js';
 import { AcpErrorCode, isAcpError } from './acpErrors.js';
 import { AcpProcess } from './acpProcess.js';
-import { AcpMethod, AcpPromptResult, AcpSessionNotificationParams, AcpStopReason } from './acpProtocol.js';
+import { AcpAuthMethod, AcpMethod, AcpPromptResult, AcpSessionNotificationParams, AcpStopReason } from './acpProtocol.js';
 import { mapAcpSessionUpdate } from './acpSessionUpdateMapper.js';
+
+export interface AcpAuthRecoveryContext {
+	readonly vendorLabel: string;
+	readonly loginCommand?: string;
+	readonly loginHelpUrl?: string;
+	readonly authMethods?: readonly AcpAuthMethod[];
+}
 
 interface AcpInFlightTurn {
 	readonly turnId: string;
@@ -45,7 +53,7 @@ export class AcpAgentSession extends Disposable {
 		readonly sessionUri: URI,
 		readonly createdAt: number,
 		readonly workingDirectory: URI | undefined,
-		private readonly _vendorLabel: string,
+		private readonly _authContext: AcpAuthRecoveryContext,
 		private readonly _process: AcpProcess,
 	) {
 		super();
@@ -205,7 +213,10 @@ export class AcpAgentSession extends Disposable {
 		if (this._isTerminal(inFlight)) {
 			return;
 		}
-		this._error(inFlight, toAcpUserMessage(err, this._vendorLabel));
+		this._error(inFlight, toAcpUserMessage(err, {
+			...this._authContext,
+			authMethods: this._process.getAuthMethods().length ? this._process.getAuthMethods() : this._authContext.authMethods,
+		}));
 	}
 
 	private _project(workingDirectory: URI): IAgentSessionProjectInfo {
@@ -389,12 +400,74 @@ export class AcpAgentSession extends Disposable {
 	}
 }
 
-export function toAcpUserMessage(err: unknown, vendorLabel: string): string {
+export function toAcpUserMessage(err: unknown, context: AcpAuthRecoveryContext): string {
 	if (isAcpError(err) && err.acpCode === AcpErrorCode.AuthRequired) {
-		return localize('acpAgent.authRequired', "Please sign in with {0} in its CLI/app, then retry.", vendorLabel);
+		return formatAuthRequiredMessage(context, err);
 	}
 	if (err instanceof Error && err.message) {
 		return err.message;
 	}
 	return localize('acpAgent.unknownError', "The ACP agent failed.");
+}
+
+export function toRedactedAcpAuthMethods(methods: readonly AcpAuthMethod[] | readonly ExternalAcpAgentAuthMethodInfo[] | undefined): readonly ExternalAcpAgentAuthMethodInfo[] {
+	if (!methods) {
+		return [];
+	}
+	return methods.map(method => {
+		const id = readStringProperty(method, 'id');
+		const label = toAuthMethodLabel(method);
+		return {
+			...(id ? { id: redactExternalAcpAgentStatusMessage(id) } : {}),
+			...(label ? { label } : {}),
+		};
+	}).filter(method => method.id !== undefined || method.label !== undefined).slice(0, 8);
+}
+
+function formatAuthRequiredMessage(context: AcpAuthRecoveryContext, err: unknown): string {
+	const methods = toRedactedAcpAuthMethods(context.authMethods?.length ? context.authMethods : getErrorAuthMethods(err));
+	const parts = [
+		localize('acpAgent.authRequired', "Sign in with {0} using the vendor-owned login flow, then retry this ACP agent.", context.vendorLabel),
+	];
+	if (context.loginCommand) {
+		parts.push(localize('acpAgent.authRequiredCommand', "Login command: {0}", redactExternalAcpAgentStatusMessage(context.loginCommand)));
+	}
+	if (context.loginHelpUrl) {
+		parts.push(localize('acpAgent.authRequiredHelp', "Login help: {0}", redactExternalAcpAgentStatusMessage(context.loginHelpUrl)));
+	}
+	if (methods.length) {
+		parts.push(localize('acpAgent.authRequiredMethods', "Advertised auth methods: {0}", methods.map(method => method.label ?? method.id).join(', ')));
+	}
+	return parts.join(' ');
+}
+
+function getErrorAuthMethods(err: unknown): readonly ExternalAcpAgentAuthMethodInfo[] {
+	if (!isAcpError(err)) {
+		return [];
+	}
+	const methods = err.data?.authMethods;
+	if (!Array.isArray(methods)) {
+		return [];
+	}
+	return methods
+		.filter((method): method is ExternalAcpAgentAuthMethodInfo => typeof method === 'object' && method !== null && !Array.isArray(method))
+		.map(method => ({
+			...(typeof method.id === 'string' ? { id: method.id } : {}),
+			...(typeof method.label === 'string' ? { label: method.label } : {}),
+		}));
+}
+
+function toAuthMethodLabel(method: AcpAuthMethod | ExternalAcpAgentAuthMethodInfo): string | undefined {
+	const label = readStringProperty(method, 'label');
+	if (label) {
+		return redactExternalAcpAgentStatusMessage(label);
+	}
+	const name = readStringProperty(method, 'name');
+	const description = readStringProperty(method, 'description');
+	return redactExternalAcpAgentStatusMessage(name ?? description ?? '');
+}
+
+function readStringProperty(value: object, property: string): string | undefined {
+	const descriptor = Object.getOwnPropertyDescriptor(value, property);
+	return typeof descriptor?.value === 'string' ? descriptor.value : undefined;
 }

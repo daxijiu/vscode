@@ -28,6 +28,57 @@ suite('acpProcess', () => {
 		});
 	});
 
+	test('records initialize auth methods without exposing auth secrets', async () => {
+		const process = disposables.add(createProcess('auth-methods'));
+
+		await process.initialize();
+
+		assert.deepStrictEqual(process.getAuthMethods(), [{
+			id: 'fake-login',
+			name: 'Fake Login',
+			description: 'Uses vendor-owned fake login',
+		}]);
+	});
+
+	test('authenticates with a vendor auth method after explicit caller action', async () => {
+		const process = disposables.add(createProcess('authenticate-success'));
+
+		const initialize = await process.initialize();
+		const result = await process.authenticate(initialize.authMethods?.[0].id ?? '');
+
+		assert.deepStrictEqual(result, { authenticated: true });
+	});
+
+	test('authenticate failures are structured and redacted', async () => {
+		const process = disposables.add(createProcess('authenticate-fail'));
+
+		await process.initialize();
+
+		await assert.rejects(process.authenticate('fake-login'), (err: unknown) => {
+			assert.ok(err instanceof AcpError);
+			assert.deepStrictEqual({
+				code: err.acpCode,
+				message: err.message,
+				leaksRemoteSecret: err.message.includes('abc123'),
+			}, {
+				code: AcpErrorCode.AuthRequired,
+				message: 'ACP agent requires authentication.',
+				leaksRemoteSecret: false,
+			});
+			return true;
+		});
+	});
+
+	test('authenticate timeout rejects and caller disposal kills the child', async () => {
+		const process = disposables.add(createProcess('authenticate-timeout', { authenticateTimeoutMs: 10 }));
+
+		await process.initialize();
+		await assertAcpRejects(process.authenticate('fake-login'), AcpErrorCode.Timeout);
+		process.dispose();
+
+		assert.strictEqual(process.diagnostic().running, false);
+	});
+
 	test('unsupported protocol version fails clearly', async () => {
 		const process = disposables.add(createProcess('unsupported-version'));
 

@@ -15,12 +15,13 @@ import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/edit
 import { IWorkbenchContribution, WorkbenchPhase, registerWorkbenchContribution2 } from '../../../common/contributions.js';
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../common/editor.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
-import { ExternalAcpAgentRegistryService, ExternalAcpAgentSnapshotService, IExternalAcpAgentRegistryService, IExternalAcpAgentSnapshotService } from '../common/externalAcpAgentProviderService.js';
+import { ExternalAcpAgentRegistryService, ExternalAcpAgentSnapshotService, IExternalAcpAgentConnectionTestService, IExternalAcpAgentRegistryService, IExternalAcpAgentSnapshotService, UnavailableExternalAcpAgentConnectionTestService } from '../common/externalAcpAgentProviderService.js';
 import { ExternalAcpAgentsEditor } from './externalAcpAgents/externalAcpAgentsEditor.js';
 import { ExternalAcpAgentsEditorInput, ExternalAcpAgentsEditorInputSerializer } from './externalAcpAgents/externalAcpAgentsEditorInput.js';
 
 registerSingleton(IExternalAcpAgentRegistryService, ExternalAcpAgentRegistryService, InstantiationType.Delayed);
 registerSingleton(IExternalAcpAgentSnapshotService, ExternalAcpAgentSnapshotService, InstantiationType.Delayed);
+registerSingleton(IExternalAcpAgentConnectionTestService, UnavailableExternalAcpAgentConnectionTestService, InstantiationType.Delayed);
 
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
 	EditorPaneDescriptor.create(

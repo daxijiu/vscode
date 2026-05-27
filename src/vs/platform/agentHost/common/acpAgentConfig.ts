@@ -28,6 +28,21 @@ export enum ExternalAcpAgentCapability {
 }
 
 export type ExternalAcpAgentApplyState = 'clean' | 'pendingRestart' | 'snapshotWriteFailed' | 'invalidConfig';
+export type ExternalAcpAgentConnectionStatusKind = 'unknown' | 'authRequired' | 'loginHelpShown' | 'testSucceeded' | 'testFailed' | 'processNotFound' | 'missingRuntimeEnv' | 'timeout';
+export type ExternalAcpAgentConnectionStatusSource = 'cached' | 'userAction' | 'runtimeError' | 'testConnection';
+
+export interface ExternalAcpAgentAuthMethodInfo {
+	readonly id?: string;
+	readonly label?: string;
+}
+
+export interface ExternalAcpAgentConnectionStatus {
+	readonly kind: ExternalAcpAgentConnectionStatusKind;
+	readonly source: ExternalAcpAgentConnectionStatusSource;
+	readonly updatedAt: number;
+	readonly message?: string;
+	readonly authMethods?: readonly ExternalAcpAgentAuthMethodInfo[];
+}
 
 export interface ExternalAcpAgentConfig {
 	readonly id: string;
@@ -38,12 +53,15 @@ export interface ExternalAcpAgentConfig {
 	readonly cwd?: string;
 	readonly vendorLabel?: string;
 	readonly loginHint?: string;
+	readonly loginCommand?: string;
+	readonly loginHelpUrl?: string;
 	readonly enabled: boolean;
 	readonly trusted: boolean;
 	readonly capabilities: readonly ExternalAcpAgentCapability[];
 	readonly envVariableNames?: readonly string[];
 	readonly secretRefs?: readonly string[];
 	readonly applyState?: ExternalAcpAgentApplyState;
+	readonly connectionStatus?: ExternalAcpAgentConnectionStatus;
 	readonly createdAt: number;
 	readonly updatedAt: number;
 }
@@ -62,9 +80,12 @@ export interface ExternalAcpAgentSnapshotAgent {
 	readonly cwd?: string;
 	readonly vendorLabel?: string;
 	readonly loginHint?: string;
+	readonly loginCommand?: string;
+	readonly loginHelpUrl?: string;
 	readonly capabilities: readonly ExternalAcpAgentCapability[];
 	readonly envVariableNames?: readonly string[];
 	readonly secretRefs?: readonly string[];
+	readonly connectionStatus?: ExternalAcpAgentConnectionStatus;
 }
 
 export interface ExternalAcpAgentSnapshot {
@@ -81,6 +102,7 @@ export interface ExternalAcpAgentValidationResult {
 const AcpAgentIdMaxLength = 80;
 const AcpAgentIdPattern = /^[a-z0-9][a-z0-9_.-]*$/;
 const EnvNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SuspiciousSecretPattern = /(?:\b(?:bearer|token|api[_-]?key|secret|password)\b\s*[=:]|--(?:token|api-key|apikey|password|secret)\b|\bbearer\s+[A-Za-z0-9._~+/-]+=*)/i;
 
 export function getExternalAcpAgentStorageHomeFromGlobalStorageHome(globalStorageHome: URI): URI {
 	return joinPath(globalStorageHome, ExternalAcpAgentStorageDirName);
@@ -145,12 +167,15 @@ export function normalizeExternalAcpAgentConfig(agent: ExternalAcpAgentConfig): 
 		...(agent.cwd?.trim() ? { cwd: agent.cwd.trim() } : {}),
 		...(agent.vendorLabel?.trim() ? { vendorLabel: agent.vendorLabel.trim() } : {}),
 		...(agent.loginHint?.trim() ? { loginHint: agent.loginHint.trim() } : {}),
+		...safePersistedLoginField('loginCommand', agent.loginCommand),
+		...safePersistedLoginField('loginHelpUrl', agent.loginHelpUrl),
 		enabled: agent.enabled !== false,
 		trusted: agent.trusted === true,
 		capabilities: normalizeCapabilities(agent.capabilities),
 		...(agent.envVariableNames !== undefined ? { envVariableNames: sanitizeEnvVariableNames(agent.envVariableNames) } : {}),
 		...(agent.secretRefs !== undefined ? { secretRefs: normalizeStringList(agent.secretRefs) } : {}),
 		applyState: agent.applyState ?? 'pendingRestart',
+		...(agent.connectionStatus !== undefined ? { connectionStatus: normalizeConnectionStatus(agent.connectionStatus) } : {}),
 		createdAt: agent.createdAt ?? now,
 		updatedAt: agent.updatedAt ?? now,
 	};
@@ -165,11 +190,14 @@ export function createExternalAcpAgentConfig(options: {
 	readonly cwd?: string;
 	readonly vendorLabel?: string;
 	readonly loginHint?: string;
+	readonly loginCommand?: string;
+	readonly loginHelpUrl?: string;
 	readonly enabled?: boolean;
 	readonly trusted?: boolean;
 	readonly capabilities?: readonly ExternalAcpAgentCapability[];
 	readonly envVariableNames?: readonly string[];
 	readonly secretRefs?: readonly string[];
+	readonly connectionStatus?: ExternalAcpAgentConnectionStatus;
 }): ExternalAcpAgentConfig {
 	const now = Date.now();
 	return normalizeExternalAcpAgentConfig({
@@ -181,11 +209,14 @@ export function createExternalAcpAgentConfig(options: {
 		...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
 		...(options.vendorLabel !== undefined ? { vendorLabel: options.vendorLabel } : {}),
 		...(options.loginHint !== undefined ? { loginHint: options.loginHint } : {}),
+		...(options.loginCommand !== undefined ? { loginCommand: options.loginCommand } : {}),
+		...(options.loginHelpUrl !== undefined ? { loginHelpUrl: options.loginHelpUrl } : {}),
 		enabled: options.enabled ?? false,
 		trusted: options.trusted ?? false,
 		capabilities: options.capabilities ?? [ExternalAcpAgentCapability.Text, ExternalAcpAgentCapability.Reasoning],
 		...(options.envVariableNames !== undefined ? { envVariableNames: options.envVariableNames } : {}),
 		...(options.secretRefs !== undefined ? { secretRefs: options.secretRefs } : {}),
+		...(options.connectionStatus !== undefined ? { connectionStatus: options.connectionStatus } : {}),
 		applyState: 'pendingRestart',
 		createdAt: now,
 		updatedAt: now,
@@ -207,11 +238,49 @@ export function toExternalAcpAgentSnapshot(agents: readonly ExternalAcpAgentConf
 				...(agent.cwd !== undefined ? { cwd: agent.cwd } : {}),
 				...(agent.vendorLabel !== undefined ? { vendorLabel: agent.vendorLabel } : {}),
 				...(agent.loginHint !== undefined ? { loginHint: agent.loginHint } : {}),
+				...(agent.loginCommand !== undefined ? { loginCommand: agent.loginCommand } : {}),
+				...(agent.loginHelpUrl !== undefined ? { loginHelpUrl: agent.loginHelpUrl } : {}),
 				capabilities: safeSnapshotCapabilities(agent.capabilities),
 				...(agent.envVariableNames !== undefined ? { envVariableNames: sanitizeEnvVariableNames(agent.envVariableNames) } : {}),
 				...(agent.secretRefs !== undefined ? { secretRefs: normalizeStringList(agent.secretRefs) } : {}),
+				...(agent.connectionStatus !== undefined ? { connectionStatus: normalizeConnectionStatus(agent.connectionStatus) } : {}),
 			})),
 	};
+}
+
+export function normalizeConnectionStatus(status: ExternalAcpAgentConnectionStatus): ExternalAcpAgentConnectionStatus {
+	return {
+		kind: normalizeConnectionStatusKind(status.kind),
+		source: normalizeConnectionStatusSource(status.source),
+		updatedAt: typeof status.updatedAt === 'number' ? status.updatedAt : Date.now(),
+		...(status.message?.trim() ? { message: redactExternalAcpAgentStatusMessage(status.message.trim()) } : {}),
+		...(status.authMethods !== undefined ? { authMethods: normalizeAuthMethods(status.authMethods) } : {}),
+	};
+}
+
+export function redactExternalAcpAgentStatusMessage(message: string): string {
+	let redacted = message.replace(/(bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, '$1[redacted]');
+	redacted = redacted.replace(/((?:api[_-]?key|token|secret|password)\s*=\s*)[^\s]+/gi, '$1[redacted]');
+	redacted = redacted.replace(/(--(?:api-key|apikey|token|secret|password)(?:=|\s+))[^\s]+/gi, '$1[redacted]');
+	redacted = redacted.replace(/((?:api[_-]?key|token|secret|password)[_-])[^\s,;]+/gi, '$1[redacted]');
+	redacted = redacted.replace(/((?:api[_-]?key|token|secret|password)["']?\s*:\s*["'])[^\s"']+/gi, '$1[redacted]');
+	return redacted;
+}
+
+export function containsSuspiciousExternalAcpLoginSecret(value: string | undefined): boolean {
+	return typeof value === 'string' && SuspiciousSecretPattern.test(value);
+}
+
+export function isExternalAcpLoginHelpUrlAllowed(value: string | undefined): boolean {
+	if (!value?.trim() || containsSuspiciousExternalAcpLoginSecret(value)) {
+		return false;
+	}
+	try {
+		const uri = URI.parse(value.trim(), true);
+		return (uri.scheme === 'https' || uri.scheme === 'http') && uri.authority.length > 0;
+	} catch {
+		return false;
+	}
 }
 
 export function sanitizeEnvVariableNames(names: readonly string[]): readonly string[] {
@@ -236,6 +305,57 @@ function safeSnapshotCapabilities(capabilities: readonly ExternalAcpAgentCapabil
 
 function normalizeStringList(values: readonly string[]): readonly string[] {
 	return Array.from(new Set(values.map(value => value.trim()).filter(value => value.length > 0)));
+}
+
+function safePersistedLoginField(name: 'loginCommand', value: string | undefined): { readonly loginCommand?: string };
+function safePersistedLoginField(name: 'loginHelpUrl', value: string | undefined): { readonly loginHelpUrl?: string };
+function safePersistedLoginField(name: 'loginCommand' | 'loginHelpUrl', value: string | undefined): { readonly loginCommand?: string; readonly loginHelpUrl?: string } {
+	const trimmed = value?.trim();
+	if (!trimmed || containsSuspiciousExternalAcpLoginSecret(trimmed)) {
+		return {};
+	}
+	if (name === 'loginCommand') {
+		return { loginCommand: trimmed };
+	}
+	return { loginHelpUrl: trimmed };
+}
+
+function normalizeAuthMethods(methods: readonly ExternalAcpAgentAuthMethodInfo[]): readonly ExternalAcpAgentAuthMethodInfo[] {
+	return methods
+		.map(method => ({
+			...(method.id?.trim() ? { id: redactExternalAcpAgentStatusMessage(method.id.trim()) } : {}),
+			...(method.label?.trim() ? { label: redactExternalAcpAgentStatusMessage(method.label.trim()) } : {}),
+		}))
+		.filter(method => method.id !== undefined || method.label !== undefined)
+		.slice(0, 8);
+}
+
+function normalizeConnectionStatusKind(kind: ExternalAcpAgentConnectionStatusKind): ExternalAcpAgentConnectionStatusKind {
+	switch (kind) {
+		case 'authRequired':
+		case 'loginHelpShown':
+		case 'testSucceeded':
+		case 'testFailed':
+		case 'processNotFound':
+		case 'missingRuntimeEnv':
+		case 'timeout':
+			return kind;
+		case 'unknown':
+		default:
+			return 'unknown';
+	}
+}
+
+function normalizeConnectionStatusSource(source: ExternalAcpAgentConnectionStatusSource): ExternalAcpAgentConnectionStatusSource {
+	switch (source) {
+		case 'userAction':
+		case 'runtimeError':
+		case 'testConnection':
+			return source;
+		case 'cached':
+		default:
+			return 'cached';
+	}
 }
 
 function normalizeCwdPolicy(policy: ExternalAcpAgentCwdPolicy | undefined): ExternalAcpAgentCwdPolicy {

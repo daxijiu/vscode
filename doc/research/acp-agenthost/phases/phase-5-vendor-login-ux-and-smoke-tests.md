@@ -1,6 +1,6 @@
 # Phase 5 - Vendor Login UX And Smoke Tests
 
-Updated: 2026-05-27
+Updated: 2026-05-28
 
 ## Goal
 
@@ -81,12 +81,31 @@ Phase 4 only needs to show a clear login-required message. Phase 5 turns that in
 - Terminal-auth is not required for Phase 5 acceptance and remains explicitly deferred.
 - Any `authenticate` attempt is user-triggered, cancellable, timeout-bounded, and redacted.
 
+## Implementation Status
+
+- 2026-05-28: implemented ACP `authenticate` DTOs and `AcpProcess.authenticate(methodId)` with timeout/dispose behavior, no prompt payload, no file/tool/terminal capability advertisement, and initialize `authMethods` retention.
+- Runtime auth-required errors now produce vendor-owned recovery copy with configured login command/help URL and redacted auth method ids/labels.
+- External ACP Agents config/status now includes `loginCommand`, `loginHelpUrl`, and cached redacted connection status with source and update time.
+- Management UI adds explicit user actions for Copy Login Command, Open Login Help, Clear Login Status, and Test/Retry Connection. Render, refresh, AgentHost registration, and picker display remain config-only and do not launch ACP processes.
+- Desktop Test Connection is user-triggered only, requires enabled + trusted config, starts the configured ACP command, runs initialize, runs authenticate only for safe/explicitly allowed auth methods, sends no prompt, caches redacted login help status for other advertised auth methods, and disposes the process.
+- Fake ACP tests cover auth methods, authenticate success/failure/timeout, auth-required copy, and redaction. Real vendor smoke checklists were added under `../vendor-smoke-tests/`.
+- Deferred: terminal-auth, tools/files/terminal permissions, registry install, model/mode switching, session restore, Director Provider Backend, and Copilot CAPI.
+
 ## Validation
 
 ```powershell
 npm run compile-check-ts-native
 npm run test-node -- --grep acp
 ```
+
+Validation record:
+
+- 2026-05-28: `npm run compile-check-ts-native` passed.
+- 2026-05-28: `npm run transpile-client` passed.
+- 2026-05-28: `npm run test-node -- --runGlob "vs/platform/agentHost/test/node/acp/**/*.test.js"` passed with 44 tests.
+- 2026-05-28: `npm run test-node -- --runGlob "vs/workbench/contrib/agentProviders/test/**/*.test.js"` passed with 14 tests.
+- 2026-05-28: `npm run valid-layers-check` passed.
+- 2026-05-28: `git diff --check` passed with only Git LF-to-CRLF working-copy warnings.
 
 Manual smoke:
 
