@@ -4,15 +4,19 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Emitter } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { IObservable, observableValue } from '../../../../base/common/observable.js';
+import { basename } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
-import { ExternalAcpAgentSnapshotAgent, sanitizeExternalAcpAgentId } from '../../common/acpAgentConfig.js';
-import { AgentProvider, IAgent, IAgentCreateSessionConfig, IAgentCreateSessionResult, IAgentDescriptor, IAgentModelInfo, IAgentResolveSessionConfigParams, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata, AgentSignal } from '../../common/agentService.js';
+import { ExternalAcpAgentCwdPolicy, ExternalAcpAgentSnapshotAgent, sanitizeExternalAcpAgentId } from '../../common/acpAgentConfig.js';
+import { AgentProvider, AgentSession, IAgent, IAgentCreateSessionConfig, IAgentCreateSessionResult, IAgentDescriptor, IAgentModelInfo, IAgentResolveSessionConfigParams, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata, IAgentSessionProjectInfo, AgentSignal } from '../../common/agentService.js';
 import { ISyncedCustomization } from '../../common/agentPluginManager.js';
 import { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
 import { ConfigSchema, CustomizationRef, MessageAttachment, ModelSelection, PendingMessage, ProtectedResourceMetadata, SessionInputAnswer, SessionInputResponseKind, ToolCallResult, ToolDefinition, Turn } from '../../common/state/protocol/state.js';
+import { AcpAgentSession, toAcpUserMessage } from './acpAgentSession.js';
+import { AcpProcess } from './acpProcess.js';
 
 const AcpAgentProviderPrefix = 'acp-';
 
@@ -40,6 +44,7 @@ export class AcpAgent extends Disposable implements IAgent {
 
 	private readonly _models: IObservable<readonly IAgentModelInfo[]>;
 	readonly models: IObservable<readonly IAgentModelInfo[]>;
+	private readonly _sessions = new Map<string, { readonly session: AcpAgentSession; readonly store: DisposableStore }>();
 
 	constructor(private readonly agent: ExternalAcpAgentSnapshotAgent) {
 		super();
@@ -73,8 +78,44 @@ export class AcpAgent extends Disposable implements IAgent {
 		return false;
 	}
 
-	async createSession(_config: IAgentCreateSessionConfig = {}): Promise<IAgentCreateSessionResult> {
-		throw new Error(localize('acpAgent.phase4Required', "External ACP agent sessions are not available yet. Phase 4 will connect this agent to its ACP runtime."));
+	async createSession(config: IAgentCreateSessionConfig = {}): Promise<IAgentCreateSessionResult> {
+		const sessionUri = config.session ?? AgentSession.uri(this.id, generateUuid());
+		const sessionKey = sessionUri.toString();
+
+		const process = new AcpProcess({
+			agent: this.agent,
+			workspaceCwd: config.workingDirectory?.fsPath,
+		});
+		let store: DisposableStore | undefined;
+		try {
+			await process.initialize();
+			const newSession = await process.newSession(process.sessionCwd());
+			const createdAt = Date.now();
+			const workingDirectory = this._resolveWorkingDirectory(config.workingDirectory);
+			const session = new AcpAgentSession(
+				newSession.sessionId,
+				sessionUri,
+				createdAt,
+				workingDirectory,
+				this.agent.vendorLabel ?? this.agent.displayName,
+				process,
+			);
+			store = new DisposableStore();
+			store.add(session);
+			store.add(session.onDidSessionProgress(signal => this._onDidSessionProgress.fire(signal)));
+			const previousEntry = this._sessions.get(sessionKey);
+			this._sessions.set(sessionKey, { session, store });
+			store = undefined;
+			previousEntry?.store.dispose();
+			return {
+				session: sessionUri,
+				...(workingDirectory ? { workingDirectory, project: this._project(workingDirectory) } : {}),
+			};
+		} catch (err) {
+			store?.dispose();
+			process.dispose();
+			throw new Error(toAcpUserMessage(err, this.agent.vendorLabel ?? this.agent.displayName));
+		}
 	}
 
 	async resolveSessionConfig(_params: IAgentResolveSessionConfigParams): Promise<ResolveSessionConfigResult> {
@@ -88,19 +129,36 @@ export class AcpAgent extends Disposable implements IAgent {
 		return { items: [] };
 	}
 
-	async sendMessage(_session: URI, _prompt: string, _attachments?: readonly MessageAttachment[], _turnId?: string): Promise<void> {
-		throw new Error(localize('acpAgent.sendUnsupported', "External ACP agent messaging is not available until Phase 4."));
+	async sendMessage(session: URI, prompt: string, attachments?: readonly MessageAttachment[], turnId?: string): Promise<void> {
+		const activeSession = this._sessions.get(session.toString())?.session;
+		if (!activeSession) {
+			throw new Error(localize('acpAgent.sessionMissing', "External ACP agent session is no longer available."));
+		}
+		await activeSession.send(prompt, attachments, turnId ?? generateUuid());
 	}
 
 	setPendingMessages(_session: URI, _steeringMessage: PendingMessage | undefined, _queuedMessages: readonly PendingMessage[]): void { }
 
-	async getSessionMessages(_session: URI): Promise<readonly Turn[]> {
-		return [];
+	async getSessionMessages(session: URI): Promise<readonly Turn[]> {
+		return this._sessions.get(session.toString())?.session.getTurns() ?? [];
 	}
 
-	async disposeSession(_session: URI): Promise<void> { }
+	async disposeSession(session: URI): Promise<void> {
+		this._disposeSession(session.toString());
+	}
 
-	async abortSession(_session: URI): Promise<void> { }
+	private _disposeSession(sessionKey: string): void {
+		const entry = this._sessions.get(sessionKey);
+		if (!entry) {
+			return;
+		}
+		this._sessions.delete(sessionKey);
+		entry.store.dispose();
+	}
+
+	async abortSession(session: URI): Promise<void> {
+		await this._sessions.get(session.toString())?.session.abort();
+	}
 
 	async changeModel(_session: URI, _model: ModelSelection): Promise<void> {
 		throw new Error(localize('acpAgent.changeModelUnsupported', "External ACP agent model selection is not available until ACP model capability support is implemented."));
@@ -111,11 +169,11 @@ export class AcpAgent extends Disposable implements IAgent {
 	respondToUserInputRequest(_requestId: string, _response: SessionInputResponseKind, _answers?: Record<string, SessionInputAnswer>): void { }
 
 	async listSessions(): Promise<IAgentSessionMetadata[]> {
-		return [];
+		return Array.from(this._sessions.values(), entry => entry.session.createMetadata());
 	}
 
-	async getSessionMetadata(_session: URI): Promise<IAgentSessionMetadata | undefined> {
-		return undefined;
+	async getSessionMetadata(session: URI): Promise<IAgentSessionMetadata | undefined> {
+		return this._sessions.get(session.toString())?.session.createMetadata();
 	}
 
 	async setClientCustomizations(_session: URI, _clientId: string, _customizations: CustomizationRef[]): Promise<ISyncedCustomization[]> {
@@ -128,5 +186,32 @@ export class AcpAgent extends Disposable implements IAgent {
 
 	setCustomizationEnabled(_uri: string, _enabled: boolean): void { }
 
-	async shutdown(): Promise<void> { }
+	async shutdown(): Promise<void> {
+		for (const entry of this._sessions.values()) {
+			entry.store.dispose();
+		}
+		this._sessions.clear();
+	}
+
+	override dispose(): void {
+		void this.shutdown();
+		super.dispose();
+	}
+
+	private _resolveWorkingDirectory(requested: URI | undefined): URI | undefined {
+		if (requested) {
+			return requested;
+		}
+		if (this.agent.cwdPolicy === ExternalAcpAgentCwdPolicy.Fixed && this.agent.cwd) {
+			return URI.file(this.agent.cwd);
+		}
+		return undefined;
+	}
+
+	private _project(workingDirectory: URI): IAgentSessionProjectInfo {
+		return {
+			uri: workingDirectory,
+			displayName: basename(workingDirectory) || workingDirectory.fsPath || workingDirectory.path,
+		};
+	}
 }

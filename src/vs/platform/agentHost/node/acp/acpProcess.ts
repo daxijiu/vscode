@@ -4,18 +4,21 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as cp from 'child_process';
+import { Event } from '../../../../base/common/event.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ExternalAcpAgentSnapshotAgent } from '../../common/acpAgentConfig.js';
 import { AcpConnection } from './acpConnection.js';
 import { acpProcessExitedError, acpProcessNotFoundError, acpUnsupportedProtocolVersionError, isAcpError, redactAcpDiagnostic, AcpError, AcpErrorCode } from './acpErrors.js';
 import { resolveAcpRuntimeEnvironment } from './acpRuntimeEnvironment.js';
-import { AcpInitializeParams, AcpInitializeResult, AcpMethod, AcpProtocolVersion } from './acpProtocol.js';
+import { AcpCancelSessionParams, AcpInitializeParams, AcpInitializeResult, AcpJsonRpcNotification, AcpMethod, AcpNewSessionParams, AcpNewSessionResult, AcpPromptParams, AcpPromptResult, AcpProtocolVersion } from './acpProtocol.js';
 
 export interface AcpProcessOptions {
 	readonly agent: ExternalAcpAgentSnapshotAgent;
 	readonly workspaceCwd?: string;
 	readonly hostEnv?: NodeJS.ProcessEnv;
 	readonly initializeTimeoutMs?: number;
+	readonly sessionRequestTimeoutMs?: number;
+	readonly promptTimeoutMs?: number;
 }
 
 export interface AcpProcessDiagnostic {
@@ -30,6 +33,8 @@ export interface AcpProcessDiagnostic {
 
 const MaxStderrLength = 8192;
 const DefaultInitializeTimeoutMs = 10_000;
+const DefaultSessionRequestTimeoutMs = 10_000;
+const DefaultPromptTimeoutMs = 30 * 60 * 1000;
 
 export class AcpProcess extends Disposable {
 	private readonly connection = this._register(new MutableDisposable<AcpConnection>());
@@ -72,6 +77,39 @@ export class AcpProcess extends Disposable {
 		}
 	}
 
+	get onDidNotification(): Event<AcpJsonRpcNotification> {
+		this.start();
+		return this.connection.value!.onDidNotification;
+	}
+
+	async newSession(cwd: string): Promise<AcpNewSessionResult> {
+		this.start();
+		const params: AcpNewSessionParams = {
+			cwd,
+			mcpServers: [],
+		};
+		return this.connection.value!.request<AcpNewSessionParams, AcpNewSessionResult>(
+			AcpMethod.SessionNew,
+			params,
+			this.options.sessionRequestTimeoutMs ?? DefaultSessionRequestTimeoutMs,
+		);
+	}
+
+	async prompt(params: AcpPromptParams): Promise<AcpPromptResult> {
+		this.start();
+		return this.connection.value!.request<AcpPromptParams, AcpPromptResult>(
+			AcpMethod.SessionPrompt,
+			params,
+			this.options.promptTimeoutMs ?? DefaultPromptTimeoutMs,
+		);
+	}
+
+	async cancel(sessionId: string): Promise<void> {
+		this.start();
+		const params: AcpCancelSessionParams = { sessionId };
+		await this.connection.value!.notify(AcpMethod.SessionCancel, params);
+	}
+
 	kill(): void {
 		this.dispose();
 	}
@@ -86,6 +124,10 @@ export class AcpProcess extends Disposable {
 			stderr: this.stderr,
 			running: this.child !== undefined && !this.child.killed && this.exitCode === undefined,
 		};
+	}
+
+	sessionCwd(): string {
+		return this.cwd ?? this.options.workspaceCwd ?? process.cwd();
 	}
 
 	override dispose(): void {

@@ -7,7 +7,7 @@ import { Readable, Writable } from 'stream';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { acpErrorFromJsonRpcError, acpMalformedJsonError, acpProcessExitedError, acpTimeoutError, AcpError } from './acpErrors.js';
-import { AcpJsonObject, AcpJsonRpcError, AcpJsonRpcId, AcpJsonRpcRequest, AcpJsonRpcResponse, AcpJsonValue } from './acpProtocol.js';
+import { AcpJsonObject, AcpJsonRpcError, AcpJsonRpcErrorCode, AcpJsonRpcId, AcpJsonRpcNotification, AcpJsonRpcRequest, AcpJsonRpcResponse, AcpJsonValue } from './acpProtocol.js';
 
 interface PendingRequest {
 	readonly method: string;
@@ -19,11 +19,13 @@ interface PendingRequest {
 export class AcpConnection extends Disposable {
 	private readonly pending = new Map<AcpJsonRpcId, PendingRequest>();
 	private readonly onDidCloseEmitter = this._register(new Emitter<AcpError>());
+	private readonly onDidNotificationEmitter = this._register(new Emitter<AcpJsonRpcNotification>());
 	private buffer = '';
 	private nextRequestId = 1;
 	private closed = false;
 
 	readonly onDidClose: Event<AcpError> = this.onDidCloseEmitter.event;
+	readonly onDidNotification: Event<AcpJsonRpcNotification> = this.onDidNotificationEmitter.event;
 
 	constructor(
 		private readonly input: Readable,
@@ -77,6 +79,28 @@ export class AcpConnection extends Disposable {
 		});
 	}
 
+	notify<TParams extends AcpJsonValue>(method: string, params: TParams): Promise<void> {
+		if (this.closed) {
+			return Promise.reject(acpProcessExitedError());
+		}
+
+		const message: AcpJsonRpcNotification<TParams> = {
+			jsonrpc: '2.0',
+			method,
+			params,
+		};
+
+		return new Promise<void>((resolve, reject) => {
+			this.output.write(`${JSON.stringify(message)}\n`, err => {
+				if (err) {
+					reject(acpProcessExitedError());
+					return;
+				}
+				resolve();
+			});
+		});
+	}
+
 	override dispose(): void {
 		this.close(acpProcessExitedError());
 		super.dispose();
@@ -114,6 +138,20 @@ export class AcpConnection extends Disposable {
 			return;
 		}
 
+		if (isAcpJsonRpcNotification(message)) {
+			this.onDidNotificationEmitter.fire({
+				jsonrpc: '2.0',
+				method: message.method as string,
+				...(message.params !== undefined ? { params: message.params } : {}),
+			});
+			return;
+		}
+
+		if (isAcpJsonRpcRequest(message)) {
+			this.sendUnsupportedRequestResponse(message.id as AcpJsonRpcId, message.method as string);
+			return;
+		}
+
 		if (!isAcpJsonRpcResponse(message)) {
 			this.close(acpMalformedJsonError());
 			return;
@@ -140,6 +178,21 @@ export class AcpConnection extends Disposable {
 		pending.resolve(response.result ?? null);
 	}
 
+	private sendUnsupportedRequestResponse(id: AcpJsonRpcId, method: string): void {
+		this.output.write(`${JSON.stringify({
+			jsonrpc: '2.0',
+			id,
+			error: {
+				code: AcpJsonRpcErrorCode.MethodNotFound,
+				message: `Unsupported ACP request: ${method}`,
+			},
+		})}\n`, err => {
+			if (err) {
+				this.close(acpProcessExitedError());
+			}
+		});
+	}
+
 	private close(reason: AcpError): void {
 		if (this.closed) {
 			return;
@@ -154,8 +207,25 @@ export class AcpConnection extends Disposable {
 	}
 }
 
+function isAcpJsonRpcNotification(value: AcpJsonObject): boolean {
+	return value.jsonrpc === '2.0'
+		&& value.id === undefined
+		&& typeof value.method === 'string';
+}
+
+function isAcpJsonRpcRequest(value: AcpJsonObject): boolean {
+	if (value.jsonrpc !== '2.0' || typeof value.method !== 'string') {
+		return false;
+	}
+	const id = value.id;
+	return typeof id === 'number' || typeof id === 'string';
+}
+
 function isAcpJsonRpcResponse(value: AcpJsonObject): boolean {
 	if (value.jsonrpc !== '2.0') {
+		return false;
+	}
+	if (typeof value.method === 'string') {
 		return false;
 	}
 	const id = value.id;

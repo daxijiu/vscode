@@ -52,6 +52,53 @@ suite('acpConnection', () => {
 		await assertAcpRejects(request, AcpErrorCode.MalformedJson);
 	});
 
+	test('accepts JSON-RPC notifications without closing pending requests', async () => {
+		const { connection, input, output } = createConnection();
+		disposables.add(connection);
+
+		const notifications: string[] = [];
+		disposables.add(connection.onDidNotification(notification => notifications.push(notification.method)));
+
+		const request = connection.request<AcpInitializeParams, AcpInitializeResult>(AcpMethod.Initialize, initializeParams(), 1_000);
+		const outbound = JSON.parse(await readLine(output)) as { readonly id: number };
+		input.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } } } })}\n`);
+		input.write(`${JSON.stringify({ jsonrpc: '2.0', id: outbound.id, result: { protocolVersion: 1 } })}\n`);
+
+		assert.deepStrictEqual({
+			notifications,
+			result: await request,
+		}, {
+			notifications: ['session/update'],
+			result: { protocolVersion: 1 },
+		});
+	});
+
+	test('rejects inbound JSON-RPC requests without resolving pending responses', async () => {
+		const { connection, input, output } = createConnection();
+		disposables.add(connection);
+
+		const request = connection.request<AcpInitializeParams, AcpInitializeResult>(AcpMethod.Initialize, initializeParams(), 1_000);
+		const outbound = JSON.parse(await readLine(output)) as { readonly id: number };
+		input.write(`${JSON.stringify({ jsonrpc: '2.0', id: outbound.id, method: 'server/request', params: {} })}\n`);
+		const unsupportedResponse = JSON.parse(await readLine(output));
+		input.write(`${JSON.stringify({ jsonrpc: '2.0', id: outbound.id, result: { protocolVersion: 1 } })}\n`);
+
+		assert.deepStrictEqual({
+			unsupportedResponse,
+			result: await request,
+		}, {
+			unsupportedResponse: {
+				jsonrpc: '2.0',
+				id: outbound.id,
+				error: {
+					code: -32601,
+					message: 'Unsupported ACP request: server/request',
+				},
+			},
+			result: { protocolVersion: 1 },
+		});
+	});
+
 	test('rejects request timeout without closing later requests', async () => {
 		const { connection } = createConnection();
 		disposables.add(connection);

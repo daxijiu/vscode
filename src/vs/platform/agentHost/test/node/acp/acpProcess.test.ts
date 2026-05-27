@@ -98,6 +98,51 @@ suite('acpProcess', () => {
 		});
 	});
 
+	test('creates a session and streams prompt notifications', async () => {
+		const process = disposables.add(createProcess('text-stream'));
+		const updates: string[] = [];
+
+		await process.initialize();
+		disposables.add(process.onDidNotification(notification => {
+			if (notification.method === 'session/update') {
+				const params = notification.params as { readonly update?: { readonly content?: { readonly text?: string } } };
+				const text = params.update?.content?.text;
+				if (text) {
+					updates.push(text);
+				}
+			}
+		}));
+		const session = await process.newSession(process.sessionCwd());
+		const result = await process.prompt({
+			sessionId: session.sessionId,
+			prompt: [{ type: 'text', text: 'Hello' }],
+		});
+
+		assert.deepStrictEqual({
+			sessionId: session.sessionId.startsWith('fake-session-'),
+			updates,
+			result,
+		}, {
+			sessionId: true,
+			updates: ['Hello ', 'ACP'],
+			result: { stopReason: 'end_turn' },
+		});
+	});
+
+	test('sends cancel as a notification and receives cancelled prompt result', async () => {
+		const process = disposables.add(createProcess('cancel-race'));
+
+		await process.initialize();
+		const session = await process.newSession(process.sessionCwd());
+		const prompt = process.prompt({
+			sessionId: session.sessionId,
+			prompt: [{ type: 'text', text: 'Cancel me' }],
+		});
+		await process.cancel(session.sessionId);
+
+		assert.deepStrictEqual(await prompt, { stopReason: 'cancelled' });
+	});
+
 	test('missing env and secret refs fail before spawn with structured errors', async () => {
 		const missingEnv = createProcess('success', {
 			agent: { ...fakeAgent('success'), envVariableNames: ['ACP_REQUIRED_TOKEN'] },

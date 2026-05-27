@@ -88,19 +88,78 @@ export interface AcpInitializeResult extends AcpJsonObject {
 }
 
 export interface AcpNewSessionParams extends AcpJsonObject {
-	readonly cwd?: string;
-	readonly mcpServers?: AcpJsonObject;
+	readonly cwd: string;
+	readonly mcpServers: readonly AcpJsonObject[];
 }
 
 export interface AcpNewSessionResult extends AcpJsonObject {
 	readonly sessionId: string;
 }
 
+export interface AcpTextContentBlock extends AcpJsonObject {
+	readonly type: 'text';
+	readonly text: string;
+}
+
+export type AcpContentBlock = AcpTextContentBlock | AcpJsonObject;
+
 export interface AcpPromptParams extends AcpJsonObject {
 	readonly sessionId: string;
-	readonly prompt: readonly AcpJsonValue[];
+	readonly prompt: readonly AcpContentBlock[];
+}
+
+export const enum AcpStopReason {
+	EndTurn = 'end_turn',
+	MaxTokens = 'max_tokens',
+	MaxTurnRequests = 'max_turn_requests',
+	Refusal = 'refusal',
+	Cancelled = 'cancelled',
+}
+
+export interface AcpPromptResult extends AcpJsonObject {
+	readonly stopReason: AcpStopReason | string;
 }
 
 export interface AcpCancelSessionParams extends AcpJsonObject {
 	readonly sessionId: string;
+}
+
+export interface AcpSessionNotificationParams extends AcpJsonObject {
+	readonly sessionId: string;
+	readonly update: AcpSessionUpdate;
+}
+
+export type AcpSessionUpdate =
+	| AcpContentChunkUpdate
+	| AcpToolCallUpdate
+	| AcpSessionInfoUpdate
+	| AcpUsageUpdate
+	| AcpJsonObject;
+
+export interface AcpContentChunkUpdate extends AcpJsonObject {
+	readonly sessionUpdate: 'user_message_chunk' | 'agent_message_chunk' | 'agent_thought_chunk';
+	readonly content: AcpContentBlock;
+}
+
+export interface AcpToolCallUpdate extends AcpJsonObject {
+	readonly sessionUpdate: 'tool_call' | 'tool_call_update';
+	readonly toolCallId?: string;
+	readonly title?: string;
+	readonly status?: string;
+}
+
+export interface AcpSessionInfoUpdate extends AcpJsonObject {
+	readonly sessionUpdate: 'session_info_update';
+	readonly title?: string | null;
+	readonly updatedAt?: string | null;
+}
+
+export interface AcpUsageUpdate extends AcpJsonObject {
+	readonly sessionUpdate: 'usage_update';
+	readonly inputTokens?: number;
+	readonly outputTokens?: number;
+	readonly input_tokens?: number;
+	readonly output_tokens?: number;
+	readonly thoughtTokens?: number;
+	readonly thought_tokens?: number;
 }
