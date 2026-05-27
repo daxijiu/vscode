@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>ACP AgentHost Integration Research</title>
+	<style>
+		:root {
+			color-scheme: light;
+			--bg: #f7f8fb;
+			--ink: #18202f;
+			--muted: #5c667a;
+			--line: #d7dce8;
+			--panel: #ffffff;
+			--panel-soft: #eef4f8;
+			--accent: #0f6b6e;
+			--accent-2: #a94832;
+			--accent-3: #4d6f28;
+			--code: #202a38;
+		}
+
+		* {
+			box-sizing: border-box;
+		}
+
+		body {
+			margin: 0;
+			background: var(--bg);
+			color: var(--ink);
+			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+			font-size: 16px;
+			line-height: 1.62;
+		}
+
+		a {
+			color: var(--accent);
+			text-decoration-thickness: 1px;
+			text-underline-offset: 3px;
+		}
+
+		code {
+			color: var(--code);
+			background: #edf0f5;
+			border: 1px solid #dfe4ed;
+			border-radius: 4px;
+			padding: 0.08rem 0.28rem;
+			font-family: "Cascadia Code", Consolas, monospace;
+			font-size: 0.92em;
+		}
+
+		pre {
+			overflow-x: auto;
+			background: #202a38;
+			color: #f4f7fb;
+			border-radius: 8px;
+			padding: 1rem;
+			line-height: 1.5;
+		}
+
+		pre code {
+			color: inherit;
+			background: transparent;
+			border: 0;
+			padding: 0;
+		}
+
+		header {
+			background: #ffffff;
+			border-bottom: 1px solid var(--line);
+		}
+
+		.header-inner {
+			max-width: 1180px;
+			margin: 0 auto;
+			padding: 3.5rem 2rem 2.25rem;
+		}
+
+		.kicker {
+			color: var(--accent);
+			font-size: 0.82rem;
+			font-weight: 700;
+			letter-spacing: 0.08em;
+			text-transform: uppercase;
+		}
+
+		h1 {
+			max-width: 940px;
+			margin: 0.5rem 0 1rem;
+			font-size: clamp(2rem, 4vw, 3.8rem);
+			line-height: 1.08;
+			letter-spacing: 0;
+		}
+
+		.subtitle {
+			max-width: 940px;
+			color: var(--muted);
+			font-size: 1.12rem;
+		}
+
+		main {
+			max-width: 1180px;
+			margin: 0 auto;
+			padding: 2rem;
+		}
+
+		section {
+			margin: 0 0 2rem;
+		}
+
+		h2 {
+			margin: 0 0 1rem;
+			font-size: 1.55rem;
+			line-height: 1.25;
+		}
+
+		h3 {
+			margin: 1.5rem 0 0.65rem;
+			font-size: 1.08rem;
+		}
+
+		p {
+			margin: 0.65rem 0;
+		}
+
+		.panel {
+			background: var(--panel);
+			border: 1px solid var(--line);
+			border-radius: 8px;
+			padding: 1.25rem;
+		}
+
+		.callout {
+			background: var(--panel-soft);
+			border-left: 4px solid var(--accent);
+			border-radius: 6px;
+			padding: 1rem 1.15rem;
+		}
+
+		.warning {
+			border-left-color: var(--accent-2);
+		}
+
+		.success {
+			border-left-color: var(--accent-3);
+		}
+
+		.grid {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+			gap: 1rem;
+		}
+
+		.card {
+			background: var(--panel);
+			border: 1px solid var(--line);
+			border-radius: 8px;
+			padding: 1rem;
+		}
+
+		.card h3 {
+			margin-top: 0;
+		}
+
+		table {
+			width: 100%;
+			border-collapse: collapse;
+			background: var(--panel);
+			border: 1px solid var(--line);
+			border-radius: 8px;
+			overflow: hidden;
+		}
+
+		th,
+		td {
+			border-bottom: 1px solid var(--line);
+			padding: 0.72rem 0.85rem;
+			text-align: left;
+			vertical-align: top;
+		}
+
+		th {
+			background: #eef2f7;
+			font-weight: 700;
+		}
+
+		tr:last-child td {
+			border-bottom: 0;
+		}
+
+		ul,
+		ol {
+			padding-left: 1.35rem;
+		}
+
+		li {
+			margin: 0.35rem 0;
+		}
+
+		.nav {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 0.5rem;
+			margin-top: 1.5rem;
+		}
+
+		.nav a {
+			display: inline-flex;
+			align-items: center;
+			min-height: 2.25rem;
+			border: 1px solid var(--line);
+			border-radius: 999px;
+			padding: 0.35rem 0.75rem;
+			background: #fff;
+			color: var(--ink);
+			text-decoration: none;
+			font-size: 0.92rem;
+		}
+
+		.badge {
+			display: inline-block;
+			border-radius: 999px;
+			border: 1px solid var(--line);
+			background: #fff;
+			padding: 0.1rem 0.55rem;
+			color: var(--muted);
+			font-size: 0.78rem;
+			font-weight: 600;
+			white-space: nowrap;
+		}
+
+		.footer {
+			color: var(--muted);
+			font-size: 0.92rem;
+			border-top: 1px solid var(--line);
+			padding-top: 1rem;
+		}
+	</style>
+</head>
+<body>
+	<header>
+		<div class="header-inner">
+			<div class="kicker">Research Report · 2026-05-27</div>
+			<h1>ACP agents should reuse their own subscriptions while appearing as native VS Code agents.</h1>
+			<p class="subtitle">本报告重新锚定目标：支持 ACP 的 agent 全部复用自身已有订阅、登录、计费和模型路由；VS Code 负责把交互、状态和显示适配到现有 AgentHost / Agent Sessions UI。</p>
+			<nav class="nav" aria-label="Report sections">
+				<a href="#summary">结论</a>
+				<a href="#sources">参考项目</a>
+				<a href="#architecture">推荐架构</a>
+				<a href="#ui-adaptation">UI 适配</a>
+				<a href="#auth">订阅与登录</a>
+				<a href="#roadmap">Roadmap</a>
+				<a href="#plan">路线图</a>
+				<a href="#risks">风险</a>
+				<a href="#docs">阶段文档</a>
+			</nav>
+		</div>
+	</header>
+
+	<main>
+		<section id="summary" class="panel">
+			<h2>执行结论</h2>
+			<div class="callout success">
+				<p><strong>目标重新锚定。</strong> 已安装、已支持 ACP 的 agent 可以作为 VS Code AgentHost 中的第三方可选 agent 出现在 agent 列表里。所有这些 agent 都复用自己的订阅、登录、计费和模型路由；VS Code 不替它们做模型 Provider broker。</p>
+			</div>
+			<div class="callout warning">
+				<p><strong>难点转移到 UI 语义适配。</strong> 不再把通用 Director Provider 切换作为本阶段目标。真正的难点是把 ACP 的 session/update、auth-required、模型/模式、工具调用、权限、文件编辑、终端输出和日志诊断，映射到 VS Code 已有 UI，而不是另做一个 ACP Webview。</p>
+			</div>
+		</section>
+
+		<section id="sources">
+			<h2>参考项目与文档都是什么</h2>
+			<div class="grid">
+				<article class="card">
+					<h3>ACP 官方协议与 registry</h3>
+					<p>ACP 是 editor-to-agent 协议，不是 LLM Provider API。它定义初始化、session/new、session/prompt、session/update、认证、文件/终端/权限请求等 editor 与 agent process 的交互。</p>
+					<p><span class="badge">对我们的参考</span> 协议生命周期、能力协商、auth-required 重试、registry 元数据、以及安全边界。</p>
+				</article>
+
+				<article class="card">
+					<h3>`vscode-acp`</h3>
+					<p>这是一个 VS Code extension，用 extension host + Activity Bar + Tree View + Chat Webview 连接 ACP agent。它有 process spawn、stdio JSON-RPC、auth retry、file/terminal/permission handlers。</p>
+					<p><span class="badge">对我们的参考</span> 适合借鉴 transport/lifecycle，不适合照搬 UI；我们要融入 AgentHost UI。</p>
+				</article>
+
+				<article class="card">
+					<h3>Zed</h3>
+					<p>Zed 是最接近产品化的参考：registry/settings 产生 agent command，connection store 启动 ACP subprocess，ACP thread adapter 把更新映射到编辑器会话 UI。</p>
+					<p><span class="badge">对我们的参考</span> Workbench 管理配置/registry，AgentHost node 管 runtime，UI 使用既有 agent shell。</p>
+				</article>
+
+				<article class="card">
+					<h3>Cursor Agent ACP</h3>
+					<p>Cursor Agent 通过 `agent acp` 或 `cursor-agent acp` 作为 ACP server 运行。订阅、登录和模型路由由 Cursor 自己负责。</p>
+					<p><span class="badge">对我们的参考</span> 可作为外部 ACP agent；VS Code 要显示“使用 Cursor 订阅/登录”。</p>
+				</article>
+
+				<article class="card">
+					<h3>CodeBuddy Code ACP</h3>
+					<p>CodeBuddy 通过 `codebuddy --acp` 运行，支持自己的登录、API key、站点/企业环境和模型服务配置。</p>
+					<p><span class="badge">对我们的参考</span> 可作为 CodeBuddy-owned agent 接入；VS Code 不接管其订阅。</p>
+				</article>
+
+				<article class="card">
+					<h3>当前 VS Code fork</h3>
+					<p>当前 fork 已有 `IAgent`、AgentHost root state、Agent Sessions UI、Director Agent、Director Provider Backend Hub、Director runtime credential bridge。</p>
+					<p><span class="badge">对我们的参考</span> 扩展点已经存在；关键是新建 ACP runtime adapter。</p>
+				</article>
+			</div>
+		</section>
+
+		<section id="architecture" class="panel">
+			<h2>推荐架构</h2>
+			<p>ACP 的产品边界应是“外部 agent runtime + vendor-owned subscription”，不是“模型 Provider 后端”。推荐结构如下：</p>
+			<pre><code>Workbench ACP Settings / Registry UI
+        |
+secret-free ACP agent config snapshot
+        |
+AgentHost node ACP agent manager
+        |
+one AcpAgent provider per enabled ACP agent
+        |
+ACP stdio JSON-RPC process connection
+        |
+external ACP agent process
+        |
+vendor-owned subscription/login/model/runtime</code></pre>
+			<p>这条路径应和 Director 保持并行：</p>
+			<pre><code>Director AgentHost provider
+        |
+Director AgentEngine adapter
+        |
+Director Provider Backend Hub
+        |
+Director API key / OAuth / local / compatible Providers</code></pre>
+			<h3>为什么这样融入 UI</h3>
+			<p>当前 `IAgent` provider 会被 AgentHost side effects 发布为 root `AgentInfo`，而 Agent Sessions provider 会把 root `AgentInfo` 映射成 UI 可选 session type。因此，只要 ACP agent 以 `IAgent` provider 注册，就能自然进入现有 agent 列表，不需要新建 ACP Activity Bar 或 Webview。</p>
+		</section>
+
+		<section id="ui-adaptation" class="panel">
+			<h2>VS Code UI 适配面</h2>
+			<table>
+				<thead>
+					<tr>
+						<th>UI/交互面</th>
+						<th>适配目标</th>
+						<th>难度</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr>
+						<td>External ACP Agents 管理页</td>
+						<td>Phase 1 归属。管理手动 add/edit/remove/enable/trust、命令、cwd、订阅标签；只读配置，不 eager 启动第三方 agent；配置变更可显示 pending restart/reconnect。</td>
+						<td>低到中</td>
+					</tr>
+					<tr>
+						<td>Agent 列表</td>
+						<td>每个启用的 ACP agent 作为 AgentHost session type 出现，并显示 vendor/subscription 归属。</td>
+						<td>低到中</td>
+					</tr>
+					<tr>
+						<td>新建 session</td>
+						<td>选择 workspace cwd、启动命令、args/env，并把 `session/new` 结果映射为 VS Code session。</td>
+						<td>中</td>
+					</tr>
+					<tr>
+						<td>登录/订阅状态</td>
+						<td>显示 “uses Cursor subscription” / “uses CodeBuddy account” / auth required，不暗示 VS Code 管理订阅。</td>
+						<td>中到高</td>
+					</tr>
+					<tr>
+						<td>模型/模式</td>
+						<td>如果 agent capability 暴露 models/modes，就映射到 AgentHost；否则显示 vendor-managed/default。</td>
+						<td>中</td>
+					</tr>
+					<tr>
+						<td>流式消息</td>
+						<td>把 ACP text/thought/status update 映射到 AgentHost response/reasoning/progress。</td>
+						<td>中到高</td>
+					</tr>
+					<tr>
+						<td>工具调用与权限</td>
+						<td>把 ACP tool call 和 permission request 映射到现有 AgentHost 工具/权限 UI。</td>
+						<td>高</td>
+					</tr>
+					<tr>
+						<td>文件编辑</td>
+						<td>通过 workspace containment、changeset/edit UI 和权限门禁处理 ACP file write。</td>
+						<td>高</td>
+					</tr>
+					<tr>
+						<td>终端</td>
+						<td>通过 AgentHost terminal UI/policy 处理 create/output/wait/kill。</td>
+						<td>高</td>
+					</tr>
+					<tr>
+						<td>日志与诊断</td>
+						<td>提供 redacted stderr/protocol diagnostics，不默认暴露 prompt、文件内容或 secrets。</td>
+						<td>中到高</td>
+					</tr>
+				</tbody>
+			</table>
+		</section>
+
+		<section id="auth" class="panel">
+			<h2>订阅、登录与 Provider 边界</h2>
+			<table>
+				<thead>
+					<tr>
+						<th>目标/边界</th>
+						<th>含义</th>
+						<th>可行性</th>
+						<th>建议</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr>
+						<td>主目标：使用 ACP agent 自己的订阅</td>
+						<td>VS Code 只负责启动/调用/展示 ACP agent；Cursor/CodeBuddy/Claude/Codex 等 agent 使用自己的账户、token、模型与账单。</td>
+						<td>高</td>
+						<td>第一目标。UI 明确显示“外部 agent 使用自己的订阅/账户”。</td>
+					</tr>
+					<tr>
+						<td>VS Code UI 状态适配</td>
+						<td>把 auth-required、订阅归属、agent-reported models/modes、session/update、工具、权限、文件和终端状态映射到原生 UI。</td>
+						<td>中</td>
+						<td>本阶段的核心实现工作。</td>
+					</tr>
+					<tr>
+						<td>非目标：通用切换 Director Providers</td>
+						<td>让 Cursor/CodeBuddy 等任意第三方 ACP agent 在自己的订阅和 Director Providers 之间动态切换。</td>
+						<td>低</td>
+						<td>本阶段不做。ACP 没有标准化这个接口。</td>
+					</tr>
+				</tbody>
+			</table>
+		</section>
+
+		<section id="roadmap" class="panel">
+			<h2>阶段 Roadmap</h2>
+			<p>完整 roadmap 已单独落到 <a href="./06-acp-agenthost-roadmap.md">06-acp-agenthost-roadmap.md</a>。阶段拆分如下：</p>
+			<table>
+				<thead>
+					<tr>
+						<th>阶段</th>
+						<th>名称</th>
+						<th>主要产出</th>
+						<th>难度</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr>
+						<td>0</td>
+						<td>Boundary And UX Contract</td>
+						<td>确认 ACP agents 复用自身订阅，确认非目标和 UI 文案边界。</td>
+						<td>低</td>
+					</tr>
+					<tr>
+						<td>1</td>
+						<td>Manual ACP Agent Configuration</td>
+						<td>提供基础 External ACP Agents 管理页，支持手动 add/edit/remove/enable/trust，并生成 secret-free snapshot。</td>
+						<td>低到中</td>
+					</tr>
+					<tr>
+						<td>2</td>
+						<td>ACP Runtime Skeleton</td>
+						<td>AgentHost node 可启动、initialize、timeout、dispose fake/manual ACP process。</td>
+						<td>中</td>
+					</tr>
+					<tr>
+						<td>3</td>
+						<td>Agent List And Subscription State</td>
+						<td>已启用 ACP agents 出现在 VS Code agent 列表，并在 session 创建或 agent detail 路径显示订阅归属；列表展示不得 eager 启动外部命令。</td>
+						<td>中</td>
+					</tr>
+					<tr>
+						<td>4</td>
+						<td>Basic Text Session</td>
+						<td>预登录 ACP agent 可创建 session、发送 prompt、在 Agent Sessions UI 看见流式文本/思考输出；未登录时给出清晰提示。</td>
+						<td>中到高</td>
+					</tr>
+					<tr>
+						<td>5</td>
+						<td>Vendor Login UX And Smoke Tests</td>
+						<td>把未登录提示升级为 guided recovery，并对 Cursor/CodeBuddy 等真实命令做 smoke test。</td>
+						<td>中到高</td>
+					</tr>
+					<tr>
+						<td>6</td>
+						<td>Tools, Permissions, Files, Terminal</td>
+						<td>ACP side effects 全部经由 AgentHost 原生权限、工具、文件、终端 UI。</td>
+						<td>高</td>
+					</tr>
+					<tr>
+						<td>7</td>
+						<td>Registry Browse And Managed Enablement</td>
+						<td>支持 registry 浏览、信任门禁、版本 pin、安装/启用策略。</td>
+						<td>高/安全</td>
+					</tr>
+					<tr>
+						<td>8</td>
+						<td>Models, Modes, Config, Restore</td>
+						<td>按 capability 显示 models/modes/config/restore，不做能力假设。</td>
+						<td>高</td>
+					</tr>
+					<tr>
+						<td>9</td>
+						<td>Hardening And Policy</td>
+						<td>Windows/remote、policy、redacted diagnostics、最终文档和 release gate。</td>
+						<td>高</td>
+					</tr>
+				</tbody>
+			</table>
+			<div class="callout">
+				<p><strong>推荐第一里程碑：</strong>只做 Phase 0-4，也就是 manual ACP command → AgentHost provider appears in UI → pre-authenticated session → send text prompt → stream text → cancel/dispose cleanly。若真实 vendor agent 未登录，只要求给出清晰的 vendor-login-required 提示。</p>
+			</div>
+			<div class="callout warning">
+				<p><strong>Phase 4-6 review update.</strong> Phase 3/4 必须从一开始实现完整 `IAgent` skeleton，未到阶段的方法要有明确 unsupported/no-op 语义。Phase 4 的 text-only turn 要把意外 `tool_call` / `tool_call_update` 降级为清晰的 unsupported-capability 结果，并保证 complete/cancel/error 只发出一个终态。Phase 5 只做可控的 vendor login recovery 和 smoke test，terminal-auth 后移到 Phase 6 或 Phase 6.5。Phase 6 中 file/terminal/tool capability 必须在 ACP `initialize` 前确定，后续变更需要 reconnect/re-initialize。</p>
+			</div>
+			<div class="callout warning">
+				<p><strong>Phase 7-9 review update.</strong> Phase 7A 第一版只做 registry browse、disabled draft、Phase 1 manual enablement path 和 policy/schema；Phase 7B managed install 保留为 deferred design，必须先满足 trust、policy、integrity/pin 和 local/remote install placement。Phase 8 暴露 restore UI 前必须完成 transcript 来源可信度和 VS Code session URI、ACP session id、vendor restore id 映射的 feasibility。Phase 9 不应第一次添加高风险 policy，而是验证早期阶段已接入的 policy、local placement 和 diagnostics redaction schema。</p>
+			</div>
+			<div class="callout success">
+				<p><strong>Recorded decisions.</strong> Phase 7 第一版只做 browse/manual-config-only，不自动安装 ACP agent，也不启用任何 managed-install distribution type；unverifiable registry entry 只能生成 disabled draft/manual config。Phase 8 将 restore 作为目标保留，但先做实现难度和 vendor compatibility audit，再按 vendor-gated 方式逐步开放。</p>
+			</div>
+			<div class="callout success">
+				<p><strong>Cross-phase corrections.</strong> Phase 0 已记录首版使用 internal JSON-RPC/local DTOs，SDK adoption 后置到 dependency/bundling review；Phase 6 负责 file/terminal/tool policy hooks，Phase 9 只做验证；Phase 8A 可在 Phase 5 后做 models/config 与 restore feasibility，restore/reconnect 相关实现依赖 Phase 6。</p>
+			</div>
+			<div class="callout success">
+				<p><strong>Release matrix decision.</strong> 第一版只承诺 local desktop + 本机已安装/已登录 ACP CLI：local VS Code desktop、local workspace、local AgentHost node process、local config/cache/logs、本机预安装 ACP CLI，以及该 CLI 自己已有的 vendor login/subscription。SSH/remote server、WSL、dev containers、Codespaces 等远程目标不作为第一版 release blocker。</p>
+			</div>
+			<div class="callout success">
+				<p><strong>Internal development decisions.</strong> 产品完成前按内部开发/测试处理：External ACP AgentHost support 默认开启，不做 experiment gate；ACP process/runtime telemetry 不上报；delete/archive 默认只影响 VS Code 本地记录，vendor-side delete 只能作为后续单独批准能力。</p>
+			</div>
+		</section>
+
+		<section id="plan">
+			<h2>后续怎么做</h2>
+			<table>
+				<thead>
+					<tr>
+						<th>阶段</th>
+						<th>目标</th>
+						<th>难度</th>
+						<th>关键验收</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr>
+						<td>A. ADR 与边界确认</td>
+						<td>确认 ACP 是 AgentHost runtime adapter，并确认所有 ACP agent 复用自身订阅。</td>
+						<td>低</td>
+						<td>设计文档和安全边界被接受。</td>
+					</tr>
+					<tr>
+						<td>B. 最小 ACP 协议 client</td>
+						<td>AgentHost node 下实现 v1 stdio JSON-RPC、initialize、auth-required、session/new、prompt、cancel。</td>
+						<td>中</td>
+						<td>fake ACP agent 测试通过；process dispose 干净。</td>
+					</tr>
+					<tr>
+						<td>C. 管理页与手动配置</td>
+						<td>Phase 1 先做 External ACP Agents 管理页，Workbench 写 secret-free ACP config snapshot；runtime env/secret 只在进程启动时展开；Phase 3 再让 AgentHost 为启用配置注册 `AcpAgent` 并在可见 UI 中标注订阅归属。</td>
+						<td>低到中</td>
+						<td>配置一个 agent 后能在 Agent Sessions 列表出现。</td>
+					</tr>
+					<tr>
+						<td>D. Streaming turn 映射</td>
+						<td>ACP text/reasoning/complete/cancel/error 映射到 AgentHost session actions。</td>
+						<td>中到高</td>
+						<td>用户能发 prompt 并看到流式输出；取消不会挂住。</td>
+					</tr>
+					<tr>
+						<td>E. ACP login/subscription UX</td>
+						<td>把初期未登录提示升级为 guided vendor login recovery，支持 agent-owned auth、terminal auth、订阅归属/登录状态提示、redacted logs。</td>
+						<td>中到高</td>
+						<td>Cursor/CodeBuddy 登录缺失时有清晰可恢复路径。</td>
+					</tr>
+					<tr>
+						<td>F. Permission/file/terminal</td>
+						<td>把 ACP 文件与终端请求接入 AgentHost 权限和审计路径。</td>
+						<td>高</td>
+						<td>文件写入和终端命令都经过权限、路径限制、取消清理。</td>
+					</tr>
+					<tr>
+						<td>G. Registry browse/install</td>
+						<td>接入 ACP registry、安装/移除、版本 pin、缓存、企业策略。</td>
+						<td>高/安全</td>
+						<td>没有 silent install；供应链和信任 UX 明确。</td>
+					</tr>
+					<tr>
+						<td>H. models/modes/restore</td>
+						<td>支持 agent-reported models/modes/session config/session resume。</td>
+						<td>高</td>
+						<td>全部 capability-gated，针对 vendor 版本有 smoke test。</td>
+					</tr>
+					<tr>
+						<td>I. UI polish 与 vendor smoke tests</td>
+						<td>完善订阅归属 badge/help、诊断提示，并对首批真实 vendor agent 做 smoke test。</td>
+						<td>中到高</td>
+						<td>用户能清楚区分 VS Code UI、外部 agent 订阅、Director Providers。</td>
+					</tr>
+				</tbody>
+			</table>
+			<div class="callout warning">
+				<p><strong>计划修订点.</strong> Streaming turn 阶段新增 unexpected tool update 降级与 cancel race 单终态测试；Auth UX 阶段把 safe `authenticate` 定义为 user-triggered、cancellable、timeout-bounded、redacted，且不能静默启动 browser/terminal/external command；Permission/file/terminal 阶段新增 capability toggle 触发 reconnect/re-initialize，以及 pending permission cancel 必须回写 ACP denied/cancelled response。</p>
+			</div>
+			<div class="callout warning">
+				<p><strong>执行口径.</strong> Phase 7A 的首版验收不包含 install confirmation、distribution handlers 或 install cache；Phase 8A 先产出 restore feasibility 和 identity mapping，再决定 hidden/vendor-gated restore；Phase 9 对 managed install 只验证 policy key/schema/copy 存在且不影响 browse/manual-config-only。</p>
+			</div>
+			<div class="callout">
+				<p><strong>已收敛决策.</strong> Phase 7 先只做 browse/manual-config-only；第一版不自动安装；unverifiable registry entry 不走 managed install。Phase 8 支持 restore 作为方向，但拆成 feasibility audit、vendor-gated restore、broad UI 三步，delete/archive 默认 VS Code-local only。Phase 9 第一版 release matrix 限定为 local desktop + 本机已安装/已登录 ACP CLI；内部开发阶段默认开启 ACP support 且不上传 ACP telemetry。</p>
+			</div>
+		</section>
+
+		<section id="risks" class="panel">
+			<h2>实现难点与风险</h2>
+			<div class="grid">
+				<article class="card">
+					<h3>最高风险：side effects</h3>
+					<p>ACP agent 可以请求文件读写和终端执行。必须经过权限、workspace containment、日志脱敏、取消清理、企业策略。</p>
+				</article>
+				<article class="card">
+					<h3>供应链风险</h3>
+					<p>Registry entry 可能指向 binary、NPX、UVX。不能静默安装执行；需要版本 pin、缓存边界、信任 UI、校验策略。</p>
+				</article>
+				<article class="card">
+					<h3>协议映射风险</h3>
+					<p>ACP session/update 的顺序、tool call 状态、permission request 和 cancellation 要严谨映射，否则 UI 会重复、丢状态或挂起。</p>
+				</article>
+				<article class="card">
+					<h3>订阅语义风险</h3>
+					<p>用户容易把 Director Providers 和外部 agent 自己的订阅混淆。UI 必须明确账户、模型、计费和能力归属。</p>
+				</article>
+				<article class="card">
+					<h3>Windows/remote 风险</h3>
+					<p>`.cmd`、PATH、shell quoting、workspace cwd、remote AgentHost process 位置都会影响 agent 是否能启动和加载正确项目配置。</p>
+				</article>
+				<article class="card">
+					<h3>版本漂移风险</h3>
+					<p>Cursor/CodeBuddy 等 agent 的 session restore、model switch、permission/MCP 支持可能随版本变化。必须 capability-gate。</p>
+				</article>
+			</div>
+		</section>
+
+		<section id="decision" class="panel">
+			<h2>建议的第一张实现票</h2>
+			<p>下一阶段最值得做的是一个小而完整的 prototype，验证“外部订阅 + 原生 VS Code UI”的路径：</p>
+			<pre><code>Add a gated manual-command ACP AgentHost provider prototype:
+1. register one configured ACP agent as an AgentHost provider;
+2. launch it over stdio;
+3. initialize ACP v1;
+4. create a session with workspace cwd;
+5. send one text prompt;
+6. stream text into AgentHost UI;
+7. cancel and dispose cleanly;
+8. show that the agent uses its own subscription/login;
+9. if missing login, show a clear vendor-login-required message;
+10. do not advertise file/terminal capabilities yet;
+11. downgrade unexpected tool updates instead of hanging the turn.</code></pre>
+			<p>这个 slice 能证明架构，不会过早进入完整登录编排、registry 安装、工具执行、终端代理或 Director Provider 切换这些高风险区。</p>
+		</section>
+
+		<section id="docs" class="panel">
+			<h2>阶段性文档</h2>
+			<ul>
+				<li><a href="./01-acp-protocol-and-registry.md">01-acp-protocol-and-registry.md</a></li>
+				<li><a href="./02-reference-vscode-acp.md">02-reference-vscode-acp.md</a></li>
+				<li><a href="./03-reference-zed.md">03-reference-zed.md</a></li>
+				<li><a href="./04-vendor-agents-cursor-codebuddy.md">04-vendor-agents-cursor-codebuddy.md</a></li>
+				<li><a href="./05-vscode-agenthost-integration-plan.md">05-vscode-agenthost-integration-plan.md</a></li>
+				<li><a href="./06-acp-agenthost-roadmap.md">06-acp-agenthost-roadmap.md</a></li>
+				<li><a href="./phases/README.md">phases/README.md</a></li>
+			</ul>
+		</section>
+
+		<section id="official-sources" class="panel">
+			<h2>Source Links</h2>
+			<ul>
+				<li><a href="https://agentclientprotocol.com/get-started/introduction">ACP Introduction</a></li>
+				<li><a href="https://agentclientprotocol.com/protocol/transports">ACP Transports</a></li>
+				<li><a href="https://agentclientprotocol.com/protocol/initialization">ACP Initialization</a></li>
+				<li><a href="https://agentclientprotocol.com/protocol/authentication">ACP Authentication</a></li>
+				<li><a href="https://agentclientprotocol.com/protocol/session-setup">ACP Session Setup</a></li>
+				<li><a href="https://agentclientprotocol.com/protocol/prompt-turn">ACP Prompt Turn</a></li>
+				<li><a href="https://agentclientprotocol.com/get-started/registry">ACP Registry</a></li>
+				<li><a href="https://cursor.com/cn/docs/cli/acp">Cursor Agent ACP docs</a></li>
+				<li><a href="https://www.codebuddy.ai/docs/cli/acp">CodeBuddy ACP docs</a></li>
+			</ul>
+		</section>
+
+		<p class="footer">Report generated for the VS Code fork worktree at <code>C:\Users\drchizhang\.codex\worktrees\fb46\vscode</code>. Research branch: <code>codex/acp-agent-research</code>.</p>
+	</main>
+</body>
+</html>
