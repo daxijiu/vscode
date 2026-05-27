@@ -84,12 +84,31 @@ AgentHost should be able to launch, initialize, timeout, and dispose an ACP proc
 - Missing required env/secret references fail clearly before spawn or before initialize.
 - Runtime does not advertise file/terminal/write capabilities.
 
+## Implementation Status
+
+- 2026-05-27: complete for the runtime skeleton boundary.
+- Added `acpProtocol.ts`, `acpErrors.ts`, `acpConnection.ts`, `acpRuntimeEnvironment.ts`, and `acpProcess.ts` under `src/vs/platform/agentHost/node/acp`.
+- Added focused node tests and `fakeAcpAgent.js` under `src/vs/platform/agentHost/test/node/acp`.
+- Review fix: `initialize()` now disposes the ACP process on failed initialize handshakes, including timeout and process-not-found paths, and spawn errors update diagnostics so `running` is false immediately after rejection.
+- Kept Phase 2 isolated to explicit runtime primitives: no AgentHost provider registration, no Agent Sessions list visibility, no registry/package-manager execution, no background login probing, no Director credential bridge, no Copilot CAPI, and no file/terminal/write/tool capability advertisement.
+
 ## Validation
 
 ```powershell
 npm run compile-check-ts-native
+npm run transpile-client
 npm run test-node -- --grep acp
+npm run valid-layers-check
+git diff --check
 ```
+
+Validation record, 2026-05-27:
+
+- `npm run compile-check-ts-native` passed.
+- `npm run transpile-client` passed.
+- `npm run test-node -- --run src/vs/platform/agentHost/test/node/acp/acpConnection.test.ts --run src/vs/platform/agentHost/test/node/acp/acpProcess.test.ts` passed: 14 passing.
+- `npm run valid-layers-check` passed.
+- `npm run test-node -- --grep acp` was attempted, but this repository's node test runner does not apply Mocha CLI grep directly and loaded the broader node suite; the run reached the pre-existing `Request Service > Kerberos lookup` environment failure (`InitializeSecurityContext: security package has no available credentials`). The ACP tests passed when run through the runner's supported `--run` option.
 
 ## Risks
 

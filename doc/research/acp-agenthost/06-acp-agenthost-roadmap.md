@@ -117,6 +117,12 @@ Acceptance:
 - Cancel/dispose does not leave a child process running.
 - No prompt/file/secret data is logged by default.
 
+Implementation status:
+
+- 2026-05-27: implemented AgentHost node ACP runtime primitives under `src/vs/platform/agentHost/node/acp/**` with internal ACP v1 JSON-RPC DTOs, line-based stdio request tracking, structured redacted errors, launch-time runtime env resolution, shell-free process launch, initialize, timeout, dispose/kill, and diagnostics.
+- Added deterministic fake ACP agent tests for initialize success, unsupported protocol versions, auth-required errors, malformed JSON, request timeout, pending-request disposal, process exit cleanup, process-not-found handling, missing env/secret references, and stderr secret redaction.
+- This phase intentionally does not register an `IAgent` provider, read registry metadata, run package managers, advertise file/terminal/write/tool capabilities, or call Director/Copilot backend code.
+
 Difficulty: medium.
 
 Suggested validation:
