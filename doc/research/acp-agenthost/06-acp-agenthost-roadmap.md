@@ -30,6 +30,7 @@ Goal: make the product contract unambiguous before implementation begins.
 Scope:
 
 - Write an ADR stating ACP is an AgentHost runtime adapter, not a Director Provider Backend.
+- Accepted ADR: [ACP Agents As AgentHost Runtime Adapters](./acp-agenthost-adr.md).
 - Define product wording for external subscription ownership.
 - Define non-goal: no generic third-party ACP agent to Director Provider switching.
 - Decide where external ACP settings live: neutral "External ACP Agents" / "Agent Providers" surface is preferred.
@@ -44,6 +45,7 @@ Acceptance:
 - Roadmap and ADR agree that ACP agents use vendor-owned subscriptions.
 - UI copy examples exist for at least Cursor Agent and CodeBuddy Code.
 - Security review has an initial stance on file/terminal capabilities being disabled until later phases.
+- The ADR records internal JSON-RPC/local DTOs, restart/reconnect config apply behavior, External ACP Agents management boundaries, process/log safety, and first smoke targets.
 
 Suggested validation:
 

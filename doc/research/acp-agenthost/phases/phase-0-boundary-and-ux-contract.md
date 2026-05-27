@@ -43,7 +43,7 @@ ACP agents are external runtimes that reuse their own subscription/login/model r
 
 ## Implementation Tasks
 
-1. Create an ADR in `doc/research/acp-agenthost/` or the repo's accepted ADR location.
+1. Create and accept [ACP Agents As AgentHost Runtime Adapters](../acp-agenthost-adr.md).
 2. Add exact UI copy examples:
    - `Cursor Agent - uses your Cursor subscription`
    - `CodeBuddy Code - uses your CodeBuddy account`
@@ -69,8 +69,8 @@ ACP agents are external runtimes that reuse their own subscription/login/model r
 ## Likely Files
 
 - `doc/research/acp-agenthost/06-acp-agenthost-roadmap.md`
+- `doc/research/acp-agenthost/acp-agenthost-adr.md`
 - `doc/research/acp-agenthost/phases/**`
-- Optional future ADR file, for example `doc/research/acp-agenthost/acp-agenthost-adr.md`
 
 ## Acceptance Criteria
 
@@ -97,7 +97,7 @@ git diff --check -- doc/research/acp-agenthost
 
 ## Handoff Output
 
-- Accepted ADR/design note.
+- Accepted ADR/design note: [ACP Agents As AgentHost Runtime Adapters](../acp-agenthost-adr.md).
 - Finalized first milestone boundary.
 - UI copy examples for external subscription ownership.
 - ACP protocol dependency decision.
@@ -105,5 +105,10 @@ git diff --check -- doc/research/acp-agenthost
 
 ## Recorded Decisions
 
+- ACP agents are AgentHost runtime adapters, not Director Provider Backend entries.
+- External ACP agents use vendor-owned subscriptions, login, billing, and model routing.
 - The first version uses internal ACP JSON-RPC framing and local DTOs.
 - `@agentclientprotocol/sdk` remains a possible later replacement only after dependency/bundling review.
+- The first config apply behavior may require AgentHost restart/reconnect until explicit dynamic provider reconcile exists.
+- The first management UI is a neutral External ACP Agents/manual-agent config surface; registry browse is Phase 7 and managed install is deferred.
+- The first smoke targets are a fake ACP fixture, Cursor Agent when locally available, and CodeBuddy Code when locally available.
