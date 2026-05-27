@@ -16,6 +16,8 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/
 import { ILogService, NullLogService } from '../../../../../../platform/log/common/log.js';
 import { IConfigurationChangeEvent, IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { AgentSession, IAgentHostService } from '../../../../../../platform/agentHost/common/agentService.js';
+import { DirectorAgentProviderId } from '../../../../../../platform/agentHost/common/directorProviderBackend.js';
+import { DirectorDefaultClientToolReferenceNames } from '../../../../../../platform/agentHost/common/directorToolPolicy.js';
 import { isSessionAction, type ActionEnvelope, type IRootConfigChangedAction, type SessionAction, type TerminalAction, type INotification } from '../../../../../../platform/agentHost/common/state/sessionActions.js';
 import { buildSubagentSessionUri, SessionLifecycle, SessionStatus, createSessionState, StateComponents, type SessionState, type SessionSummary, type RootState } from '../../../../../../platform/agentHost/common/state/sessionState.js';
 import { sessionReducer } from '../../../../../../platform/agentHost/common/state/sessionReducers.js';
@@ -29,7 +31,7 @@ import { ChatToolInvocation } from '../../../common/model/chatProgressTypes/chat
 import { IProductService } from '../../../../../../platform/product/common/productService.js';
 import { TestInstantiationService } from '../../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
-import { AgentHostSessionHandler, toolDataToDefinition, toolResultToProtocol } from '../../../browser/agentSessions/agentHost/agentHostSessionHandler.js';
+import { AgentHostSessionHandler, agentHostClientToolReferenceNamesForProvider, toolDataToDefinition, toolResultToProtocol } from '../../../browser/agentSessions/agentHost/agentHostSessionHandler.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { TestFileService } from '../../../../../test/common/workbenchTestServices.js';
 import { ILabelService } from '../../../../../../platform/label/common/label.js';
@@ -521,6 +523,25 @@ suite('AgentHostClientTools', () => {
 				.filter(t => t.toolReferenceName !== undefined && ['runTests'].includes(t.toolReferenceName));
 			assert.strictEqual(filteredTools.length, 1);
 			assert.strictEqual(filteredTools[0].toolReferenceName, 'runTests');
+		});
+
+		test('adds Director default client tools only for Director sessions', () => {
+			const configured = ['runTask', 'runTests'];
+			const directorNames = agentHostClientToolReferenceNamesForProvider(DirectorAgentProviderId, configured);
+			const copilotNames = agentHostClientToolReferenceNamesForProvider('copilot', configured);
+
+			for (const name of DirectorDefaultClientToolReferenceNames) {
+				assert.ok(directorNames.has(name), `expected Director defaults to include ${name}`);
+			}
+			assert.ok(copilotNames.has('runTask'));
+			assert.ok(copilotNames.has('runTests'));
+			assert.strictEqual(copilotNames.has('readFile'), false);
+			assert.strictEqual(copilotNames.has('textSearch'), false);
+			assert.strictEqual(copilotNames.has('githubRepo'), false);
+			const directorDefaultNames = DirectorDefaultClientToolReferenceNames as readonly string[];
+			assert.strictEqual(directorDefaultNames.includes('githubRepo'), true);
+			assert.strictEqual(directorDefaultNames.includes('openBrowserPage'), true);
+			assert.strictEqual(directorDefaultNames.includes('getTerminalOutput'), true);
 		});
 
 		test('dispatches activeClientToolsChanged when config changes', () => {

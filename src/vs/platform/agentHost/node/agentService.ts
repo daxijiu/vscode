@@ -19,7 +19,7 @@ import { FileSystemProviderErrorCode, IFileService, toFileSystemProviderErrorCod
 import { InstantiationService } from '../../instantiation/common/instantiationService.js';
 import { ServiceCollection } from '../../instantiation/common/serviceCollection.js';
 import { ILogService } from '../../log/common/log.js';
-import { AgentProvider, AgentSession, IAgent, IAgentCreateSessionConfig, IAgentMaterializeSessionEvent, IAgentResolveSessionConfigParams, IAgentService, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata, AuthenticateParams, AuthenticateResult } from '../common/agentService.js';
+import { AgentProvider, AgentSession, IAgent, IAgentCreateSessionConfig, IAgentListSessionsOptions, IAgentMaterializeSessionEvent, IAgentResolveSessionConfigParams, IAgentService, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata, AuthenticateParams, AuthenticateResult } from '../common/agentService.js';
 import { ISessionDataService, SESSION_ATTACHMENTS_DIRNAME } from '../common/sessionDataService.js';
 import { buildDefaultChangesetCatalogue, buildSessionChangesetUri, buildUncommittedChangesetUri, formatSessionChangesetDescription } from '../common/changesetUri.js';
 import { ActionType, ActionEnvelope, INotification, type IRootConfigChangedAction, type SessionAction, type TerminalAction } from '../common/state/sessionActions.js';
@@ -285,10 +285,16 @@ export class AgentService extends Disposable implements IAgentService {
 
 	// ---- session management -------------------------------------------------
 
-	async listSessions(): Promise<IAgentSessionMetadata[]> {
-		this._logService.trace('[AgentService] listSessions called');
+	async listSessions(options?: IAgentListSessionsOptions): Promise<IAgentSessionMetadata[]> {
+		this._logService.trace(`[AgentService] listSessions called${options?.provider ? ` for provider=${options.provider}` : ''}`);
+		const providers = options?.provider
+			? [this._providers.get(options.provider)].filter((provider): provider is IAgent => !!provider)
+			: [...this._providers.values()];
+		if (providers.length === 0) {
+			return [];
+		}
 		const results = await Promise.all(
-			[...this._providers.values()].map(p => p.listSessions())
+			providers.map(p => p.listSessions())
 		);
 		const flat = results.flat();
 

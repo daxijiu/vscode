@@ -302,6 +302,10 @@ export interface IAgentMaterializeSessionEvent {
 
 export type AgentProvider = string;
 
+export interface IAgentListSessionsOptions {
+	readonly provider?: AgentProvider;
+}
+
 /** Metadata describing an agent backend, discovered over IPC. */
 export interface IAgentDescriptor {
 	readonly provider: AgentProvider;
@@ -747,8 +751,8 @@ export interface IAgentService {
 	 */
 	authenticate(params: AuthenticateParams): Promise<AuthenticateResult>;
 
-	/** List all available sessions from the Copilot CLI. */
-	listSessions(): Promise<IAgentSessionMetadata[]>;
+	/** List available sessions, optionally scoped to one provider. */
+	listSessions(options?: IAgentListSessionsOptions): Promise<IAgentSessionMetadata[]>;
 
 	/** Create a new session. Returns the session URI. */
 	createSession(config?: IAgentCreateSessionConfig): Promise<URI>;
@@ -913,7 +917,7 @@ export interface IAgentConnection {
 
 	// ---- Session lifecycle --------------------------------------------------
 	authenticate(params: AuthenticateParams): Promise<AuthenticateResult>;
-	listSessions(): Promise<IAgentSessionMetadata[]>;
+	listSessions(options?: IAgentListSessionsOptions): Promise<IAgentSessionMetadata[]>;
 	createSession(config?: IAgentCreateSessionConfig): Promise<URI>;
 	resolveSessionConfig(params: IAgentResolveSessionConfigParams): Promise<ResolveSessionConfigResult>;
 	sessionConfigCompletions(params: IAgentSessionConfigCompletionsParams): Promise<SessionConfigCompletionsResult>;

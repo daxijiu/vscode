@@ -67,6 +67,132 @@ suite('directorProviderAdapters', () => {
 		});
 	});
 
+	test('serializes OpenAI Chat tool calls, tool results, and function schema', () => {
+		const request = buildDirectorNativeMessageRequest({
+			apiType: 'openai-completions',
+			baseURL: 'https://api.openai.com/v1',
+			modelId: 'gpt-test',
+			authHeader: 'secret',
+			messages: [
+				{ role: 'user' as const, content: 'Read the file.' },
+				{ role: 'assistant' as const, content: 'I will inspect it.', toolCalls: [{ id: 'call_1', name: 'read_file', input: '{"path":"README.md"}' }] },
+				{ role: 'tool' as const, content: 'File contents', toolCallId: 'call_1' },
+			],
+			tools: [{
+				name: 'read_file',
+				description: 'Read a workspace file',
+				inputSchema: {
+					type: 'object' as const,
+					properties: {
+						path: { type: 'string', description: 'Workspace-relative path' },
+					},
+					required: ['path'],
+				},
+			}],
+		});
+		const body = JSON.parse(request.body) as { readonly messages: readonly object[]; readonly tools: readonly object[]; readonly tool_choice: string };
+
+		assert.deepStrictEqual({
+			messages: body.messages,
+			tools: body.tools,
+			toolChoice: body.tool_choice,
+		}, {
+			messages: [
+				{ role: 'user', content: 'Read the file.' },
+				{
+					role: 'assistant',
+					content: 'I will inspect it.',
+					tool_calls: [{
+						id: 'call_1',
+						type: 'function',
+						function: {
+							name: 'read_file',
+							arguments: '{"path":"README.md"}',
+						},
+					}],
+				},
+				{ role: 'tool', tool_call_id: 'call_1', content: 'File contents' },
+			],
+			tools: [{
+				type: 'function',
+				function: {
+					name: 'read_file',
+					description: 'Read a workspace file',
+					parameters: {
+						type: 'object',
+						properties: {
+							path: { type: 'string', description: 'Workspace-relative path' },
+						},
+						required: ['path'],
+					},
+				},
+			}],
+			toolChoice: 'auto',
+		});
+	});
+
+	test('serializes Anthropic tool use, tool results, and tools schema', () => {
+		const request = buildDirectorNativeMessageRequest({
+			apiType: 'anthropic-messages',
+			baseURL: 'https://api.anthropic.com',
+			modelId: 'claude-test',
+			authHeader: 'secret',
+			messages: [
+				{ role: 'system' as const, content: 'You are Director.' },
+				{ role: 'user' as const, content: 'Read the file.' },
+				{ role: 'assistant' as const, content: 'I will inspect it.', toolCalls: [{ id: 'toolu_1', name: 'read_file', input: '{"path":"README.md"}' }] },
+				{ role: 'tool' as const, content: 'File contents', toolCallId: 'toolu_1' },
+			],
+			tools: [{
+				name: 'read_file',
+				description: 'Read a workspace file',
+				inputSchema: {
+					type: 'object' as const,
+					properties: {
+						path: { type: 'string', description: 'Workspace-relative path' },
+					},
+					required: ['path'],
+				},
+			}],
+		});
+		const body = JSON.parse(request.body) as { readonly messages: readonly object[]; readonly tools: readonly object[] };
+
+		assert.deepStrictEqual({
+			messages: body.messages,
+			tools: body.tools,
+		}, {
+			messages: [
+				{ role: 'user', content: 'Read the file.' },
+				{
+					role: 'assistant',
+					content: [
+						{ type: 'text', text: 'I will inspect it.' },
+						{ type: 'tool_use', id: 'toolu_1', name: 'read_file', input: { path: 'README.md' } },
+					],
+				},
+				{
+					role: 'user',
+					content: [{
+						type: 'tool_result',
+						tool_use_id: 'toolu_1',
+						content: 'File contents',
+					}],
+				},
+			],
+			tools: [{
+				name: 'read_file',
+				description: 'Read a workspace file',
+				input_schema: {
+					type: 'object',
+					properties: {
+						path: { type: 'string', description: 'Workspace-relative path' },
+					},
+					required: ['path'],
+				},
+			}],
+		});
+	});
+
 	test('keeps unimplemented local/custom adapters unsupported', () => {
 		assert.throws(
 			() => buildDirectorNativeMessageRequest({ apiType: 'local', baseURL: 'http://localhost', modelId: 'local', authHeader: '', messages }),

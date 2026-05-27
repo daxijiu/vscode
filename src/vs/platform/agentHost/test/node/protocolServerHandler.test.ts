@@ -10,7 +10,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { runWithFakedTimers } from '../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../log/common/log.js';
-import { type IAgentCreateSessionConfig, type IAgentResolveSessionConfigParams, type IAgentService, type IAgentSessionConfigCompletionsParams, type IAgentSessionMetadata, type AuthenticateParams, type AuthenticateResult } from '../../common/agentService.js';
+import { type IAgentCreateSessionConfig, type IAgentListSessionsOptions, type IAgentResolveSessionConfigParams, type IAgentService, type IAgentSessionConfigCompletionsParams, type IAgentSessionMetadata, type AuthenticateParams, type AuthenticateResult } from '../../common/agentService.js';
 import { CompletionsParams, CompletionsResult, ListSessionsResult, ResourceReadResult, ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
 import { ActionType, type IRootConfigChangedAction, type SessionAction, type TerminalAction } from '../../common/state/sessionActions.js';
 import { PROTOCOL_VERSION } from '../../common/state/protocol/version/registry.js';
@@ -75,6 +75,7 @@ class MockAgentService implements IAgentService {
 	readonly browsedUris: URI[] = [];
 	readonly browseErrors = new Map<string, Error>();
 	readonly listedSessions: IAgentSessionMetadata[] = [];
+	readonly listSessionsOptions: IAgentListSessionsOptions[] = [];
 	readonly createSessionConfigs: (IAgentCreateSessionConfig | undefined)[] = [];
 
 	private readonly _onDidAction = new Emitter<import('../../common/state/sessionActions.js').ActionEnvelope>();
@@ -115,7 +116,10 @@ class MockAgentService implements IAgentService {
 	async completions(_params: CompletionsParams): Promise<CompletionsResult> { return { items: [] }; }
 	async getCompletionTriggerCharacters(): Promise<readonly string[]> { return []; }
 	async disposeSession(_session: URI): Promise<void> { }
-	async listSessions(): Promise<IAgentSessionMetadata[]> { return this.listedSessions; }
+	async listSessions(options: IAgentListSessionsOptions = {}): Promise<IAgentSessionMetadata[]> {
+		this.listSessionsOptions.push(options);
+		return this.listedSessions;
+	}
 	async subscribe(resource: URI, _clientId: string): Promise<IStateSnapshot> {
 		const snapshot = this._stateManager.getSnapshot(resource.toString());
 		if (!snapshot) {
@@ -535,6 +539,17 @@ suite('ProtocolServerHandler', () => {
 
 		const result = (resp as unknown as { result: ListSessionsResult }).result;
 		assert.deepStrictEqual(result.items.map(item => item.project), [undefined]);
+	});
+
+	test('listSessions forwards provider filter to agent service', async () => {
+		const transport = connectClient('client-list-filtered');
+		transport.sent.length = 0;
+		const responsePromise = waitForResponse(transport, 2);
+
+		transport.simulateMessage(request(2, 'listSessions', { channel: 'ahp-root://', filter: { provider: 'director' } }));
+		await responsePromise;
+
+		assert.deepStrictEqual(agentService.listSessionsOptions.at(-1), { provider: 'director' });
 	});
 
 	test('listSessions surfaces the changeset catalogue from the agent', async () => {

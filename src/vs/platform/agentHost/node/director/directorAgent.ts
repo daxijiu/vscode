@@ -12,13 +12,16 @@ import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../log/common/log.js';
+import { platformSessionSchema } from '../../common/agentHostSchema.js';
 import { DirectorAgentProviderId, IDirectorProviderBackendHub, isResolvedBackend, toAgentModelInfo } from '../../common/directorProviderBackend.js';
 import { IDirectorRuntimeCredentialService } from '../../common/directorRuntimeCredentials.js';
 import { ISyncedCustomization } from '../../common/agentPluginManager.js';
 import { AgentProvider, AgentSession, AgentSignal, IAgent, IAgentCreateSessionConfig, IAgentCreateSessionResult, IAgentDescriptor, IAgentModelInfo, IAgentResolveSessionConfigParams, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata } from '../../common/agentService.js';
+import { SessionConfigKey } from '../../common/sessionConfigKeys.js';
 import { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
 import { MessageAttachment, ModelSelection, ProtectedResourceMetadata, ToolDefinition } from '../../common/state/protocol/state.js';
 import { CustomizationRef, PendingMessage, SessionInputAnswer, SessionInputResponseKind, ToolCallResult, Turn } from '../../common/state/sessionState.js';
+import { IAgentConfigurationService } from '../agentConfigurationService.js';
 import { DirectorAgentSession } from './directorAgentSession.js';
 
 export class DirectorAgent extends Disposable implements IAgent {
@@ -35,11 +38,13 @@ export class DirectorAgent extends Disposable implements IAgent {
 	private readonly _sessionSequencer = new SequencerByKey<string>();
 	private readonly _disposeSequencer = new SequencerByKey<string>();
 	private readonly _modelRefreshTimer = this._register(new IntervalTimer());
+	private readonly _consumedSteeringMessages = new Set<string>();
 	private _modelRefreshPromise: Promise<void> | undefined;
 
 	constructor(
 		@IDirectorProviderBackendHub private readonly _backendHub: IDirectorProviderBackendHub,
 		@IDirectorRuntimeCredentialService private readonly _credentialService: IDirectorRuntimeCredentialService,
+		@IAgentConfigurationService private readonly _configurationService: IAgentConfigurationService,
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
@@ -115,6 +120,7 @@ export class DirectorAgent extends Disposable implements IAgent {
 			Date.now(),
 			config.workingDirectory,
 			model,
+			sessionUri => this._readMode(sessionUri),
 			this._backendHub,
 			this._credentialService,
 			this._logService,
@@ -130,8 +136,11 @@ export class DirectorAgent extends Disposable implements IAgent {
 
 	async resolveSessionConfig(params: IAgentResolveSessionConfigParams): Promise<ResolveSessionConfigResult> {
 		return {
-			schema: { type: 'object', properties: {} },
-			values: params.config ?? {},
+			schema: platformSessionSchema.toProtocol(),
+			values: platformSessionSchema.validateOrDefault(params.config, {
+				[SessionConfigKey.Mode]: 'interactive',
+				[SessionConfigKey.AutoApprove]: 'default',
+			}),
 		};
 	}
 
@@ -149,6 +158,7 @@ export class DirectorAgent extends Disposable implements IAgent {
 				Date.now(),
 				undefined,
 				undefined,
+				sessionUri => this._readMode(sessionUri),
 				this._backendHub,
 				this._credentialService,
 				this._logService,
@@ -157,7 +167,27 @@ export class DirectorAgent extends Disposable implements IAgent {
 		});
 	}
 
-	setPendingMessages(_session: URI, _steeringMessage: PendingMessage | undefined, _queuedMessages: readonly PendingMessage[]): void { }
+	setPendingMessages(session: URI, steeringMessage: PendingMessage | undefined, _queuedMessages: readonly PendingMessage[]): void {
+		if (!steeringMessage) {
+			return;
+		}
+
+		// The Phase 4 Director harness does not yet support injecting a
+		// steering message into an in-flight provider stream. Acknowledge
+		// system-generated steering messages (for example terminal completion
+		// notifications) so they do not remain as stale chat pending requests.
+		const key = `${session.toString()}:${steeringMessage.id}`;
+		if (this._consumedSteeringMessages.has(key)) {
+			return;
+		}
+		this._consumedSteeringMessages.add(key);
+		this._logService.info(`[Director] Acknowledging unsupported steering message ${steeringMessage.id} for ${session.toString()}`);
+		this._onDidSessionProgress.fire({
+			kind: 'steering_consumed',
+			session,
+			id: steeringMessage.id,
+		});
+	}
 
 	async getSessionMessages(session: URI): Promise<readonly Turn[]> {
 		return this._sessions.get(AgentSession.id(session))?.session.getTurns() ?? [];
@@ -184,7 +214,13 @@ export class DirectorAgent extends Disposable implements IAgent {
 		});
 	}
 
-	respondToPermissionRequest(_requestId: string, _approved: boolean): void { }
+	respondToPermissionRequest(requestId: string, approved: boolean): void {
+		for (const entry of this._sessions.values()) {
+			if (entry.session.respondToPermissionRequest(requestId, approved)) {
+				return;
+			}
+		}
+	}
 
 	respondToUserInputRequest(_requestId: string, _response: SessionInputResponseKind, _answers?: Record<string, SessionInputAnswer>): void { }
 
@@ -200,9 +236,20 @@ export class DirectorAgent extends Disposable implements IAgent {
 		return [];
 	}
 
-	setClientTools(_session: URI, _clientId: string, _tools: ToolDefinition[]): void { }
+	setClientTools(session: URI, clientId: string, tools: ToolDefinition[]): void {
+		const current = this._sessions.get(AgentSession.id(session))?.session;
+		if (!current) {
+			return;
+		}
+		if (!tools.length) {
+			current.failClientTools(clientId, `Client ${clientId} disconnected before completing a Director tool call.`);
+		}
+		current.setClientTools(clientId, tools);
+	}
 
-	onClientToolCallComplete(_session: URI, _toolCallId: string, _result: ToolCallResult): void { }
+	onClientToolCallComplete(session: URI, toolCallId: string, result: ToolCallResult): void {
+		this._sessions.get(AgentSession.id(session))?.session.completeClientToolCall(toolCallId, result);
+	}
 
 	setCustomizationEnabled(_uri: string, _enabled: boolean): void { }
 
@@ -233,6 +280,10 @@ export class DirectorAgent extends Disposable implements IAgent {
 		}
 		this._logService.warn(`[Director] No default model resolved: ${resolution.message}`);
 		return undefined;
+	}
+
+	private _readMode(sessionUri: URI): 'interactive' | 'plan' | undefined {
+		return this._configurationService.getEffectiveValue(sessionUri.toString(), platformSessionSchema, SessionConfigKey.Mode);
 	}
 }
 

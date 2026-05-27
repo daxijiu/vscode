@@ -33,7 +33,9 @@ export type { SessionConfigPropertySchema, SessionConfigSchema } from '../channe
 export interface ListSessionsParams extends BaseParams {
 	channel: 'ahp-root://';
 	/** Optional filter criteria */
-	filter?: object;
+	filter?: {
+		readonly provider?: string;
+	};
 }
 
 /** Result of the `listSessions` command. */

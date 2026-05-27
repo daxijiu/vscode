@@ -463,6 +463,20 @@ suite('AgentService (node dispatcher)', () => {
 			assert.strictEqual(sessions.length, 1);
 		});
 
+		test('listSessions can be scoped to one provider without touching other providers', async () => {
+			copilotAgent.listSessions = async () => {
+				throw new Error('copilot should not be listed');
+			};
+			const directorAgent = disposables.add(new MockAgent('director'));
+			service.registerProvider(copilotAgent);
+			service.registerProvider(directorAgent);
+
+			await service.createSession({ provider: 'director' });
+
+			const sessions = await service.listSessions({ provider: 'director' });
+			assert.deepStrictEqual(sessions.map(s => AgentSession.provider(s.session)), ['director']);
+		});
+
 		test('listSessions overlays custom title from session database', async () => {
 			// Pre-seed a custom title in an in-memory database
 			const db = disposables.add(await SessionDatabase.open(':memory:'));

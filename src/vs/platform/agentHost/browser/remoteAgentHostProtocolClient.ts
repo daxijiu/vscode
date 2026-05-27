@@ -18,7 +18,7 @@ import { generateUuid } from '../../../base/common/uuid.js';
 import { ILogService } from '../../log/common/log.js';
 import { FileSystemProviderErrorCode, IFileService, toFileSystemProviderErrorCode } from '../../files/common/files.js';
 import { IConfigurationService } from '../../configuration/common/configuration.js';
-import { AgentSession, IAgentConnection, IAgentCreateSessionConfig, IAgentResolveSessionConfigParams, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata, AuthenticateParams, AuthenticateResult } from '../common/agentService.js';
+import { AgentSession, IAgentConnection, IAgentCreateSessionConfig, IAgentListSessionsOptions, IAgentResolveSessionConfigParams, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata, AuthenticateParams, AuthenticateResult } from '../common/agentService.js';
 import { AgentSubscriptionManager, type IAgentSubscription } from '../common/state/agentSubscription.js';
 import { agentHostAuthority, fromAgentHostUri, toAgentHostUri } from '../common/agentHostUri.js';
 import { AgentHostPermissionMode, IAgentHostPermissionService } from '../common/agentHostPermissionService.js';
@@ -828,8 +828,11 @@ export class RemoteAgentHostProtocolClient extends Disposable implements IAgentC
 	/**
 	 * List all sessions from the remote agent host.
 	 */
-	async listSessions(): Promise<IAgentSessionMetadata[]> {
-		const result = await this._sendRequest('listSessions', { channel: ROOT_STATE_URI });
+	async listSessions(options?: IAgentListSessionsOptions): Promise<IAgentSessionMetadata[]> {
+		const result = await this._sendRequest('listSessions', {
+			channel: ROOT_STATE_URI,
+			...(options?.provider ? { filter: { provider: options.provider } } : {}),
+		});
 		return result.items.map((s: SessionSummary) => ({
 			session: URI.parse(s.resource),
 			startTime: s.createdAt,

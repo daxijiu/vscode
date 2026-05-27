@@ -197,7 +197,10 @@ async function startAgentHost(): Promise<void> {
 	if (server instanceof UtilityProcessServer) {
 		const authorityRegistrations = new Map<unknown, IDisposable>();
 		const credentialRegistrations = new Map<unknown, IDisposable>();
-		disposables.add(server.onDidAddConnection(connection => {
+		const registerClientConnection = (connection: typeof server.connections[number]) => {
+			if (authorityRegistrations.has(connection)) {
+				return;
+			}
 			const clientId = connection.ctx;
 			if (typeof clientId !== 'string' || !clientId) {
 				return;
@@ -207,7 +210,11 @@ async function startAgentHost(): Promise<void> {
 			authorityRegistrations.set(connection, clientFileSystemProvider.registerAuthority(clientId, fsConnection));
 			const credentialChannel = server.getChannel(DirectorRuntimeCredentialChannelName, c => c.ctx === clientId);
 			credentialRegistrations.set(connection, directorRuntimeCredentialService.registerConnection(clientId, credentialChannel));
-		}));
+		};
+		for (const connection of server.connections) {
+			registerClientConnection(connection);
+		}
+		disposables.add(server.onDidAddConnection(registerClientConnection));
 		disposables.add(server.onDidRemoveConnection(connection => {
 			const reg = authorityRegistrations.get(connection);
 			if (reg) {

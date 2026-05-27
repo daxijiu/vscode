@@ -68,7 +68,7 @@ suite('directorProviderServices', () => {
 		apiKeyService = disposables.add(new DirectorApiKeyService(secretStorageService));
 		oauthService = disposables.add(new DirectorOAuthService(secretStorageService));
 		runtimeCredentialService = new DirectorRuntimeCredentialService(apiKeyService, oauthService);
-		modelResolverService = new DirectorModelResolverService();
+		modelResolverService = new DirectorModelResolverService(apiKeyService, oauthService);
 		connectionTestService = new DirectorProviderConnectionTestService(apiKeyService, oauthService, modelResolverService);
 		snapshotService = disposables.add(new DirectorProviderSnapshotService(
 			registryService,
@@ -323,7 +323,132 @@ suite('directorProviderServices', () => {
 		});
 	});
 
+	test('refreshes OpenAI-compatible models from the provider endpoint without persisting secrets', async () => {
+		const provider = createDirectorProviderInstance({
+			id: 'deepseek',
+			kind: 'openai-compatible',
+			displayName: 'DeepSeek',
+			authKind: 'api-key',
+			apiType: 'openai-completions',
+			modelId: 'placeholder',
+		});
+		let requestedUrl: string | undefined;
+		let requestedAuth: string | undefined;
+		const server = await startModelServer((req, res) => {
+			requestedUrl = req.url;
+			requestedAuth = Array.isArray(req.headers.authorization) ? req.headers.authorization.join(',') : req.headers.authorization;
+			res.writeHead(200, { 'content-type': 'application/json' });
+			res.end(JSON.stringify({
+				data: [
+					{ id: 'deepseek-chat' },
+					{ id: 'deepseek-reasoner' },
+					{ id: 'embedding-model' },
+				],
+			}));
+		});
+		try {
+			const providerWithBase = { ...provider, baseURL: server.baseURL };
+			await apiKeyService.setProviderInstanceKey(provider.id, 'sk-director-secret');
+			const models = await modelResolverService.refreshModels(providerWithBase);
+			await registryService.saveProvider({ ...providerWithBase, models });
+			const snapshot = await snapshotService.writeSnapshot();
+			const registryText = JSON.stringify(await readJson(getDirectorProviderRegistryResourceFromGlobalStorageHome(userDataProfileService.currentProfile.globalStorageHome)));
+			const snapshotText = JSON.stringify(await readJson(getDirectorProviderSnapshotResourceFromGlobalStorageHome(userDataProfileService.currentProfile.globalStorageHome)));
+
+			assert.deepStrictEqual({
+				requestedUrl,
+				requestedAuth,
+				models: models.map(model => ({ id: model.id, providerModelId: model.providerModelId })),
+				snapshotModels: snapshot.models.map(model => model.providerModelId),
+				registryLeaksKey: registryText.includes('sk-director-secret'),
+				snapshotLeaksKey: snapshotText.includes('sk-director-secret'),
+			}, {
+				requestedUrl: '/models',
+				requestedAuth: 'Bearer sk-director-secret',
+				models: [
+					{ id: 'deepseek:deepseek-chat', providerModelId: 'deepseek-chat' },
+					{ id: 'deepseek:deepseek-reasoner', providerModelId: 'deepseek-reasoner' },
+				],
+				snapshotModels: ['deepseek-chat', 'deepseek-reasoner'],
+				registryLeaksKey: false,
+				snapshotLeaksKey: false,
+			});
+		} finally {
+			await server.close();
+		}
+	});
+
+	test('refreshModels requires credentials and does not fall back to default compatible models', async () => {
+		const provider = createDirectorProviderInstance({
+			id: 'compatible',
+			kind: 'openai-compatible',
+			displayName: 'Compatible',
+			authKind: 'api-key',
+			apiType: 'openai-completions',
+			baseURL: 'https://example.invalid',
+			modelId: 'placeholder',
+		});
+
+		await assert.rejects(
+			() => modelResolverService.refreshModels(provider),
+			/needs a saved credential/
+		);
+	});
+
+	test('refreshModels redacts credentials from provider error responses', async () => {
+		const provider = createDirectorProviderInstance({
+			id: 'redacted',
+			kind: 'openai-compatible',
+			displayName: 'Redacted',
+			authKind: 'api-key',
+			apiType: 'openai-completions',
+			modelId: 'placeholder',
+		});
+		const server = await startModelServer((_req, res) => {
+			res.writeHead(401, { 'content-type': 'application/json' });
+			res.end(JSON.stringify({ error: 'invalid key sk-director-secret' }));
+		});
+		try {
+			await apiKeyService.setProviderInstanceKey(provider.id, 'sk-director-secret');
+			await assert.rejects(
+				() => modelResolverService.refreshModels({ ...provider, baseURL: server.baseURL }),
+				(err: unknown) => {
+					assert.ok(err instanceof Error);
+					assert.ok(!err.message.includes('sk-director-secret'), err.message);
+					assert.ok(err.message.includes('<redacted>'), err.message);
+					return true;
+				}
+			);
+		} finally {
+			await server.close();
+		}
+	});
+
 	async function readJson(resource: URI): Promise<unknown> {
 		return JSON.parse((await fileService.readFile(resource)).value.toString());
+	}
+
+	async function startModelServer(handler: (req: import('http').IncomingMessage, res: import('http').ServerResponse) => void): Promise<{ readonly baseURL: string; readonly close: () => Promise<void> }> {
+		const { createServer } = await import('http');
+		const server = createServer(handler);
+		await new Promise<void>((resolve, reject) => {
+			server.once('error', reject);
+			server.listen(0, '127.0.0.1', () => {
+				server.off('error', reject);
+				resolve();
+			});
+		});
+		const address = server.address();
+		assert.ok(address && typeof address !== 'string');
+		return {
+			baseURL: `http://127.0.0.1:${address.port}`,
+			close: () => closeServer(server),
+		};
+	}
+
+	async function closeServer(server: import('http').Server): Promise<void> {
+		await new Promise<void>((resolve, reject) => {
+			server.close(err => err ? reject(err) : resolve());
+		});
 	}
 });

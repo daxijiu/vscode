@@ -16,7 +16,7 @@ import { timeout } from '../../../../../../base/common/async.js';
 import { Range } from '../../../../../../editor/common/core/range.js';
 import { ILogService, NullLogService } from '../../../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
-import { IAgentCreateSessionConfig, IAgentHostService, IAgentSessionMetadata, AgentSession } from '../../../../../../platform/agentHost/common/agentService.js';
+import { AgentHostDirectorAgentEnabledSettingId, IAgentCreateSessionConfig, IAgentHostService, IAgentListSessionsOptions, IAgentSessionMetadata, AgentSession } from '../../../../../../platform/agentHost/common/agentService.js';
 import { AgentFeedbackAttachmentDisplayKind, AgentFeedbackAttachmentMetadataKey } from '../../../../../../platform/agentHost/common/agentFeedbackAttachments.js';
 import { ActionType, isSessionAction, type ActionEnvelope, type IRootConfigChangedAction, type SessionAction, type TerminalAction, type INotification, type IToolCallConfirmedAction, type ITurnStartedAction } from '../../../../../../platform/agentHost/common/state/sessionActions.js';
 import type { IStateSnapshot } from '../../../../../../platform/agentHost/common/state/sessionProtocol.js';
@@ -90,6 +90,7 @@ class MockAgentHostService extends mock<IAgentHostService>() {
 	private _nextId = 1;
 	private readonly _sessions = new Map<string, IAgentSessionMetadata>();
 	public createSessionCalls: IAgentCreateSessionConfig[] = [];
+	public listSessionsCalls: IAgentListSessionsOptions[] = [];
 	public disposedSessions: URI[] = [];
 	public failNextSubscriptionFor = new Set<string>();
 	public agents = [{ provider: 'copilot' as const, displayName: 'Agent Host - Copilot', description: 'test', requiresAuth: true }];
@@ -103,8 +104,9 @@ class MockAgentHostService extends mock<IAgentHostService>() {
 	 */
 	public nextResolvedWorkingDirectory?: URI;
 
-	override async listSessions(): Promise<IAgentSessionMetadata[]> {
-		return [...this._sessions.values()];
+	override async listSessions(options: IAgentListSessionsOptions = {}): Promise<IAgentSessionMetadata[]> {
+		this.listSessionsCalls.push(options);
+		return [...this._sessions.values()].filter(s => !options.provider || AgentSession.provider(s.session) === options.provider);
 	}
 
 	override async createSession(config?: IAgentCreateSessionConfig): Promise<URI> {
@@ -379,7 +381,7 @@ class MockChatWidgetService extends mock<IChatWidgetService>() {
 
 // ---- Helpers ----------------------------------------------------------------
 
-function createTestServices(disposables: DisposableStore, workingDirectoryResolver?: { resolve(sessionResource: URI): URI | undefined; isNewSession?: (sessionResource: URI) => boolean }, authServiceOverride?: Partial<IAuthenticationService>, languageModels?: ReadonlyMap<string, ILanguageModelChatMetadata>, provisionalServiceOverride?: Partial<IAgentHostUntitledProvisionalSessionService>) {
+function createTestServices(disposables: DisposableStore, workingDirectoryResolver?: { resolve(sessionResource: URI): URI | undefined; isNewSession?: (sessionResource: URI) => boolean }, authServiceOverride?: Partial<IAuthenticationService>, languageModels?: ReadonlyMap<string, ILanguageModelChatMetadata>, provisionalServiceOverride?: Partial<IAgentHostUntitledProvisionalSessionService>, directorAgentEnabled = false) {
 	const instantiationService = disposables.add(new TestInstantiationService());
 
 	const agentHostService = new MockAgentHostService();
@@ -421,7 +423,15 @@ function createTestServices(disposables: DisposableStore, workingDirectoryResolv
 	});
 	instantiationService.stub(IConfigurationService, {
 		onDidChangeConfiguration: Event.None,
-		getValue: (...args: any[]) => typeof args[0] === 'string' && args[0] === 'chat.agentHost.clientTools' ? [] : true,
+		getValue: (...args: any[]) => {
+			if (typeof args[0] === 'string' && args[0] === 'chat.agentHost.clientTools') {
+				return [];
+			}
+			if (args[0] === AgentHostDirectorAgentEnabledSettingId) {
+				return directorAgentEnabled;
+			}
+			return true;
+		},
 	});
 	instantiationService.stub(ILanguageModelToolsService, {
 		observeTools: () => observableValue('tools', []),
@@ -502,10 +512,10 @@ function createTestServices(disposables: DisposableStore, workingDirectoryResolv
 	return { instantiationService, agentHostService, chatAgentService, chatWidgetService, chatService, openerService };
 }
 
-function createContribution(disposables: DisposableStore, opts?: { authServiceOverride?: Partial<IAuthenticationService>; workingDirectoryResolver?: { resolve(sessionResource: URI): URI | undefined; isNewSession?: (sessionResource: URI) => boolean }; languageModels?: ReadonlyMap<string, ILanguageModelChatMetadata>; provisionalServiceOverride?: Partial<IAgentHostUntitledProvisionalSessionService> }) {
-	const { instantiationService, agentHostService, chatAgentService, chatWidgetService, chatService, openerService } = createTestServices(disposables, opts?.workingDirectoryResolver, opts?.authServiceOverride, opts?.languageModels, opts?.provisionalServiceOverride);
+function createContribution(disposables: DisposableStore, opts?: { authServiceOverride?: Partial<IAuthenticationService>; workingDirectoryResolver?: { resolve(sessionResource: URI): URI | undefined; isNewSession?: (sessionResource: URI) => boolean }; languageModels?: ReadonlyMap<string, ILanguageModelChatMetadata>; provisionalServiceOverride?: Partial<IAgentHostUntitledProvisionalSessionService>; directorAgentEnabled?: boolean }) {
+	const { instantiationService, agentHostService, chatAgentService, chatWidgetService, chatService, openerService } = createTestServices(disposables, opts?.workingDirectoryResolver, opts?.authServiceOverride, opts?.languageModels, opts?.provisionalServiceOverride, opts?.directorAgentEnabled);
 
-	const listController = disposables.add(instantiationService.createInstance(AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local'));
+	const listController = disposables.add(instantiationService.createInstance(AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local', () => true));
 	const sessionHandler = disposables.add(instantiationService.createInstance(AgentHostSessionHandler, {
 		provider: 'copilot' as const,
 		agentId: 'agent-host-copilot',
@@ -862,7 +872,7 @@ suite('AgentHostChatContribution', () => {
 			agentHostService.addSession({ session: AgentSession.uri('copilot', 'out-ws'), startTime: 1000, modifiedTime: 2000, summary: 'Outside workspace', workingDirectory: URI.file('/other/place') });
 			agentHostService.addSession({ session: AgentSession.uri('copilot', 'no-wd'), startTime: 1000, modifiedTime: 2000, summary: 'No working directory' });
 
-			const listController = disposables.add(instantiationService.createInstance(AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local'));
+			const listController = disposables.add(instantiationService.createInstance(AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local', () => true));
 
 			await listController.refresh(CancellationToken.None);
 
@@ -880,6 +890,40 @@ suite('AgentHostChatContribution', () => {
 			assert.strictEqual(listController.items.length, 2);
 		});
 
+		test('refresh requests only the controller provider sessions', async () => {
+			const { instantiationService, agentHostService } = createTestServices(disposables);
+
+			agentHostService.addSession({ session: AgentSession.uri('copilot', 'copilot-a'), startTime: 1000, modifiedTime: 2000, summary: 'Copilot' });
+			agentHostService.addSession({ session: AgentSession.uri('director', 'director-a'), startTime: 1000, modifiedTime: 2000, summary: 'Director' });
+
+			const listController = disposables.add(instantiationService.createInstance(AgentHostSessionListController, 'agent-host-director', 'director', agentHostService, undefined, 'local', () => true));
+
+			await listController.refresh(CancellationToken.None);
+
+			assert.deepStrictEqual(agentHostService.listSessionsCalls.at(-1), { provider: 'director' });
+			assert.deepStrictEqual(listController.items.map(item => item.label), ['Director']);
+		});
+
+		test('refresh does not query the agent host when auto-listing is disabled', async () => {
+			const { instantiationService, agentHostService } = createTestServices(disposables);
+
+			agentHostService.addSession({ session: AgentSession.uri('copilot', 'copilot-a'), startTime: 1000, modifiedTime: 2000, summary: 'Copilot' });
+
+			let canListSessions = false;
+			const listController = disposables.add(instantiationService.createInstance(AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local', () => canListSessions));
+
+			await listController.refresh(CancellationToken.None);
+
+			assert.strictEqual(agentHostService.listSessionsCalls.length, 0);
+			assert.strictEqual(listController.items.length, 0);
+
+			canListSessions = true;
+			await listController.refresh(CancellationToken.None);
+
+			assert.deepStrictEqual(agentHostService.listSessionsCalls.at(-1), { provider: 'copilot' });
+			assert.deepStrictEqual(listController.items.map(item => item.label), ['Copilot']);
+		});
+
 		test('workspace folder change re-fetches and updates the filtered session list', async () => {
 			const { instantiationService, agentHostService } = createTestServices(disposables);
 
@@ -895,7 +939,7 @@ suite('AgentHostChatContribution', () => {
 			agentHostService.addSession({ session: AgentSession.uri('copilot', 'in-ws'), startTime: 1000, modifiedTime: 2000, summary: 'In workspace', workingDirectory: URI.file('/workspace/root/sub') });
 			agentHostService.addSession({ session: AgentSession.uri('copilot', 'out-ws'), startTime: 1000, modifiedTime: 2000, summary: 'Outside workspace', workingDirectory: URI.file('/other/place') });
 
-			const listController = disposables.add(instantiationService.createInstance(AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local'));
+			const listController = disposables.add(instantiationService.createInstance(AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local', () => true));
 
 			// Initially: no folders → no filter → both sessions visible.
 			await listController.refresh(CancellationToken.None);
@@ -919,7 +963,7 @@ suite('AgentHostChatContribution', () => {
 				onDidChangeWorkspaceFolders: Event.None,
 			});
 
-			const listController = disposables.add(instantiationService.createInstance(AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local'));
+			const listController = disposables.add(instantiationService.createInstance(AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local', () => true));
 
 			await listController.refresh(CancellationToken.None);
 			assert.strictEqual(listController.items.length, 0);
@@ -1005,7 +1049,7 @@ suite('AgentHostChatContribution', () => {
 				disposeSession: async () => { },
 			} as Partial<IAgentHostUntitledProvisionalSessionService> as IAgentHostUntitledProvisionalSessionService);
 
-			const listController = disposables.add(instantiationService.createInstance(AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local'));
+			const listController = disposables.add(instantiationService.createInstance(AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local', () => true));
 
 			const untitledResource = URI.from({ scheme: 'agent-host-copilot', path: '/untitled-abc' });
 			const item = await listController.newChatSessionItem({ prompt: 'Hello', untitledResource }, CancellationToken.None);
@@ -1032,7 +1076,7 @@ suite('AgentHostChatContribution', () => {
 				disposeSession: async () => { },
 			} as Partial<IAgentHostUntitledProvisionalSessionService> as IAgentHostUntitledProvisionalSessionService);
 
-			const listController = disposables.add(instantiationService.createInstance(AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local'));
+			const listController = disposables.add(instantiationService.createInstance(AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local', () => true));
 
 			const item = await listController.newChatSessionItem({ prompt: 'Hello' }, CancellationToken.None);
 			assert.ok(item);
@@ -3513,7 +3557,7 @@ suite('AgentHostChatContribution', () => {
 			const { instantiationService, agentHostService } = createTestServices(disposables);
 
 			const controller = disposables.add(instantiationService.createInstance(
-				AgentHostSessionListController, 'remote-test', 'copilot', agentHostService, 'My Remote Host', 'local'));
+				AgentHostSessionListController, 'remote-test', 'copilot', agentHostService, 'My Remote Host', 'local', () => true));
 
 			agentHostService.addSession({ session: AgentSession.uri('copilot', 'sess-1'), startTime: 1000, modifiedTime: 2000, summary: 'Test session' });
 			await controller.refresh(CancellationToken.None);
@@ -3526,7 +3570,7 @@ suite('AgentHostChatContribution', () => {
 			const { instantiationService, agentHostService } = createTestServices(disposables);
 
 			const controller = disposables.add(instantiationService.createInstance(
-				AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local'));
+				AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local', () => true));
 
 			agentHostService.addSession({ session: AgentSession.uri('copilot', 'sess-2'), startTime: 1000, modifiedTime: 2000, summary: 'Test' });
 			await controller.refresh(CancellationToken.None);
@@ -3539,7 +3583,7 @@ suite('AgentHostChatContribution', () => {
 			const { instantiationService, agentHostService } = createTestServices(disposables);
 
 			const controller = disposables.add(instantiationService.createInstance(
-				AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local'));
+				AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local', () => true));
 
 			const workingDirectory = URI.file('/repo/work');
 			agentHostService.addSession({
@@ -4838,6 +4882,21 @@ suite('AgentHostChatContribution', () => {
 			agentHostService.setRootState({ agents: protectedAgents(), activeSessions: 0 });
 			await timeout(0);
 			agentHostService.setRootState({ agents: protectedAgents(), activeSessions: 0 });
+			await timeout(0);
+
+			assert.deepStrictEqual(agentHostService.authenticateCalls, []);
+		});
+
+		test('suppresses eager protected-resource auth when Director agent is enabled', async () => {
+			const tokenRef = { current: 'tok-1' };
+			const { agentHostService } = createContribution(disposables, {
+				authServiceOverride: tokenAuthService(tokenRef),
+				directorAgentEnabled: true,
+			});
+
+			agentHostService.setRootState({ agents: protectedAgents(), activeSessions: 0 });
+			await timeout(0);
+			agentHostService.setRootState({ agents: protectedAgents(), activeSessions: 1 });
 			await timeout(0);
 
 			assert.deepStrictEqual(agentHostService.authenticateCalls, []);

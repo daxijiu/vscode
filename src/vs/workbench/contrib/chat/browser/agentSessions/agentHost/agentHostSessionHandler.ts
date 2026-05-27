@@ -21,6 +21,8 @@ import { localize } from '../../../../../../nls.js';
 import { AgentProvider, AgentSession, type IAgentConnection } from '../../../../../../platform/agentHost/common/agentService.js';
 import { AgentFeedbackAttachmentDisplayKind, AgentFeedbackAttachmentMetadataKey } from '../../../../../../platform/agentHost/common/agentFeedbackAttachments.js';
 import { IAgentSubscription, observableFromSubscription } from '../../../../../../platform/agentHost/common/state/agentSubscription.js';
+import { DirectorAgentProviderId } from '../../../../../../platform/agentHost/common/directorProviderBackend.js';
+import { DirectorDefaultClientToolReferenceNames, normalizeDirectorClientToolDefinitions } from '../../../../../../platform/agentHost/common/directorToolPolicy.js';
 import { SessionTruncatedAction } from '../../../../../../platform/agentHost/common/state/protocol/actions.js';
 import { CompletionItemKind as AhpCompletionItemKind, type CompletionItem as AhpCompletionItem } from '../../../../../../platform/agentHost/common/state/protocol/commands.js';
 import { ConfirmationOptionKind, CustomizationRef, TerminalClaimKind, ToolResultContentType, type ConfirmationOption, type ProtectedResourceMetadata, type SessionActiveClient, type ToolDefinition } from '../../../../../../platform/agentHost/common/state/protocol/state.js';
@@ -424,7 +426,7 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 		const allToolsObs = this._toolsService.observeTools(undefined);
 		const allowlistObs = observableConfigValue<string[]>(ChatConfiguration.AgentHostClientTools, [], this._configurationService);
 		this._clientToolsObs = derived(reader => {
-			const allowlist = new Set(allowlistObs.read(reader));
+			const allowlist = agentHostClientToolReferenceNamesForProvider(this._config.provider, allowlistObs.read(reader));
 			const allTools = allToolsObs.read(reader);
 			return allTools.filter(t => t.toolReferenceName !== undefined && allowlist.has(t.toolReferenceName));
 		});
@@ -434,7 +436,7 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 		// client so the server sees the updated tool list.
 		this._register(autorun(reader => {
 			const tools = this._clientToolsObs.read(reader);
-			const defs = tools.map(toolDataToDefinition);
+			const defs = this._clientToolDefinitions(tools);
 			for (const [sessionResource] of this._activeSessions) {
 				const backendSession = this._resolveSessionUri(sessionResource);
 				const state = this._getSessionState(backendSession.toString());
@@ -940,7 +942,7 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 	private _getCurrentActiveClient(customizations: CustomizationRef[] = this._config.customizations?.get() ?? []): SessionActiveClient {
 		return {
 			clientId: this._config.connection.clientId,
-			tools: this._clientToolsObs.get().map(toolDataToDefinition),
+			tools: this._clientToolDefinitions(this._clientToolsObs.get()),
 			customizations,
 		};
 	}
@@ -1787,7 +1789,10 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 				callId: toolCallId,
 				toolId: invocation.toolId,
 				parameters,
-				context: { sessionResource: opts.sessionResource },
+				context: {
+					sessionResource: opts.sessionResource,
+					workingDirectory: this._resolveToolWorkingDirectory(opts.backendSession, opts.sessionResource),
+				},
 				chatStreamToolCallId: toolCallId,
 			};
 			const noOpCountTokens = async () => 0;
@@ -2499,7 +2504,7 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 
 		const activeClient = {
 			clientId: this._config.connection.clientId,
-			tools: this._clientToolsObs.get().map(toolDataToDefinition),
+			tools: this._clientToolDefinitions(this._clientToolsObs.get()),
 			customizations: this._config.customizations?.get() ?? [],
 		};
 
@@ -2707,6 +2712,19 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 		return this._config.resolveWorkingDirectory?.(sessionResource)
 			?? this._workingDirectoryResolver.resolve(sessionResource)
 			?? this._workspaceContextService.getWorkspace().folders[0]?.uri;
+	}
+
+	private _resolveToolWorkingDirectory(backendSession: URI, sessionResource: URI): URI | undefined {
+		const rawResolvedDir = this._getSessionState(backendSession.toString())?.summary.workingDirectory;
+		const resolvedDir = typeof rawResolvedDir === 'string' ? URI.parse(rawResolvedDir) : rawResolvedDir;
+		return resolvedDir ?? this._resolveRequestedWorkingDirectory(sessionResource);
+	}
+
+	private _clientToolDefinitions(tools: readonly IToolData[]): ToolDefinition[] {
+		const definitions = tools.map(toolDataToDefinition);
+		return this._config.provider === DirectorAgentProviderId
+			? [...normalizeDirectorClientToolDefinitions(definitions)]
+			: definitions;
 	}
 
 	private _convertVariablesToAttachments(request: IChatAgentRequest): MessageAttachment[] {
@@ -2970,6 +2988,16 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 // =============================================================================
 // Client-provided tool helpers
 // =============================================================================
+
+export function agentHostClientToolReferenceNamesForProvider(provider: AgentProvider, configuredNames: readonly string[]): Set<string> {
+	const names = new Set(configuredNames);
+	if (provider === DirectorAgentProviderId) {
+		for (const name of DirectorDefaultClientToolReferenceNames) {
+			names.add(name);
+		}
+	}
+	return names;
+}
 
 /**
  * Converts an internal {@link IToolData} to a protocol {@link ToolDefinition}.
