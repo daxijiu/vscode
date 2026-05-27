@@ -7,6 +7,7 @@ import * as cp from 'child_process';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ExternalAcpAgentSnapshotAgent } from '../../common/acpAgentConfig.js';
+import { AcpNegotiatedCapabilities, EmptyAcpNegotiatedCapabilities, normalizeAcpCapabilities } from './acpCapabilities.js';
 import { buildAcpClientCapabilities, AcpClientCapabilityPolicy } from './acpClientCapabilities.js';
 import { AcpConnection } from './acpConnection.js';
 import { acpProcessExitedError, acpProcessNotFoundError, acpUnsupportedProtocolVersionError, isAcpError, redactAcpDiagnostic, AcpError, AcpErrorCode } from './acpErrors.js';
@@ -49,6 +50,7 @@ export class AcpProcess extends Disposable {
 	private stderr = '';
 	private redactionValues: readonly string[] = [];
 	private authMethods: readonly AcpAuthMethod[] = [];
+	private capabilities: AcpNegotiatedCapabilities = EmptyAcpNegotiatedCapabilities;
 	private readonly permissionBridge: AcpPermissionBridge;
 	private exitCode: number | null | undefined;
 	private signal: string | null | undefined;
@@ -80,6 +82,7 @@ export class AcpProcess extends Disposable {
 				throw acpUnsupportedProtocolVersionError(result.protocolVersion);
 			}
 			this.authMethods = result.authMethods ?? [];
+			this.capabilities = normalizeAcpCapabilities(result);
 			return result;
 		} catch (err) {
 			this.dispose();
@@ -89,6 +92,10 @@ export class AcpProcess extends Disposable {
 
 	getAuthMethods(): readonly AcpAuthMethod[] {
 		return this.authMethods;
+	}
+
+	getCapabilities(): AcpNegotiatedCapabilities {
+		return this.capabilities;
 	}
 
 	async authenticate(methodId: string): Promise<AcpAuthenticateResult> {

@@ -5,7 +5,7 @@
 
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
-import { IObservable, observableValue } from '../../../../base/common/observable.js';
+import { IObservable, ISettableObservable, observableValue } from '../../../../base/common/observable.js';
 import { basename } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -14,16 +14,12 @@ import { ExternalAcpAgentCwdPolicy, ExternalAcpAgentSnapshotAgent, sanitizeExter
 import { AgentProvider, AgentSession, IAgent, IAgentCreateSessionConfig, IAgentCreateSessionResult, IAgentDescriptor, IAgentModelInfo, IAgentResolveSessionConfigParams, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata, IAgentSessionProjectInfo, AgentSignal } from '../../common/agentService.js';
 import { ISyncedCustomization } from '../../common/agentPluginManager.js';
 import { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
-import { ConfigSchema, CustomizationRef, MessageAttachment, ModelSelection, PendingMessage, ProtectedResourceMetadata, SessionInputAnswer, SessionInputResponseKind, ToolCallResult, ToolDefinition, Turn } from '../../common/state/protocol/state.js';
+import { CustomizationRef, MessageAttachment, ModelSelection, PendingMessage, ProtectedResourceMetadata, SessionInputAnswer, SessionInputResponseKind, ToolCallResult, ToolDefinition, Turn } from '../../common/state/protocol/state.js';
 import { AcpAgentSession, toAcpUserMessage } from './acpAgentSession.js';
+import { acpModelsToAgentModels, AcpNegotiatedCapabilities, EmptyAcpNegotiatedCapabilities, EmptyAcpSessionConfigSchema, resolveAcpSessionConfigValues } from './acpCapabilities.js';
 import { AcpProcess } from './acpProcess.js';
 
 const AcpAgentProviderPrefix = 'acp-';
-
-const AcpTextSessionConfigSchema: ConfigSchema = {
-	type: 'object',
-	properties: {},
-};
 
 export function toAcpAgentProviderId(agentId: string): AgentProvider {
 	const id = sanitizeExternalAcpAgentId(agentId);
@@ -42,23 +38,15 @@ export class AcpAgent extends Disposable implements IAgent {
 	private readonly _onDidSessionProgress = this._register(new Emitter<AgentSignal>());
 	readonly onDidSessionProgress = this._onDidSessionProgress.event;
 
-	private readonly _models: IObservable<readonly IAgentModelInfo[]>;
+	private readonly _models: ISettableObservable<readonly IAgentModelInfo[]>;
 	readonly models: IObservable<readonly IAgentModelInfo[]>;
+	private _capabilities: AcpNegotiatedCapabilities = EmptyAcpNegotiatedCapabilities;
 	private readonly _sessions = new Map<string, { readonly session: AcpAgentSession; readonly store: DisposableStore }>();
 
 	constructor(private readonly agent: ExternalAcpAgentSnapshotAgent) {
 		super();
 		this.id = toAcpAgentProviderId(agent.id);
-		this._models = observableValue<readonly IAgentModelInfo[]>(this, [{
-			provider: this.id,
-			id: 'external-acp-runtime',
-			name: localize('acpAgent.placeholderModel', "{0} Runtime", this.agent.displayName),
-			supportsVision: false,
-			_meta: {
-				externalAcpAgent: true,
-				vendorLabel: this.agent.vendorLabel ?? this.agent.displayName,
-			},
-		}]);
+		this._models = observableValue<readonly IAgentModelInfo[]>(this, this._placeholderModels());
 		this.models = this._models;
 	}
 
@@ -90,6 +78,7 @@ export class AcpAgent extends Disposable implements IAgent {
 		try {
 			const initializeResult = await process.initialize();
 			const newSession = await process.newSession(process.sessionCwd());
+			this._applyCapabilities(process.getCapabilities());
 			const createdAt = Date.now();
 			const workingDirectory = this._resolveWorkingDirectory(config.workingDirectory);
 			const session = new AcpAgentSession(
@@ -128,15 +117,22 @@ export class AcpAgent extends Disposable implements IAgent {
 		}
 	}
 
-	async resolveSessionConfig(_params: IAgentResolveSessionConfigParams): Promise<ResolveSessionConfigResult> {
+	async resolveSessionConfig(params: IAgentResolveSessionConfigParams): Promise<ResolveSessionConfigResult> {
 		return {
-			schema: AcpTextSessionConfigSchema,
-			values: {},
+			schema: this._capabilities.sessionConfigSchema,
+			values: this._capabilities.sessionConfigSchema === EmptyAcpSessionConfigSchema ? {} : resolveAcpSessionConfigValues(this._capabilities, params.config),
 		};
 	}
 
-	async sessionConfigCompletions(_params: IAgentSessionConfigCompletionsParams): Promise<SessionConfigCompletionsResult> {
-		return { items: [] };
+	async sessionConfigCompletions(params: IAgentSessionConfigCompletionsParams): Promise<SessionConfigCompletionsResult> {
+		const items = this._capabilities.sessionConfigCompletions[params.property] ?? [];
+		const query = params.query?.trim().toLowerCase();
+		if (!query) {
+			return { items: [...items] };
+		}
+		return {
+			items: items.filter(item => item.value.toLowerCase().includes(query) || item.label.toLowerCase().includes(query)),
+		};
 	}
 
 	async sendMessage(session: URI, prompt: string, attachments?: readonly MessageAttachment[], turnId?: string): Promise<void> {
@@ -229,5 +225,24 @@ export class AcpAgent extends Disposable implements IAgent {
 			uri: workingDirectory,
 			displayName: basename(workingDirectory) || workingDirectory.fsPath || workingDirectory.path,
 		};
+	}
+
+	private _applyCapabilities(capabilities: AcpNegotiatedCapabilities): void {
+		this._capabilities = capabilities;
+		const models = acpModelsToAgentModels(this.id, this.agent.vendorLabel ?? this.agent.displayName, capabilities);
+		this._models.set(models.length ? models : this._placeholderModels(), undefined);
+	}
+
+	private _placeholderModels(): readonly IAgentModelInfo[] {
+		return [{
+			provider: this.id,
+			id: 'external-acp-runtime',
+			name: localize('acpAgent.placeholderModel', "{0} Runtime", this.agent.displayName),
+			supportsVision: false,
+			_meta: {
+				externalAcpAgent: true,
+				vendorLabel: this.agent.vendorLabel ?? this.agent.displayName,
+			},
+		}];
 	}
 }

@@ -1,6 +1,6 @@
 # Phase 8 - Models, Modes, Config, Restore
 
-Updated: 2026-05-27
+Updated: 2026-05-28
 
 ## Goal
 
@@ -50,15 +50,15 @@ No UI should imply model, mode, config, or session restore support unless the ac
 
 ## Implementation Tasks
 
-1. Store negotiated capabilities from `initialize`.
-2. Map ACP models to `IAgentModelInfo` only when present.
-3. Add UI state for vendor-managed/default model when no model list exists.
-4. Implement mode/config APIs with capability gates.
-5. Implement set-model only if stable/supported by the active protocol path.
-6. Add session list/load/resume adapters where advertised.
+1. Store negotiated capabilities from `initialize`. **8A implemented.**
+2. Map ACP models to `IAgentModelInfo` only when present. **8A implemented.**
+3. Add UI state for vendor-managed/default model when no model list exists. **8A keeps the existing `external-acp-runtime` placeholder.**
+4. Implement mode/config APIs with capability gates. **8A implemented for explicit initialize schema/completions only.**
+5. Implement set-model only if stable/supported by the active protocol path. **Deferred; 8A leaves `changeModel` unsupported and does not call ACP set-model methods.**
+6. Add session list/load/resume adapters where advertised. **Deferred; 8A records indicators only.**
    - delete/archive remains VS Code-local only in this phase;
    - vendor-side delete is a future separately approved capability.
-7. Add restore feasibility audit:
+7. Add restore feasibility audit: **8A initial audit recorded below.**
    - which ACP methods are available;
    - whether historical messages can be loaded;
    - whether restore ids are stable across reconnect;
@@ -131,6 +131,31 @@ Required focused tests:
 - Vendor compatibility matrix.
 - Tests for unsupported capability hiding.
 - Restore transcript and identity mapping rules.
+
+## Phase 8A Implementation Notes
+
+Implemented on 2026-05-28:
+
+- Added `src/vs/platform/agentHost/node/acp/acpCapabilities.ts` to normalize optional ACP `initialize` metadata/capabilities with an allowlist.
+- `AcpProcess.initialize()` stores negotiated capability state in addition to redacted auth methods.
+- `AcpAgent` keeps the placeholder `external-acp-runtime` model by default and updates AgentHost model entries only after a successful explicit `createSession` negotiates a trustworthy model list.
+- Model entries and config schemas ignore unknown fields and drop/redact secret-like model/config fields.
+- `resolveSessionConfig()` and `sessionConfigCompletions()` expose only explicitly negotiated schema/completion capability state; empty capabilities return an empty schema and no completions.
+- `changeModel()` remains unsupported and does not send an ACP method.
+- `listSessions()` remains VS Code-local/in-memory only even when restore/list/load indicators are advertised.
+- Failed replacement initialize attempts do not replace previously negotiated capability state.
+
+## Phase 8A Restore Feasibility Audit
+
+Current status: not ready for visible restore UI.
+
+| Capability area | 8A behavior | Feasibility result |
+| --- | --- | --- |
+| `session/list` / vendor list | Indicators can be normalized from `initialize`; no ACP method is called. | Deferred until at least one vendor proves stable list IDs after restart/reconnect. |
+| `session/load` / vendor load | Indicators can be normalized from `initialize`; no ACP method is called. | Deferred until transcript ownership and partial-history states are defined. |
+| Visible restore/list/load/resume UI | Hidden. | Deferred to Phase 8C after a vendor/protocol path passes identity and transcript tests. |
+| VS Code URI to ACP/vendor session mapping | Current sessions map only in memory. | Deferred; needs stable ACP session id plus vendor restore id mapping. |
+| Delete/archive | VS Code-local disposal only. | Vendor-side destructive API remains out of scope and separately approval-gated. |
 
 ## Recorded Direction
 

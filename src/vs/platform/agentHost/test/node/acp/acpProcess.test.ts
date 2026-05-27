@@ -87,6 +87,37 @@ suite('acpProcess', () => {
 		}]);
 	});
 
+	test('records negotiated initialize capabilities without exposing model secrets', async () => {
+		const process = disposables.add(createProcess('models-list'));
+
+		await process.initialize();
+
+		const capabilities = process.getCapabilities();
+		assert.deepStrictEqual({
+			models: capabilities.models,
+			leaksSecret: JSON.stringify(capabilities).includes('secret') || JSON.stringify(capabilities).includes('abc123') || JSON.stringify(capabilities).includes('apiKey'),
+		}, {
+			models: [{
+				id: 'fake-model',
+				name: 'Fake Model',
+				maxContextWindow: 123456,
+				supportsVision: true,
+				configSchema: {
+					type: 'object',
+					properties: {
+						effort: {
+							type: 'string',
+							title: 'Effort',
+							enum: ['low', 'high'],
+							default: 'low',
+						},
+					},
+				},
+			}],
+			leaksSecret: false,
+		});
+	});
+
 	test('authenticates with a vendor auth method after explicit caller action', async () => {
 		const process = disposables.add(createProcess('authenticate-success'));
 

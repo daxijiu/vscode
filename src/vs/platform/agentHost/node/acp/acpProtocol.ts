@@ -71,6 +71,18 @@ export interface AcpClientCapabilities extends AcpJsonObject {
 }
 
 export interface AcpAgentCapabilities extends AcpJsonObject {
+	readonly models?: readonly AcpJsonValue[];
+	readonly availableModels?: readonly AcpJsonValue[];
+	readonly modes?: readonly AcpJsonValue[];
+	readonly sessionModes?: readonly AcpJsonValue[];
+	readonly configSchema?: AcpJsonObject;
+	readonly sessionConfigSchema?: AcpJsonObject;
+	readonly sessionConfigCompletions?: AcpJsonObject;
+	readonly configCompletions?: AcpJsonObject;
+	readonly restore?: AcpJsonObject;
+	readonly sessionRestore?: AcpJsonObject;
+	readonly sessions?: AcpJsonObject;
+	readonly methods?: readonly AcpJsonValue[];
 }
 
 export interface AcpAuthMethod extends AcpJsonObject {

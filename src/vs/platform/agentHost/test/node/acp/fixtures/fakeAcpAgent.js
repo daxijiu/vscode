@@ -13,7 +13,7 @@ let pendingPromptId = undefined;
 let pendingPermissionRequestId = undefined;
 let cancelled = false;
 
-if (mode.startsWith('dispose-marker') && markerPath) {
+if ((mode.startsWith('dispose-marker') || mode === 'models-list-fail-second-initialize') && markerPath) {
 	fs.appendFileSync(markerPath, `start ${process.pid}\n`);
 }
 
@@ -100,9 +100,21 @@ function handleLine(line) {
 			case 'permission-request-denied':
 			case 'permission-pending-cancel':
 			case 'capabilities-echo':
+			case 'models-list':
+			case 'config-modes':
+			case 'meta-capability-boundary':
+			case 'unsupported-set-model':
+			case 'restore-capability-only':
 			case 'dispose-marker':
 			case 'dispose-marker-fail-second-session-new':
 				writeInitialize(request.id, 1, request.params?.clientCapabilities);
+				break;
+			case 'models-list-fail-second-initialize':
+				if (startedProcessCount() > 1) {
+					writeError(request.id, -32603, 'Initialize failed on replacement');
+				} else {
+					writeInitialize(request.id, 1, request.params?.clientCapabilities);
+				}
 				break;
 			case 'dispose-marker-fail-second-initialize':
 				if (startedProcessCount() > 1) {
@@ -169,6 +181,14 @@ function handleLine(line) {
 
 	if (request.method === 'session/prompt') {
 		handlePrompt(request);
+		return;
+	}
+
+	if (request.method === 'session/list' || request.method === 'session/load' || request.method === 'session/restore' || request.method === 'session/set_model' || request.method === 'session/setModel') {
+		if (markerPath) {
+			fs.appendFileSync(markerPath, `method ${request.method}\n`);
+		}
+		writeError(request.id, -32601, `Unsupported ${request.method}`);
 		return;
 	}
 
@@ -320,15 +340,150 @@ function handlePrompt(request) {
 function writeInitialize(id, protocolVersion, receivedClientCapabilities) {
 	writeResponse(id, {
 		protocolVersion,
-		agentCapabilities: {},
+		agentCapabilities: capabilitiesForMode(),
 		authMethods: authMethodsForMode(),
 		agentInfo: {
 			name: 'fake-acp-agent',
 			title: 'Fake ACP Agent',
 			version: '1.0.0',
 			...(mode === 'capabilities-echo' ? { _meta: { receivedClientCapabilities } } : {}),
+			...(mode === 'meta-capability-boundary' ? {
+				_meta: {
+					models: [{ id: 'agent-info-meta-model', name: 'Agent Info Meta Model' }],
+					sessionConfigSchema: {
+						type: 'object',
+						properties: {
+							agentInfoMetaProperty: { type: 'string', title: 'Agent Info Meta Property' },
+						},
+					},
+				},
+			} : {}),
 		},
+		...(mode === 'meta-capability-boundary' ? {
+			_meta: {
+				models: [{ id: 'top-level-meta-model', name: 'Top Level Meta Model' }],
+				sessionConfigSchema: {
+					type: 'object',
+					properties: {
+						topLevelMetaProperty: { type: 'string', title: 'Top Level Meta Property' },
+					},
+				},
+				capabilities: {
+					models: [{ id: 'nested-capability-model', name: 'Nested Capability Model' }],
+					sessionConfigSchema: {
+						type: 'object',
+						properties: {
+							nestedCapabilityProperty: { type: 'string', title: 'Nested Capability Property' },
+						},
+					},
+				},
+			},
+		} : {}),
 	});
+}
+
+function capabilitiesForMode() {
+	switch (mode) {
+		case 'models-list':
+		case 'models-list-fail-second-initialize':
+			return {
+				models: [
+					{
+						id: 'fake-model',
+						name: 'Fake Model',
+						maxContextWindow: 123456,
+						supportsVision: true,
+						apiKey: 'sk-secret-token',
+						configSchema: {
+							type: 'object',
+							properties: {
+								effort: {
+									type: 'string',
+									title: 'Effort',
+									enum: ['low', 'high'],
+									default: 'low',
+								},
+								apiKey: {
+									type: 'string',
+									title: 'API Key',
+									default: 'sk-model-secret',
+								},
+							},
+						},
+					},
+					{
+						id: 'token=abc123',
+						name: 'Leaky Model',
+					},
+				],
+			};
+		case 'config-modes':
+			return {
+				modes: [
+					{ id: 'interactive', label: 'Interactive' },
+					{ id: 'plan', label: 'Plan', description: 'Plan first' },
+				],
+				sessionConfigSchema: {
+					type: 'object',
+					properties: {
+						temperature: {
+							type: 'number',
+							title: 'Temperature',
+							default: 0.4,
+						},
+						profile: {
+							type: 'string',
+							title: 'Profile',
+							enumDynamic: true,
+						},
+						password: {
+							type: 'string',
+							title: 'Password',
+							default: 'super-secret',
+						},
+						note: {
+							type: 'string',
+							title: 'Note',
+							default: 'token=abc123',
+						},
+					},
+					required: ['temperature', 'password'],
+				},
+				sessionConfigCompletions: {
+					profile: [
+						{ value: 'fast', label: 'Fast' },
+						{ value: 'accurate', label: 'Accurate' },
+						{ value: 'token=abc123', label: 'Leaky' },
+					],
+					token: [
+						{ value: 'secret', label: 'Secret' },
+					],
+					credentials: [
+						{ value: 'safe', label: 'Safe' },
+					],
+					unknownProperty: [
+						{ value: 'orphan', label: 'Orphan' },
+					],
+				},
+			};
+		case 'unsupported-set-model':
+			return {
+				models: [
+					{ id: 'fake-model', name: 'Fake Model' },
+				],
+			};
+		case 'restore-capability-only':
+			return {
+				sessionRestore: {
+					list: true,
+					load: true,
+					restore: true,
+				},
+				methods: ['session/list', 'session/load'],
+			};
+		default:
+			return {};
+	}
 }
 
 function writeResponse(id, result) {

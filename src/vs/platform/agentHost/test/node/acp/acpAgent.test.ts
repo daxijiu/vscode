@@ -87,6 +87,285 @@ suite('AcpAgent', () => {
 		}
 	});
 
+	test('keeps placeholder model when initialize returns no model list', async () => {
+		const agent = disposables.add(new AcpAgent(fakeAgent('text-stream')));
+
+		await agent.createSession({ workingDirectory: URI.file(process.cwd()) });
+
+		assert.deepStrictEqual(agent.models.get(), [{
+			provider: 'acp-fake-text-stream',
+			id: 'external-acp-runtime',
+			name: 'Fake ACP Agent Runtime',
+			supportsVision: false,
+			_meta: {
+				externalAcpAgent: true,
+				vendorLabel: 'Cursor',
+			},
+		}]);
+	});
+
+	test('updates AgentHost models from explicit initialize model list without leaking secret fields', async () => {
+		const agent = disposables.add(new AcpAgent(fakeAgent('models-list')));
+
+		await agent.createSession({ workingDirectory: URI.file(process.cwd()) });
+		const models = agent.models.get();
+		const payload = JSON.stringify(models);
+
+		assert.deepStrictEqual({
+			models,
+			leaksSecret: payload.includes('secret') || payload.includes('abc123') || payload.includes('apiKey'),
+		}, {
+			models: [{
+				provider: 'acp-fake-models-list',
+				id: 'fake-model',
+				name: 'Fake Model',
+				maxContextWindow: 123456,
+				supportsVision: true,
+				configSchema: {
+					type: 'object',
+					properties: {
+						effort: {
+							type: 'string',
+							title: 'Effort',
+							enum: ['low', 'high'],
+							default: 'low',
+						},
+					},
+				},
+				_meta: {
+					externalAcpAgent: true,
+					vendorLabel: 'Cursor',
+				},
+			}],
+			leaksSecret: false,
+		});
+	});
+
+	test('exposes mode and config schema only from explicit capability state', async () => {
+		const agent = disposables.add(new AcpAgent(fakeAgent('config-modes')));
+
+		assert.deepStrictEqual(await agent.resolveSessionConfig({ provider: agent.id }), { schema: { type: 'object', properties: {} }, values: {} });
+
+		await agent.createSession({ workingDirectory: URI.file(process.cwd()) });
+		const resolved = await agent.resolveSessionConfig({
+			provider: agent.id,
+			config: {
+				mode: 'plan',
+				temperature: 0.7,
+				note: 'token=abc123',
+				password: 'super-secret',
+			},
+		});
+		const completions = await agent.sessionConfigCompletions({ provider: agent.id, property: 'profile', query: 'a' });
+		const payload = JSON.stringify({ resolved, completions });
+
+		assert.deepStrictEqual({
+			resolved,
+			completions,
+			leaksSecret: payload.includes('abc123') || payload.includes('password') || payload.includes('super-secret') || payload.includes('token='),
+		}, {
+			resolved: {
+				schema: {
+					type: 'object',
+					properties: {
+						temperature: {
+							type: 'number',
+							title: 'Temperature',
+							default: 0.4,
+						},
+						profile: {
+							type: 'string',
+							title: 'Profile',
+							enumDynamic: true,
+						},
+						note: {
+							type: 'string',
+							title: 'Note',
+						},
+						mode: {
+							type: 'string',
+							title: 'Mode',
+							description: 'Vendor-advertised ACP session mode.',
+							enum: ['interactive', 'plan'],
+							enumLabels: ['Interactive', 'Plan'],
+							enumDescriptions: ['', 'Plan first'],
+							default: 'interactive',
+							sessionMutable: false,
+						},
+					},
+					required: ['temperature'],
+				},
+				values: {
+					temperature: 0.7,
+					mode: 'plan',
+				},
+			},
+			completions: {
+				items: [
+					{ value: 'fast', label: 'Fast' },
+					{ value: 'accurate', label: 'Accurate' },
+				],
+			},
+			leaksSecret: false,
+		});
+	});
+
+	test('ignores direct initialize metadata capabilities outside explicit capability containers', async () => {
+		const agent = disposables.add(new AcpAgent(fakeAgent('meta-capability-boundary')));
+
+		await agent.createSession({ workingDirectory: URI.file(process.cwd()) });
+		const resolved = await agent.resolveSessionConfig({ provider: agent.id });
+
+		assert.deepStrictEqual({
+			models: agent.models.get(),
+			resolved,
+		}, {
+			models: [{
+				provider: 'acp-fake-meta-capability-boundary',
+				id: 'nested-capability-model',
+				name: 'Nested Capability Model',
+				supportsVision: false,
+				_meta: {
+					externalAcpAgent: true,
+					vendorLabel: 'Cursor',
+				},
+			}],
+			resolved: {
+				schema: {
+					type: 'object',
+					properties: {
+						nestedCapabilityProperty: {
+							type: 'string',
+							title: 'Nested Capability Property',
+						},
+					},
+				},
+				values: {},
+			},
+		});
+	});
+
+	test('rejects config completions for non-schema and secret-like properties', async () => {
+		const agent = disposables.add(new AcpAgent(fakeAgent('config-modes')));
+
+		await agent.createSession({ workingDirectory: URI.file(process.cwd()) });
+		const completions = {
+			unknownProperty: await agent.sessionConfigCompletions({ provider: agent.id, property: 'unknownProperty' }),
+			token: await agent.sessionConfigCompletions({ provider: agent.id, property: 'token' }),
+			credentials: await agent.sessionConfigCompletions({ provider: agent.id, property: 'credentials' }),
+		};
+
+		assert.deepStrictEqual(completions, {
+			unknownProperty: { items: [] },
+			token: { items: [] },
+			credentials: { items: [] },
+		});
+	});
+
+	test('changeModel remains unsupported and does not call ACP set-model methods', async () => {
+		const tempDir = await fs.mkdtemp(join(os.tmpdir(), 'vscode-acp-agent-test-'));
+		try {
+			const markerPath = join(tempDir, 'methods.txt');
+			const agent = new AcpAgent(fakeAgent('unsupported-set-model', {
+				args: [FileAccess.asFileUri('vs/platform/agentHost/test/node/acp/fixtures/fakeAcpAgent.js').fsPath, 'unsupported-set-model', markerPath],
+			}));
+			try {
+				const created = await agent.createSession({ workingDirectory: URI.file(process.cwd()) });
+
+				await assert.rejects(agent.changeModel(created.session, { id: 'fake-model' }), /model selection is not available/);
+
+				assert.deepStrictEqual({
+					models: agent.models.get().map(model => model.id),
+					methodCalls: await readOptionalFile(markerPath),
+				}, {
+					models: ['fake-model'],
+					methodCalls: undefined,
+				});
+			} finally {
+				agent.dispose();
+			}
+		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	test('listSessions remains local-only even when restore capabilities are advertised', async () => {
+		const tempDir = await fs.mkdtemp(join(os.tmpdir(), 'vscode-acp-agent-test-'));
+		try {
+			const markerPath = join(tempDir, 'methods.txt');
+			const agent = new AcpAgent(fakeAgent('restore-capability-only', {
+				args: [FileAccess.asFileUri('vs/platform/agentHost/test/node/acp/fixtures/fakeAcpAgent.js').fsPath, 'restore-capability-only', markerPath],
+			}));
+			try {
+				const created = await agent.createSession({ workingDirectory: URI.file(process.cwd()) });
+
+				assert.deepStrictEqual({
+					listed: (await agent.listSessions()).map(session => session.session.toString()),
+					methodCalls: await readOptionalFile(markerPath),
+				}, {
+					listed: [created.session.toString()],
+					methodCalls: undefined,
+				});
+			} finally {
+				agent.dispose();
+			}
+		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	test('failed replacement initialize does not pollute previous capability state', async () => {
+		const tempDir = await fs.mkdtemp(join(os.tmpdir(), 'vscode-acp-agent-test-'));
+		try {
+			const markerPath = join(tempDir, 'started.txt');
+			const session = URI.parse('acp-fake-models-list-fail-second-initialize:///same-session');
+			const agent = new AcpAgent(fakeAgent('models-list-fail-second-initialize', {
+				args: [FileAccess.asFileUri('vs/platform/agentHost/test/node/acp/fixtures/fakeAcpAgent.js').fsPath, 'models-list-fail-second-initialize', markerPath],
+			}));
+			try {
+				await agent.createSession({ session, workingDirectory: URI.file(process.cwd()) });
+				const before = agent.models.get();
+
+				await assert.rejects(agent.createSession({ session, workingDirectory: URI.file(process.cwd()) }), /ACP request failed\./);
+
+				assert.deepStrictEqual({
+					starts: (await waitForStartedPids(markerPath, 2)).length,
+					before,
+					after: agent.models.get(),
+				}, {
+					starts: 2,
+					before: [{
+						provider: 'acp-fake-models-list-fail-second-initialize',
+						id: 'fake-model',
+						name: 'Fake Model',
+						maxContextWindow: 123456,
+						supportsVision: true,
+						configSchema: {
+							type: 'object',
+							properties: {
+								effort: {
+									type: 'string',
+									title: 'Effort',
+									enum: ['low', 'high'],
+									default: 'low',
+								},
+							},
+						},
+						_meta: {
+							externalAcpAgent: true,
+							vendorLabel: 'Cursor',
+						},
+					}],
+					after: before,
+				});
+			} finally {
+				agent.dispose();
+			}
+		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	test('creates ACP session and streams text transcript', async () => {
 		const agent = disposables.add(new AcpAgent(fakeAgent('text-stream')));
 		const actions: string[] = [];
@@ -451,6 +730,14 @@ async function waitForStartedPids(file: string, count: number): Promise<number[]
 		await wait(20);
 	}
 	assert.fail(`Timed out waiting for ${count} ACP process starts in ${file}`);
+}
+
+async function readOptionalFile(file: string): Promise<string | undefined> {
+	try {
+		return await fs.readFile(file, 'utf8');
+	} catch {
+		return undefined;
+	}
 }
 
 function assertProcessRunning(pid: number): void {

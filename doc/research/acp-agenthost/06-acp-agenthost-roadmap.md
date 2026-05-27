@@ -377,6 +377,11 @@ Acceptance:
 - External ACP AgentHost support is enabled by default for internal development/testing.
 - Delete/archive remains VS Code-local only unless vendor-side delete is separately approved later.
 
+Implementation status:
+
+- 2026-05-28: Phase 8A implemented optional capability display and restore feasibility audit plumbing. ACP `initialize` capability metadata is now conservatively normalized for explicit model lists, modes/session config schema, static config completions, and restore/list/load indicators. AgentHost keeps the placeholder `external-acp-runtime` model until a successful explicit `createSession` returns a trustworthy model list; unsupported model changes, vendor restore/list/load, visible restore UI, and vendor-side delete/archive remain deferred.
+- Restore feasibility after 8A: the host can remember advertised restore/list/load indicators for audit purposes, but `listSessions()` remains local in-memory only, no ACP restore method is called, no transcript identity mapping is trusted yet, and no visible restore/list/load/resume UI is exposed.
+
 Difficulty: high.
 
 ## Recommended First Milestone
