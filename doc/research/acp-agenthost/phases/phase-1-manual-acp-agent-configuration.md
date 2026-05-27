@@ -102,6 +102,18 @@ The output is a Workbench-owned **External ACP Agents** management page, a confi
 - The management page renders without starting external ACP processes.
 - If changes require restart/reconnect, the page says so clearly.
 
+## Implementation Status
+
+Implemented on 2026-05-27 as the first manual-config skeleton:
+
+- Added shared ACP config/snapshot DTOs and helpers under `src/vs/platform/agentHost/common/acpAgentConfig.ts`.
+- Added Workbench-owned registry and snapshot services under `src/vs/workbench/contrib/agentProviders/common/`.
+- Added the `External ACP Agents` editor and `externalAcpAgents.openSettings` command under `src/vs/workbench/contrib/agentProviders/browser/`.
+- Snapshot output includes only enabled, trusted, valid manual agents; side-effect capability flags remain stored in config but are not advertised in the Phase 1 snapshot.
+- Raw env values are not persisted: env input is normalized to variable names only, and secret fields are stored as references only.
+- Apply behavior remains restart/reconnect based. The UI renders the pending apply state and does not dynamically register AgentHost providers.
+- The management page renders from stored config only; it has no runtime process launch, connection test, JSON-RPC transport, provider registration, or background login probe.
+
 ## Validation
 
 ```powershell

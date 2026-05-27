@@ -80,6 +80,11 @@ Acceptance:
 - Snapshot contains no raw API keys, bearer tokens, or OAuth tokens.
 - Multi-root cwd behavior has an explicit policy.
 
+Implementation status:
+
+- 2026-05-27: implemented the first manual-config skeleton with a neutral `agentProviders` Workbench service/UI, `externalAcpAgents.openSettings`, and a secret-free snapshot for later AgentHost runtime consumption.
+- This implementation intentionally does not register live AgentHost providers, launch ACP commands, probe login state, run JSON-RPC, or reuse Director Provider Backend credentials.
+
 Difficulty: low-medium.
 
 ## Phase 2 - ACP Runtime Skeleton

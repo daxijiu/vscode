@@ -1,0 +1,460 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+.external-acp-agents-editor {
+	height: 100%;
+	overflow: auto;
+	background: var(--vscode-editor-background);
+	color: var(--vscode-foreground);
+}
+
+.external-acp-agents-widget {
+	box-sizing: border-box;
+	max-width: 900px;
+	min-height: 100%;
+	padding: 20px 24px 40px;
+}
+
+.eaa-page-heading {
+	max-width: 820px;
+	margin-bottom: 18px;
+}
+
+.eaa-title {
+	margin: 0;
+	font-size: 24px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+}
+
+.eaa-subtitle {
+	margin-top: 6px;
+	margin-bottom: 14px;
+	font-size: 13px;
+	line-height: 1.45;
+	color: var(--vscode-descriptionForeground);
+}
+
+.eaa-toolbar,
+.eaa-agent-actions,
+.eaa-tag-row,
+.eaa-status-bar,
+.eaa-checkbox-grid {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.eaa-status-bar {
+	gap: 16px;
+	padding: 10px 14px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, #454545));
+	border-radius: 6px;
+	margin-bottom: 20px;
+	font-size: 12px;
+	background-color: var(--vscode-editor-background, #1f1f1f);
+}
+
+.eaa-status-bar-item {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.eaa-status-bar-label,
+.eaa-detail-label {
+	color: var(--vscode-descriptionForeground, #9d9d9d);
+}
+
+.eaa-status-bar-value,
+.eaa-detail-value {
+	color: var(--vscode-foreground, #cccccc);
+	font-weight: 600;
+}
+
+.eaa-settings-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	margin-bottom: 24px;
+}
+
+.eaa-settings-panel-title {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+}
+
+.eaa-settings-list {
+	border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, #454545));
+	border-radius: 6px;
+	overflow: hidden;
+	background-color: var(--vscode-editor-background, #1f1f1f);
+}
+
+.eaa-agent-row {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 16px;
+	min-height: 64px;
+	padding: 12px;
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-input-border, #454545));
+}
+
+.eaa-agent-row:last-child {
+	border-bottom: none;
+}
+
+.eaa-agent-row:hover {
+	background-color: var(--vscode-list-hoverBackground, rgba(90, 93, 94, 0.31));
+}
+
+.eaa-agent-disabled .eaa-agent-main {
+	opacity: 0.74;
+}
+
+.eaa-agent-main {
+	min-width: 0;
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.eaa-agent-identity {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-width: 0;
+}
+
+.eaa-agent-icon {
+	width: 24px;
+	height: 24px;
+	border-radius: 5px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	font-size: 12px;
+	font-weight: 700;
+	background-color: var(--vscode-button-secondaryBackground, #3a3d41);
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground, #cccccc));
+}
+
+.eaa-agent-text {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.eaa-agent-name {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.eaa-agent-desc,
+.eaa-note,
+.eaa-empty-state {
+	font-size: 12px;
+	line-height: 1.4;
+	color: var(--vscode-descriptionForeground);
+}
+
+.eaa-agent-details {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+	gap: 6px 12px;
+}
+
+.eaa-detail {
+	min-width: 0;
+	display: flex;
+	gap: 6px;
+	font-size: 12px;
+}
+
+.eaa-detail-value {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--monaco-monospace-font);
+}
+
+.eaa-tag {
+	display: inline-flex;
+	align-items: center;
+	min-height: 18px;
+	max-width: 100%;
+	padding: 1px 7px;
+	border-radius: 999px;
+	font-size: 11px;
+	font-weight: 500;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, #454545));
+	color: var(--vscode-descriptionForeground, #9d9d9d);
+	background-color: var(--vscode-input-background, var(--vscode-button-secondaryBackground, #3a3d41));
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.eaa-tag-accent {
+	color: var(--vscode-button-foreground);
+	border-color: var(--vscode-button-background);
+	background-color: var(--vscode-button-background);
+}
+
+.eaa-tag-success {
+	color: var(--vscode-testing-iconPassed, #388a34);
+	border-color: var(--vscode-testing-iconPassed, #388a34);
+	background-color: rgba(56, 138, 52, 0.14);
+}
+
+.eaa-tag-danger,
+.eaa-note-error {
+	color: var(--vscode-errorForeground, #f44747);
+}
+
+.eaa-tag-danger {
+	border-color: var(--vscode-errorForeground, #f44747);
+	background-color: rgba(244, 71, 71, 0.14);
+}
+
+.eaa-tag-warning {
+	color: var(--vscode-editorWarning-foreground, #cca700);
+	border-color: var(--vscode-editorWarning-foreground, #cca700);
+	background-color: rgba(204, 167, 0, 0.14);
+}
+
+.eaa-tag-muted {
+	opacity: 0.72;
+}
+
+.eaa-empty-state,
+.eaa-note-list {
+	padding: 14px 12px;
+}
+
+.eaa-note + .eaa-note {
+	margin-top: 6px;
+}
+
+.eaa-form-row {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.eaa-form-label {
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--vscode-foreground);
+}
+
+.eaa-form-input {
+	box-sizing: border-box;
+	width: 100%;
+	min-height: 30px;
+	padding: 6px 8px;
+	font-size: 13px;
+	line-height: 18px;
+	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+	border-radius: 4px;
+	background-color: var(--vscode-input-background, #3c3c3c);
+	color: var(--vscode-input-foreground, var(--vscode-foreground, #cccccc));
+	outline: none;
+}
+
+.eaa-form-input:focus {
+	border-color: var(--vscode-focusBorder);
+	box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007fd4);
+}
+
+textarea.eaa-form-input {
+	resize: vertical;
+	font-family: var(--monaco-monospace-font);
+	min-height: 58px;
+}
+
+.eaa-dialog-form {
+	display: flex;
+	flex-direction: column;
+	gap: 13px;
+}
+
+.eaa-dialog-status {
+	min-height: 18px;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.eaa-test-success {
+	color: var(--vscode-testing-iconPassed, #388a34);
+}
+
+.eaa-test-error {
+	color: var(--vscode-errorForeground, #f44747);
+}
+
+.eaa-checkbox-label {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	user-select: none;
+}
+
+.eaa-checkbox {
+	margin: 0;
+}
+
+.eaa-btn {
+	box-sizing: border-box;
+	min-height: 24px;
+	padding: 4px 12px;
+	font-size: 12px;
+	line-height: 18px;
+	border: 1px solid transparent;
+	border-radius: 4px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.eaa-btn-primary {
+	background-color: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #ffffff);
+	border-color: var(--vscode-button-border, transparent);
+}
+
+.eaa-btn-primary:hover {
+	background-color: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+.eaa-btn-secondary {
+	background-color: var(--vscode-button-secondaryBackground, #3a3d41);
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground, #cccccc));
+	border-color: var(--vscode-button-border, transparent);
+}
+
+.eaa-btn-secondary:hover {
+	background-color: var(--vscode-button-secondaryHoverBackground, #45494e);
+}
+
+.eaa-btn-danger {
+	background-color: transparent;
+	color: var(--vscode-errorForeground, #f44747);
+	border-color: var(--vscode-errorForeground, #f44747);
+}
+
+.eaa-btn-danger:hover {
+	background-color: var(--vscode-errorForeground, #f44747);
+	color: #fff;
+}
+
+.eaa-modal-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 1000;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 32px;
+	background-color: rgba(0, 0, 0, 0.56);
+	color: var(--vscode-foreground);
+}
+
+.eaa-modal {
+	width: min(640px, calc(100vw - 64px));
+	max-height: min(780px, calc(100vh - 64px));
+	display: flex;
+	flex-direction: column;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, #454545));
+	border-radius: 8px;
+	background-color: var(--vscode-quickInput-background, var(--vscode-editorWidget-background, var(--vscode-editor-background, #252526)));
+	color: var(--vscode-foreground, #cccccc);
+	box-shadow: 0 16px 48px rgba(0, 0, 0, 0.36);
+	overflow: hidden;
+}
+
+.eaa-modal-header,
+.eaa-modal-footer {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 12px 14px;
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-input-border, #454545));
+}
+
+.eaa-modal-footer {
+	justify-content: flex-end;
+	border-top: 1px solid var(--vscode-widget-border, var(--vscode-input-border, #454545));
+	border-bottom: none;
+}
+
+.eaa-modal-title {
+	flex: 1;
+	min-width: 0;
+	font-size: 14px;
+	font-weight: 600;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.eaa-modal-body {
+	padding: 14px;
+	overflow-y: auto;
+}
+
+.eaa-icon-button {
+	width: 26px;
+	height: 26px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-foreground, #cccccc);
+	cursor: pointer;
+	font-size: 18px;
+	line-height: 1;
+}
+
+.eaa-icon-button:hover {
+	background-color: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+}
+
+@media (max-width: 720px) {
+	.external-acp-agents-widget {
+		padding: 18px;
+	}
+
+	.eaa-agent-row {
+		flex-direction: column;
+	}
+
+	.eaa-agent-actions {
+		justify-content: flex-start;
+	}
+
+	.eaa-modal-backdrop {
+		padding: 16px;
+	}
+
+	.eaa-modal {
+		width: calc(100vw - 32px);
+		max-height: calc(100vh - 32px);
+	}
+}
