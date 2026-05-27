@@ -9,6 +9,7 @@ import { Schemas } from '../../../../../base/common/network.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ExternalAcpAgentCapability, ExternalAcpAgentCwdPolicy, createExternalAcpAgentConfig, getExternalAcpAgentRegistryResourceFromGlobalStorageHome, getExternalAcpAgentSnapshotResourceFromGlobalStorageHome, isExternalAcpLoginHelpUrlAllowed, sanitizeExternalAcpAgentId } from '../../../../../platform/agentHost/common/acpAgentConfig.js';
+import { normalizeAcpRegistryAgent } from '../../../../../platform/agentHost/common/acpRegistry.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
@@ -302,6 +303,143 @@ suite('externalAcpAgentProviderService', () => {
 		}]);
 	});
 
+	test('creates registry drafts disabled and untrusted without snapshot registration', async () => {
+		const registryEntry = createRegistryEntry();
+
+		const draft = await registryService.createRegistryDraft(registryEntry);
+		const snapshot = await snapshotService.writeSnapshot();
+
+		assert.deepStrictEqual({
+			draft: {
+				id: draft.id,
+				enabled: draft.enabled,
+				trusted: draft.trusted,
+				registryDraft: draft.registryDraft,
+				registryId: draft.registryId,
+				registryVersion: draft.registryVersion,
+			},
+			snapshotAgents: snapshot.agents,
+		}, {
+			draft: {
+				id: 'cursor-agent',
+				enabled: false,
+				trusted: false,
+				registryDraft: true,
+				registryId: 'cursor-agent',
+				registryVersion: '1.2.3',
+			},
+			snapshotAgents: [],
+		});
+	});
+
+	test('rejects registry drafts over an existing reviewed manual config without changing snapshot state', async () => {
+		const registryEntry = createRegistryEntry();
+		await registryService.saveAgent(createExternalAcpAgentConfig({
+			id: 'cursor-agent',
+			displayName: 'Reviewed Cursor Agent',
+			command: 'cursor-reviewed',
+			args: ['acp'],
+			enabled: true,
+			trusted: true,
+		}));
+		const snapshotBefore = await snapshotService.writeSnapshot();
+
+		await assert.rejects(() => registryService.createRegistryDraft(registryEntry), /already exists as a reviewed manual config/);
+		await assert.rejects(() => registryService.saveRegistryDraft(createExternalAcpAgentConfig({
+			id: 'cursor-agent',
+			displayName: 'Cursor Agent',
+			command: 'npx',
+			args: ['-y', '@cursor/agent', 'acp'],
+			registryDraft: true,
+			registryId: 'cursor-agent',
+			registryVersion: '1.2.3',
+		})), /already exists as a reviewed manual config/);
+		await assert.rejects(() => registryService.markRegistryDraftReviewed('cursor-agent'), /not a registry draft/);
+		const snapshotAfter = await snapshotService.writeSnapshot();
+
+		assert.deepStrictEqual({
+			agent: await registryService.getAgent('cursor-agent'),
+			snapshotBefore: snapshotBefore.agents,
+			snapshotAfter: snapshotAfter.agents,
+		}, {
+			agent: {
+				id: 'cursor-agent',
+				displayName: 'Reviewed Cursor Agent',
+				command: 'cursor-reviewed',
+				args: ['acp'],
+				cwdPolicy: ExternalAcpAgentCwdPolicy.Workspace,
+				enabled: true,
+				trusted: true,
+				capabilities: [ExternalAcpAgentCapability.Text, ExternalAcpAgentCapability.Reasoning],
+				applyState: 'pendingRestart',
+				createdAt: (await registryService.getAgent('cursor-agent'))?.createdAt,
+				updatedAt: (await registryService.getAgent('cursor-agent'))?.updatedAt,
+			},
+			snapshotBefore: [{
+				id: 'cursor-agent',
+				displayName: 'Reviewed Cursor Agent',
+				command: 'cursor-reviewed',
+				args: ['acp'],
+				cwdPolicy: ExternalAcpAgentCwdPolicy.Workspace,
+				capabilities: [ExternalAcpAgentCapability.Text, ExternalAcpAgentCapability.Reasoning],
+			}],
+			snapshotAfter: [{
+				id: 'cursor-agent',
+				displayName: 'Reviewed Cursor Agent',
+				command: 'cursor-reviewed',
+				args: ['acp'],
+				cwdPolicy: ExternalAcpAgentCwdPolicy.Workspace,
+				capabilities: [ExternalAcpAgentCapability.Text, ExternalAcpAgentCapability.Reasoning],
+			}],
+		});
+	});
+
+	test('rejects enabling or trusting unreviewed registry drafts', async () => {
+		const registryEntry = createRegistryEntry();
+		await registryService.createRegistryDraft(registryEntry);
+
+		await assert.rejects(() => registryService.setEnabled('cursor-agent', true), /registry draft/);
+		await assert.rejects(() => registryService.setTrusted('cursor-agent', true), /registry draft/);
+
+		assert.deepStrictEqual((await registryService.getAgent('cursor-agent'))?.enabled, false);
+	});
+
+	test('allows enable after registry draft manual review clears the draft marker', async () => {
+		const registryEntry = createRegistryEntry();
+		await registryService.createRegistryDraft(registryEntry);
+
+		await registryService.markRegistryDraftReviewed('cursor-agent');
+		await registryService.setTrusted('cursor-agent', true);
+		await registryService.setEnabled('cursor-agent', true);
+		const snapshot = await snapshotService.writeSnapshot();
+
+		assert.deepStrictEqual({
+			agent: await registryService.getAgent('cursor-agent'),
+			snapshotAgents: snapshot.agents.map(agent => agent.id),
+		}, {
+			agent: {
+				id: 'cursor-agent',
+				displayName: 'Cursor Agent',
+				command: 'npx',
+				args: ['-y', '@cursor/agent', 'acp'],
+				cwdPolicy: ExternalAcpAgentCwdPolicy.Workspace,
+				vendorLabel: 'uses your Cursor Agent account',
+				loginHint: 'Run cursor-agent login outside VS Code.',
+				loginCommand: 'cursor-agent login',
+				loginHelpUrl: 'https://cursor.example/login',
+				enabled: true,
+				trusted: true,
+				capabilities: [ExternalAcpAgentCapability.Text, ExternalAcpAgentCapability.Reasoning],
+				registryId: 'cursor-agent',
+				registryVersion: '1.2.3',
+				applyState: 'pendingRestart',
+				createdAt: (await registryService.getAgent('cursor-agent'))?.createdAt,
+				updatedAt: (await registryService.getAgent('cursor-agent'))?.updatedAt,
+			},
+			snapshotAgents: ['cursor-agent'],
+		});
+	});
+
 	test('writes a default-profile ACP snapshot mirror for AgentHost consumption', async () => {
 		await registryService.saveAgent(createExternalAcpAgentConfig({
 			id: 'claude-acp',
@@ -326,5 +464,23 @@ suite('externalAcpAgentProviderService', () => {
 
 	async function readJson(resource: URI): Promise<object> {
 		return JSON.parse((await fileService.readFile(resource)).value.toString()) as object;
+	}
+
+	function createRegistryEntry() {
+		return normalizeAcpRegistryAgent({
+			id: 'cursor-agent',
+			name: 'Cursor Agent',
+			version: '1.2.3',
+			description: 'Cursor ACP agent.',
+			distribution: {
+				npx: {
+					package: '@cursor/agent',
+					args: ['acp'],
+				},
+			},
+			loginHint: 'Run cursor-agent login outside VS Code.',
+			loginCommand: 'cursor-agent login',
+			loginHelpUrl: 'https://cursor.example/login',
+		})!;
 	}
 });

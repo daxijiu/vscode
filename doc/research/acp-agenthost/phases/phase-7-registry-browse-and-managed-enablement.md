@@ -1,6 +1,6 @@
 # Phase 7 - Registry Browse And Managed Enablement
 
-Updated: 2026-05-27
+Updated: 2026-05-28
 
 ## Goal
 
@@ -17,19 +17,20 @@ This phase should be split internally into browse-only and managed install work.
   - the ACP process runs locally;
   - workspace cwd is local;
   - no install/cache placement is needed for the first version because there is no managed install.
-- Enterprise policy skeleton exists for disabling registry access and managed install.
+- Ordinary settings skeleton exists for showing the bundled browse catalog and keeping managed install unavailable; enterprise policy metadata remains future work.
 
 ## Scope
 
 ### Phase 7A - Browse Only
 
-- Fetch ACP registry metadata.
+- Read ACP registry-shaped metadata from a local bundled Known ACP Agents catalog.
 - Display agents, descriptions, versions, authors, icons, auth method hints, and distribution type.
 - Do not execute or install anything.
 - Allow users to create a disabled manual config draft from registry metadata if safe.
 - Do not write enabled config from browse-only UI.
 - Do not create a config that Phase 3 can auto-register.
 - If the user wants to enable a registry-derived draft in the first version, it must go through the Phase 1 manual review/edit/enable/trust path and become an ordinary manual config.
+- Do not refresh a registry from the network in Phase 7A.
 
 ### Phase 7B - Managed Enablement / Install
 
@@ -70,13 +71,13 @@ Managed install is not part of the first version. The first Phase 7 delivery is 
 
 ### Phase 7A Required - First Version
 
-1. Add registry client with cache and error states.
-2. Add browse UI with no execution side effects.
-3. Map registry entries to disabled manual config drafts only.
-4. Route any enable action through the existing Phase 1 manual review/edit/enable/trust path.
-5. Add policy controls for registry browse.
-6. Add managed-install policy key/schema/copy, but keep the implementation path disabled.
-7. Add audit/debug logs with redaction.
+1. Add registry DTO/parser for registry-shaped and bundled entries.
+2. Add local bundled Known ACP Agents catalog.
+3. Add browse UI with no execution side effects.
+4. Map registry entries to disabled manual config drafts only.
+5. Route any enable action through the existing Phase 1 manual review/edit/enable/trust path.
+6. Add a registry browse setting skeleton.
+7. Add a managed-install settings skeleton/copy, but keep the implementation path disabled; enterprise policy metadata is deferred.
 
 ### Phase 7B Deferred Design - Managed Install
 
@@ -91,7 +92,7 @@ Managed install is not part of the first version. The first Phase 7 delivery is 
    - UVX.
 4. Add install cache and version pin tracking.
 5. Add remote/local install placement rules.
-6. Add managed-install enforcement for the policy key/schema from Phase 7A.
+6. Add managed-install enforcement after a real enterprise policy key/schema is designed.
 
 ## Likely Files
 
@@ -107,10 +108,18 @@ Managed install is not part of the first version. The first Phase 7 delivery is 
 - Browse-only can produce only disabled drafts and cannot auto-register an ACP agent.
 - Version pins are visible.
 - First version has no managed install path.
-- Registry fetch failure is visible and non-fatal.
+- Local catalog load and invalid-entry handling are visible and non-fatal.
 - No silent execution of remote binary/package metadata.
-- Enterprise policy can disable registry use.
-- Managed-install policy key/schema/copy exists and does not affect browse/manual-config-only behavior.
+- The registry browse setting can hide the local browse catalog.
+- Managed-install setting/copy exists and does not affect browse/manual-config-only behavior; enterprise policy remains future work.
+
+## Implementation Status
+
+- 2026-05-28: Phase 7A implemented a local-only Known ACP Agents browse catalog for Cursor Agent, CodeBuddy Code, and Claude ACP.
+- Added common registry DTO/parser normalization for registry-shaped and bundled entries, including malformed-entry rejection, safe copy-only install/login command rendering, secret-like text rejection/redaction, and provenance preservation.
+- Registry-derived manual configs are stored as disabled, untrusted drafts with `registryDraft`, `registryId`, and `registryVersion`; drafts are excluded from the AgentHost snapshot and cannot be enabled or trusted until marked reviewed.
+- External ACP Agents UI now shows Browse Known ACP Agents cards with copy-only install/login actions, Add Disabled Draft, Review Manual Config, and Open Login Help. It does not install, update, auto-detect, test connection, launch commands, background probe, or fetch a remote registry.
+- Registered ordinary application settings `externalAcpAgents.registryBrowse.enabled` defaulting to true and `externalAcpAgents.managedInstall.enabled` defaulting to false. These are settings skeletons, not enterprise policy metadata; managed install remains unavailable in Phase 7A.
 
 ## Validation
 
@@ -121,13 +130,13 @@ npm run test-node -- --grep acp
 
 Required focused tests:
 
-- registry fetch success/failure;
+- local catalog load / invalid-entry handling;
 - malformed registry entry ignored;
 - browse does not execute command;
 - browse draft remains disabled;
 - registry-derived draft can only be enabled through Phase 1 manual review/edit/enable/trust;
-- policy disables registry;
-- managed-install policy key/schema/copy exists while install path remains unavailable;
+- registry browse setting hides the local browse catalog;
+- managed-install setting/copy exists while install path remains unavailable;
 - version pin survives reload.
 
 ## Risks

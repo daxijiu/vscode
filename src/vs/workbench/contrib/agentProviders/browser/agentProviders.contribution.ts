@@ -7,6 +7,7 @@ import './externalAcpAgents/media/externalAcpAgents.css';
 
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -15,7 +16,7 @@ import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/edit
 import { IWorkbenchContribution, WorkbenchPhase, registerWorkbenchContribution2 } from '../../../common/contributions.js';
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../common/editor.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
-import { ExternalAcpAgentRegistryService, ExternalAcpAgentSnapshotService, IExternalAcpAgentConnectionTestService, IExternalAcpAgentRegistryService, IExternalAcpAgentSnapshotService, UnavailableExternalAcpAgentConnectionTestService } from '../common/externalAcpAgentProviderService.js';
+import { ExternalAcpAgentRegistryService, ExternalAcpAgentSnapshotService, ExternalAcpAgentsManagedInstallEnabledSetting, ExternalAcpAgentsRegistryBrowseEnabledSetting, IExternalAcpAgentConnectionTestService, IExternalAcpAgentRegistryService, IExternalAcpAgentSnapshotService, UnavailableExternalAcpAgentConnectionTestService } from '../common/externalAcpAgentProviderService.js';
 import { ExternalAcpAgentsEditor } from './externalAcpAgents/externalAcpAgentsEditor.js';
 import { ExternalAcpAgentsEditorInput, ExternalAcpAgentsEditorInputSerializer } from './externalAcpAgents/externalAcpAgentsEditorInput.js';
 
@@ -35,6 +36,27 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 );
 
 Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(ExternalAcpAgentsEditorInput.ID, ExternalAcpAgentsEditorInputSerializer);
+
+Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
+	id: 'externalAcpAgents',
+	order: 100,
+	title: localize('externalAcpAgents.configurationTitle', "External ACP Agents"),
+	type: 'object',
+	properties: {
+		[ExternalAcpAgentsRegistryBrowseEnabledSetting]: {
+			type: 'boolean',
+			default: true,
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('externalAcpAgents.registryBrowse.enabled', "Controls whether the External ACP Agents page shows the local Known ACP Agents browse catalog. This does not fetch from the network or install agents."),
+		},
+		[ExternalAcpAgentsManagedInstallEnabledSetting]: {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('externalAcpAgents.managedInstall.enabled', "Controls whether managed install UI for registry ACP agents may be enabled. Phase 7A keeps managed install unavailable even when this setting is changed."),
+		},
+	}
+});
 
 class ExternalAcpAgentsContribution implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.externalAcpAgents';

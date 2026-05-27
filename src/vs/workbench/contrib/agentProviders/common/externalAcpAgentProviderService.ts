@@ -8,7 +8,8 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { dirname } from '../../../../base/common/resources.js';
-import { ExternalAcpAgentConfig, ExternalAcpAgentConfigVersion, ExternalAcpAgentConnectionStatus, ExternalAcpAgentRegistry, ExternalAcpAgentSnapshot, createExternalAcpAgentConfig, getExternalAcpAgentRegistryResourceFromGlobalStorageHome, getExternalAcpAgentSnapshotResourceFromGlobalStorageHome, normalizeConnectionStatus, normalizeExternalAcpAgentConfig, sanitizeExternalAcpAgentId, toExternalAcpAgentSnapshot, validateExternalAcpAgentConfig } from '../../../../platform/agentHost/common/acpAgentConfig.js';
+import { ExternalAcpAgentConfig, ExternalAcpAgentConfigVersion, ExternalAcpAgentConnectionStatus, ExternalAcpAgentRegistry, ExternalAcpAgentSnapshot, createExternalAcpAgentConfig, createRegistryDraftExternalAcpAgentConfig, getExternalAcpAgentRegistryResourceFromGlobalStorageHome, getExternalAcpAgentSnapshotResourceFromGlobalStorageHome, normalizeConnectionStatus, normalizeExternalAcpAgentConfig, sanitizeExternalAcpAgentId, toExternalAcpAgentSnapshot, validateExternalAcpAgentConfig } from '../../../../platform/agentHost/common/acpAgentConfig.js';
+import { AcpRegistryAgent, toAcpRegistryDraftOptions } from '../../../../platform/agentHost/common/acpRegistry.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -18,6 +19,8 @@ import { IUserDataProfileService } from '../../../services/userDataProfile/commo
 export const IExternalAcpAgentRegistryService = createDecorator<IExternalAcpAgentRegistryService>('externalAcpAgentRegistryService');
 export const IExternalAcpAgentSnapshotService = createDecorator<IExternalAcpAgentSnapshotService>('externalAcpAgentSnapshotService');
 export const IExternalAcpAgentConnectionTestService = createDecorator<IExternalAcpAgentConnectionTestService>('externalAcpAgentConnectionTestService');
+export const ExternalAcpAgentsRegistryBrowseEnabledSetting = 'externalAcpAgents.registryBrowse.enabled';
+export const ExternalAcpAgentsManagedInstallEnabledSetting = 'externalAcpAgents.managedInstall.enabled';
 
 export interface IExternalAcpAgentRegistryService {
 	readonly _serviceBrand: undefined;
@@ -25,6 +28,9 @@ export interface IExternalAcpAgentRegistryService {
 	listAgents(): Promise<readonly ExternalAcpAgentConfig[]>;
 	getAgent(id: string): Promise<ExternalAcpAgentConfig | undefined>;
 	saveAgent(agent: ExternalAcpAgentConfig): Promise<ExternalAcpAgentConfig>;
+	createRegistryDraft(agent: AcpRegistryAgent): Promise<ExternalAcpAgentConfig>;
+	saveRegistryDraft(agent: ExternalAcpAgentConfig): Promise<ExternalAcpAgentConfig>;
+	markRegistryDraftReviewed(id: string): Promise<ExternalAcpAgentConfig>;
 	removeAgent(id: string): Promise<void>;
 	setEnabled(id: string, enabled: boolean): Promise<void>;
 	setTrusted(id: string, trusted: boolean): Promise<void>;
@@ -87,6 +93,60 @@ export class ExternalAcpAgentRegistryService extends Disposable implements IExte
 		return normalized;
 	}
 
+	async createRegistryDraft(agent: AcpRegistryAgent): Promise<ExternalAcpAgentConfig> {
+		const options = toAcpRegistryDraftOptions(agent);
+		if (!options) {
+			throw new Error(`ACP registry entry '${agent.id}' cannot create a safe manual draft.`);
+		}
+		return this.saveRegistryDraft(createRegistryDraftExternalAcpAgentConfig(options));
+	}
+
+	async saveRegistryDraft(agent: ExternalAcpAgentConfig): Promise<ExternalAcpAgentConfig> {
+		const state = await this.getState();
+		const normalized = normalizeExternalAcpAgentConfig({
+			...agent,
+			enabled: false,
+			trusted: false,
+			registryDraft: true,
+		});
+		const existing = state.agents.find(candidate => candidate.id === normalized.id);
+		if (existing && !existing.registryDraft) {
+			throw new Error(`External ACP agent '${normalized.id}' already exists as a reviewed manual config.`);
+		}
+		const validation = validateExternalAcpAgentConfig(normalized);
+		if (!validation.valid) {
+			throw new Error(validation.message ?? `External ACP agent '${normalized.id}' is invalid.`);
+		}
+		await this.writeState({
+			version: ExternalAcpAgentConfigVersion,
+			agents: [
+				...state.agents.filter(candidate => candidate.id !== normalized.id),
+				normalized,
+			].sort(sortAgents),
+		});
+		return normalized;
+	}
+
+	async markRegistryDraftReviewed(id: string): Promise<ExternalAcpAgentConfig> {
+		const normalizedId = sanitizeExternalAcpAgentId(id);
+		const state = await this.getState();
+		const agent = state.agents.find(candidate => candidate.id === normalizedId);
+		if (!agent) {
+			throw new Error(`External ACP agent '${normalizedId}' does not exist.`);
+		}
+		if (!agent.registryDraft) {
+			throw new Error(`External ACP agent '${agent.id}' is not a registry draft.`);
+		}
+		const saved = await this.saveAgent({
+			...agent,
+			registryDraft: undefined,
+			enabled: false,
+			trusted: false,
+			updatedAt: Date.now(),
+		});
+		return saved;
+	}
+
 	async removeAgent(id: string): Promise<void> {
 		const normalizedId = sanitizeExternalAcpAgentId(id);
 		const state = await this.getState();
@@ -97,10 +157,22 @@ export class ExternalAcpAgentRegistryService extends Disposable implements IExte
 	}
 
 	async setEnabled(id: string, enabled: boolean): Promise<void> {
+		if (enabled) {
+			const agent = await this.getAgent(id);
+			if (agent?.registryDraft) {
+				throw new Error(`External ACP agent '${agent.id}' is a registry draft. Review the manual config before enabling it.`);
+			}
+		}
 		await this.updateAgent(id, agent => ({ ...agent, enabled, applyState: 'pendingRestart', updatedAt: Date.now() }));
 	}
 
 	async setTrusted(id: string, trusted: boolean): Promise<void> {
+		if (trusted) {
+			const agent = await this.getAgent(id);
+			if (agent?.registryDraft) {
+				throw new Error(`External ACP agent '${agent.id}' is a registry draft. Review the manual config before trusting it.`);
+			}
+		}
 		await this.updateAgent(id, agent => ({ ...agent, trusted, applyState: 'pendingRestart', updatedAt: Date.now() }));
 	}
 

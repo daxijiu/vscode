@@ -300,7 +300,7 @@ Scope:
 - Display registry agents, versions, descriptions, icons, auth method hints, and distribution type.
 - In browse-only mode, registry entries can create only disabled config drafts.
 - First version is browse/manual-config-only and performs no automatic install.
-- First-version required work is Phase 7A only: registry fetch/cache, browse UI, disabled drafts, Phase 1 manual enablement path, registry policy, and managed-install policy key/schema/copy.
+- First-version required work is Phase 7A only: local registry-shaped catalog, browse UI, disabled drafts, Phase 1 manual enablement path, a registry browse settings skeleton, and managed-install settings/copy that keeps install unavailable.
 - Registry-derived drafts can be enabled only through the Phase 1 manual review/edit/enable/trust path.
 - Keep managed install as Phase 7B deferred design until trust gates, supply-chain proof, policy gates, and local/remote install placement are designed.
 - Deferred Phase 7B design covers binary, NPX, UVX, install cache, version pinning, and enterprise disable controls.
@@ -316,6 +316,10 @@ Acceptance:
 - Deferred managed install requires an accepted integrity/pin strategy before it can be implemented.
 - No managed install distribution type is enabled in the first version.
 - First-version tests do not require install confirmation, distribution handlers, or install cache.
+
+Implementation status:
+
+- 2026-05-28: implemented Phase 7A as local-only registry browse plus disabled drafts. The bundled catalog is registry-shaped but does not fetch from the network, run installers, probe login state, or report telemetry. Registry drafts are disabled/untrusted, excluded from AgentHost snapshots, and must be reviewed before they can enter the ordinary manual enable/trust flow. The Phase 7A controls are ordinary settings skeletons; managed install and enterprise policy metadata remain deferred.
 
 Difficulty: high/security.
 
@@ -354,7 +358,7 @@ Scope:
 - Windows command resolution and quoting.
 - Process cleanup and crash recovery.
 - Redacted diagnostics surface.
-- Validate enterprise policy hooks that earlier phases already added for external agents, registry usage, managed-install policy key/schema/copy, and file/terminal capabilities.
+- Validate enterprise policy hooks already added for external agents and file/terminal capabilities; add or validate future registry/managed-install enterprise policy metadata after it is designed.
 - ACP telemetry disabled during internal development/testing.
 - Documentation and troubleshooting.
 - Local desktop process, config, cache, install, and cwd placement matrix.

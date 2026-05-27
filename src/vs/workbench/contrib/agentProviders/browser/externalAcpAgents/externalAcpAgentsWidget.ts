@@ -8,23 +8,27 @@ import { Disposable, DisposableStore } from '../../../../../base/common/lifecycl
 import { URI } from '../../../../../base/common/uri.js';
 import { localize } from '../../../../../nls.js';
 import { ExternalAcpAgentCapability, ExternalAcpAgentConfig, ExternalAcpAgentConnectionStatus, ExternalAcpAgentCwdPolicy, createExternalAcpAgentConfig, isExternalAcpLoginHelpUrlAllowed, sanitizeExternalAcpAgentId, toExternalAcpAgentSnapshot, validateExternalAcpAgentConfig } from '../../../../../platform/agentHost/common/acpAgentConfig.js';
+import { AcpRegistryAgent, getAcpRegistryInstallCommandCopyText, getAcpRegistryLoginCommandCopyText } from '../../../../../platform/agentHost/common/acpRegistry.js';
 import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
-import { IExternalAcpAgentConnectionTestService, IExternalAcpAgentRegistryService, IExternalAcpAgentSnapshotService } from '../../common/externalAcpAgentProviderService.js';
+import { getBundledAcpRegistryCatalog } from '../../common/acpRegistryCatalog.js';
+import { ExternalAcpAgentsRegistryBrowseEnabledSetting, IExternalAcpAgentConnectionTestService, IExternalAcpAgentRegistryService, IExternalAcpAgentSnapshotService } from '../../common/externalAcpAgentProviderService.js';
 
 const $ = DOM.$;
 
 interface ExternalAcpAgentsShell {
 	readonly root: HTMLElement;
 	readonly status: HTMLElement;
+	readonly browse: HTMLElement;
 	readonly agents: HTMLElement;
 	readonly diagnostics: HTMLElement;
 }
 
 type AgentDialogMode =
 	| { readonly kind: 'new' }
-	| { readonly kind: 'edit'; readonly agent: ExternalAcpAgentConfig };
+	| { readonly kind: 'edit'; readonly agent: ExternalAcpAgentConfig; readonly reviewRegistryDraft?: boolean };
 
 type StatusKind = 'info' | 'success' | 'error';
 
@@ -42,6 +46,7 @@ export class ExternalAcpAgentsWidget extends Disposable {
 	private container: HTMLElement | undefined;
 	private shell: ExternalAcpAgentsShell | undefined;
 	private readonly renderDisposables = this._register(new DisposableStore());
+	private readonly browseRenderDisposables = this._register(new DisposableStore());
 	private readonly agentsRenderDisposables = this._register(new DisposableStore());
 	private readonly modalDisposables = this._register(new DisposableStore());
 	private renderGeneration = 0;
@@ -53,14 +58,21 @@ export class ExternalAcpAgentsWidget extends Disposable {
 		@IExternalAcpAgentConnectionTestService private readonly connectionTestService: IExternalAcpAgentConnectionTestService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		@IOpenerService private readonly openerService: IOpenerService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 		this._register(this.registryService.onDidChangeAgents(() => { void this.refresh({ preserveScroll: true }); }));
+		this._register(this.configurationService.onDidChangeConfiguration(event => {
+			if (event.affectsConfiguration(ExternalAcpAgentsRegistryBrowseEnabledSetting)) {
+				void this.refresh({ preserveScroll: true });
+			}
+		}));
 	}
 
 	render(container: HTMLElement): void {
 		if (this.container !== container) {
 			this.renderDisposables.clear();
+			this.browseRenderDisposables.clear();
 			this.agentsRenderDisposables.clear();
 			this.modalDisposables.clear();
 			this.shell = undefined;
@@ -85,6 +97,7 @@ export class ExternalAcpAgentsWidget extends Disposable {
 		const shell = this.ensureShell(this.container);
 		this.renderStatus(shell.status, state.agents);
 		this.renderDiagnostics(shell.diagnostics, state.agents);
+		this.renderBrowse(shell.browse, state.agents, generation);
 		this.renderAgents(shell.agents, state.agents, generation);
 		if (scrollTop !== undefined && generation === this.renderGeneration && this.container) {
 			this.container.scrollTop = scrollTop;
@@ -97,6 +110,7 @@ export class ExternalAcpAgentsWidget extends Disposable {
 		}
 
 		this.renderDisposables.clear();
+		this.browseRenderDisposables.clear();
 		this.agentsRenderDisposables.clear();
 		DOM.clearNode(container);
 
@@ -111,9 +125,10 @@ export class ExternalAcpAgentsWidget extends Disposable {
 		this.addAction(toolbar, localize('externalAcpAgents.showSnapshotLocation', "Show Snapshot Path"), 'secondary', () => this.showSnapshotLocation(), this.renderDisposables);
 
 		const status = DOM.append(root, $('.eaa-status-host'));
+		const browse = DOM.append(root, $('.eaa-browse-host'));
 		const agents = DOM.append(root, $('.eaa-agents-host'));
 		const diagnostics = DOM.append(root, $('.eaa-diagnostics-host'));
-		this.shell = { root, status, agents, diagnostics };
+		this.shell = { root, status, browse, agents, diagnostics };
 		return this.shell;
 	}
 
@@ -133,8 +148,76 @@ export class ExternalAcpAgentsWidget extends Disposable {
 		const list = DOM.append(panel, $('.eaa-note-list'));
 		DOM.append(list, $('.eaa-note')).textContent = localize('externalAcpAgents.restartNote', "Manual config changes write the snapshot immediately, but AgentHost provider registration is not dynamically reconciled in Phase 1. Restart or reconnect AgentHost before expecting the live agent list to reflect changes.");
 		DOM.append(list, $('.eaa-note')).textContent = localize('externalAcpAgents.noProbeNote', "This page never launches external ACP commands for status. Missing login is shown only as configured help text until a later explicit runtime action reports it.");
+		DOM.append(list, $('.eaa-note')).textContent = localize('externalAcpAgents.registryBrowseNote', "Known ACP Agents are a local browse catalog. Install and login actions copy text or open help only; managed install and background detection are not implemented.");
 		if (agents.some(agent => !validateExternalAcpAgentConfig(agent).valid)) {
 			DOM.append(list, $('.eaa-note.eaa-note-error')).textContent = localize('externalAcpAgents.invalidConfigNote', "One or more manual configs are invalid and will not be emitted to the AgentHost snapshot.");
+		}
+	}
+
+	private renderBrowse(parent: HTMLElement, agents: readonly ExternalAcpAgentConfig[], generation: number): void {
+		this.browseRenderDisposables.clear();
+		DOM.clearNode(parent);
+		if (this.configurationService.getValue<boolean>(ExternalAcpAgentsRegistryBrowseEnabledSetting) === false) {
+			return;
+		}
+
+		const section = this.createPanel(parent, localize('externalAcpAgents.browseKnownAgents', "Browse Known ACP Agents"));
+		const list = DOM.append(section, $('.eaa-registry-grid'));
+		for (const entry of getBundledAcpRegistryCatalog()) {
+			if (generation !== this.renderGeneration) {
+				return;
+			}
+			this.renderRegistryCard(list, entry, agents, this.browseRenderDisposables);
+		}
+	}
+
+	private renderRegistryCard(parent: HTMLElement, entry: AcpRegistryAgent, agents: readonly ExternalAcpAgentConfig[], disposables: DisposableStore): void {
+		const existingDraft = agents.find(agent => agent.registryDraft && agent.registryId === entry.id && agent.registryVersion === entry.version) ?? agents.find(agent => agent.registryDraft && agent.id === entry.id);
+		const existingManual = agents.find(agent => !agent.registryDraft && (agent.id === entry.id || agent.registryId === entry.id));
+		const card = DOM.append(parent, $('.eaa-registry-card'));
+		const main = DOM.append(card, $('.eaa-agent-main'));
+		const identity = DOM.append(main, $('.eaa-agent-identity'));
+		DOM.append(identity, $('.eaa-agent-icon')).textContent = entry.name.slice(0, 1).toUpperCase();
+		const text = DOM.append(identity, $('.eaa-agent-text'));
+		DOM.append(text, $('.eaa-agent-name')).textContent = entry.name;
+		DOM.append(text, $('.eaa-agent-desc')).textContent = entry.description;
+
+		const tags = DOM.append(main, $('.eaa-tag-row'));
+		this.createTag(tags, localize('externalAcpAgents.registryVersion', "Version {0}", entry.version), 'neutral');
+		this.createTag(tags, this.registryDistributionLabel(entry), 'accent');
+		this.createTag(tags, entry.source === 'bundled' ? localize('externalAcpAgents.registryBundled', "Bundled Catalog") : localize('externalAcpAgents.registryRemote', "Registry"), 'muted');
+		if (existingDraft) {
+			this.createTag(tags, localize('externalAcpAgents.registryDraft', "Disabled Draft"), 'warning');
+		}
+		if (existingManual) {
+			this.createTag(tags, localize('externalAcpAgents.alreadyConfigured', "Already Configured"), 'success');
+		}
+
+		const details = DOM.append(main, $('.eaa-agent-details'));
+		this.appendDetail(details, localize('externalAcpAgents.detailId', "ID"), entry.id);
+		if (entry.authors?.length) {
+			this.appendDetail(details, localize('externalAcpAgents.registryAuthors', "Authors"), entry.authors.join(', '));
+		}
+		if (entry.loginHint) {
+			this.appendDetail(details, localize('externalAcpAgents.detailLogin', "Login Hint"), entry.loginHint);
+		}
+		if (entry.helpUrl) {
+			this.appendDetail(details, localize('externalAcpAgents.registryHelp', "Help"), entry.helpUrl);
+		}
+
+		const actions = DOM.append(card, $('.eaa-agent-actions'));
+		const installCommand = getAcpRegistryInstallCommandCopyText(entry);
+		if (installCommand) {
+			this.addAction(actions, localize('externalAcpAgents.copyInstallCommand', "Copy Install Command"), 'secondary', () => this.copyRegistryInstallCommand(entry, installCommand), disposables);
+		}
+		this.addAction(actions, existingManual ? localize('externalAcpAgents.alreadyConfiguredAction', "Already Configured") : localize('externalAcpAgents.addDisabledDraft', "Add Disabled Draft"), 'secondary', () => this.addRegistryDraft(entry), disposables, existingManual !== undefined);
+		this.addAction(actions, localize('externalAcpAgents.reviewManualConfig', "Review Manual Config"), 'secondary', () => this.reviewRegistryDraft(entry, existingDraft), disposables, existingManual !== undefined);
+		const loginCommand = getAcpRegistryLoginCommandCopyText(entry);
+		if (loginCommand) {
+			this.addAction(actions, localize('externalAcpAgents.copyLoginCommand', "Copy Login Command"), 'secondary', () => this.copyRegistryLoginCommand(entry, loginCommand), disposables);
+		}
+		if (entry.loginHelpUrl) {
+			this.addAction(actions, localize('externalAcpAgents.openLoginHelp', "Open Login Help"), 'secondary', () => this.openRegistryLoginHelp(entry), disposables);
 		}
 	}
 
@@ -172,6 +255,9 @@ export class ExternalAcpAgentsWidget extends Disposable {
 		const tags = DOM.append(main, $('.eaa-tag-row'));
 		this.createTag(tags, agent.enabled ? localize('externalAcpAgents.enabled', "Enabled") : localize('externalAcpAgents.disabled', "Disabled"), agent.enabled ? 'success' : 'muted');
 		this.createTag(tags, agent.trusted ? localize('externalAcpAgents.trusted', "Trusted") : localize('externalAcpAgents.untrusted', "Trust Required"), agent.trusted ? 'success' : 'danger');
+		if (agent.registryDraft) {
+			this.createTag(tags, localize('externalAcpAgents.registryDraft', "Disabled Draft"), 'warning');
+		}
 		this.createTag(tags, this.cwdPolicyLabel(agent.cwdPolicy), 'neutral');
 		this.createTag(tags, agent.applyState === 'pendingRestart' ? localize('externalAcpAgents.pendingRestartTag', "Pending Restart") : localize('externalAcpAgents.applyStateCleanTag', "Snapshot Written"), agent.applyState === 'pendingRestart' ? 'accent' : 'neutral');
 		this.createTag(tags, this.connectionStatusLabel(agent.connectionStatus), this.connectionStatusTone(agent.connectionStatus));
@@ -201,6 +287,9 @@ export class ExternalAcpAgentsWidget extends Disposable {
 		if (agent.loginHelpUrl) {
 			this.appendDetail(details, localize('externalAcpAgents.detailLoginHelp', "Login Help"), agent.loginHelpUrl);
 		}
+		if (agent.registryId) {
+			this.appendDetail(details, localize('externalAcpAgents.detailRegistry', "Registry"), agent.registryVersion ? `${agent.registryId}@${agent.registryVersion}` : agent.registryId);
+		}
 		if (agent.connectionStatus) {
 			this.appendDetail(details, localize('externalAcpAgents.detailConnectionStatus', "Connection Status"), this.connectionStatusDetail(agent.connectionStatus));
 		}
@@ -216,7 +305,7 @@ export class ExternalAcpAgentsWidget extends Disposable {
 		if (agent.connectionStatus) {
 			this.addAction(actions, localize('externalAcpAgents.clearLoginStatus', "Clear Login Status"), 'secondary', () => this.clearLoginStatus(agent), disposables);
 		}
-		this.addAction(actions, localize('externalAcpAgents.edit', "Edit"), 'secondary', () => this.showAgentDialog({ kind: 'edit', agent }), disposables);
+		this.addAction(actions, agent.registryDraft ? localize('externalAcpAgents.reviewManualConfig', "Review Manual Config") : localize('externalAcpAgents.edit', "Edit"), 'secondary', () => this.showAgentDialog({ kind: 'edit', agent, reviewRegistryDraft: agent.registryDraft === true }), disposables);
 		this.addAction(actions, agent.enabled ? localize('externalAcpAgents.disable', "Disable") : localize('externalAcpAgents.enable', "Enable"), 'secondary', () => this.toggleEnabled(agent), disposables);
 		this.addAction(actions, agent.trusted ? localize('externalAcpAgents.untrust', "Untrust") : localize('externalAcpAgents.trust', "Trust"), 'secondary', () => this.toggleTrusted(agent), disposables);
 		this.addAction(actions, localize('externalAcpAgents.remove', "Remove"), 'danger', () => this.removeAgent(agent), disposables);
@@ -236,6 +325,39 @@ export class ExternalAcpAgentsWidget extends Disposable {
 		await this.registryService.removeAgent(agent.id);
 		await this.snapshotService.writeSnapshot();
 		this.notificationService.info(localize('externalAcpAgents.removed', "External ACP agent '{0}' removed.", agent.displayName));
+	}
+
+	private async addRegistryDraft(entry: AcpRegistryAgent): Promise<void> {
+		const draft = await this.registryService.createRegistryDraft(entry);
+		await this.snapshotService.writeSnapshot();
+		this.notificationService.info(localize('externalAcpAgents.registryDraftAdded', "Disabled draft '{0}' added for manual review.", draft.displayName));
+		await this.refresh({ preserveScroll: true });
+	}
+
+	private async reviewRegistryDraft(entry: AcpRegistryAgent, existing: ExternalAcpAgentConfig | undefined): Promise<void> {
+		const draft = existing ?? await this.registryService.createRegistryDraft(entry);
+		if (!existing) {
+			await this.snapshotService.writeSnapshot();
+		}
+		this.showAgentDialog({ kind: 'edit', agent: draft, reviewRegistryDraft: true });
+	}
+
+	private async copyRegistryInstallCommand(entry: AcpRegistryAgent, installCommand: string): Promise<void> {
+		await this.clipboardService.writeText(installCommand);
+		this.notificationService.info(localize('externalAcpAgents.installCommandCopied', "Install command for '{0}' copied. Run it outside VS Code if you choose to install this external agent.", entry.name));
+	}
+
+	private async copyRegistryLoginCommand(entry: AcpRegistryAgent, loginCommand: string): Promise<void> {
+		await this.clipboardService.writeText(loginCommand);
+		this.notificationService.info(localize('externalAcpAgents.registryLoginCommandCopied', "Login command for '{0}' copied. Run it outside VS Code after installing the vendor agent.", entry.name));
+	}
+
+	private async openRegistryLoginHelp(entry: AcpRegistryAgent): Promise<void> {
+		if (!entry.loginHelpUrl || !isExternalAcpLoginHelpUrlAllowed(entry.loginHelpUrl)) {
+			this.notificationService.error(localize('externalAcpAgents.loginHelpUrlBlocked', "Login help URL was blocked. Only http and https login help URLs are allowed."));
+			return;
+		}
+		await this.openerService.open(URI.parse(entry.loginHelpUrl), { openExternal: true, fromUserGesture: true });
 	}
 
 	private async refreshSnapshot(): Promise<void> {
@@ -297,7 +419,10 @@ export class ExternalAcpAgentsWidget extends Disposable {
 
 	private showAgentDialog(mode: AgentDialogMode): void {
 		const existing = mode.kind === 'edit' ? mode.agent : undefined;
-		this.showDialog(mode.kind === 'edit' ? localize('externalAcpAgents.editAgent', "Edit External ACP Agent") : localize('externalAcpAgents.addManualAgent', "Add External ACP Agent"), (body, footer, close) => {
+		const title = mode.kind === 'edit' && mode.reviewRegistryDraft
+			? localize('externalAcpAgents.reviewAgent', "Review External ACP Agent")
+			: mode.kind === 'edit' ? localize('externalAcpAgents.editAgent', "Edit External ACP Agent") : localize('externalAcpAgents.addManualAgent', "Add External ACP Agent");
+		this.showDialog(title, (body, footer, close) => {
 			const form = DOM.append(body, $('.eaa-dialog-form'));
 			const idInput = this.createInputRow(form, localize('externalAcpAgents.formId', "ID"), 'cursor-agent');
 			const nameInput = this.createInputRow(form, localize('externalAcpAgents.formName', "Display Name"), localize('externalAcpAgents.formNamePlaceholder', "Cursor Agent"));
@@ -354,18 +479,28 @@ export class ExternalAcpAgentsWidget extends Disposable {
 					loginHint: loginHintInput.value,
 					loginCommand: loginCommandInput.value,
 					loginHelpUrl: loginHelpUrlInput.value,
-					enabled: enabledInput.checked,
-					trusted: trustedInput.checked,
+					enabled: mode.kind === 'edit' && mode.reviewRegistryDraft ? false : enabledInput.checked,
+					trusted: mode.kind === 'edit' && mode.reviewRegistryDraft ? false : trustedInput.checked,
 					capabilities: capabilityInputs.filter(input => input.input.checked).map(input => input.capability),
 					envVariableNames: this.parseLines(envInput.value),
 					secretRefs: this.parseLines(secretRefsInput.value),
+					registryId: existing?.registryId,
+					registryVersion: existing?.registryVersion,
 				});
 				const validation = validateExternalAcpAgentConfig(agent);
 				if (!validation.valid) {
 					this.setStatus(status, validation.message ?? localize('externalAcpAgents.invalidConfig', "Invalid external ACP agent config."), 'error');
 					return;
 				}
-				await this.registryService.saveAgent(agent);
+				if (mode.kind === 'edit' && mode.reviewRegistryDraft) {
+					await this.registryService.saveRegistryDraft({
+						...agent,
+						registryDraft: true,
+					});
+					await this.registryService.markRegistryDraftReviewed(agent.id);
+				} else {
+					await this.registryService.saveAgent(agent);
+				}
 				await this.snapshotService.writeSnapshot();
 				close();
 				await this.refresh({ preserveScroll: true });
@@ -460,8 +595,12 @@ export class ExternalAcpAgentsWidget extends Disposable {
 		return button;
 	}
 
-	private addAction(parent: HTMLElement, label: string, variant: 'primary' | 'secondary' | 'danger', run: () => Promise<void> | void, disposables: DisposableStore): HTMLButtonElement {
+	private addAction(parent: HTMLElement, label: string, variant: 'primary' | 'secondary' | 'danger', run: () => Promise<void> | void, disposables: DisposableStore, disabled = false): HTMLButtonElement {
 		const button = this.createButton(parent, label, variant);
+		button.disabled = disabled;
+		if (disabled) {
+			return button;
+		}
 		disposables.add(DOM.addDisposableListener(button, DOM.EventType.CLICK, () => {
 			void Promise.resolve(run()).catch(err => this.notificationService.error(err instanceof Error ? err : String(err)));
 		}));
@@ -528,6 +667,17 @@ export class ExternalAcpAgentsWidget extends Disposable {
 
 	private capabilityLabel(capability: ExternalAcpAgentCapability): string {
 		return capabilityOptions.find(option => option.capability === capability)?.label ?? capability;
+	}
+
+	private registryDistributionLabel(entry: AcpRegistryAgent): string {
+		switch (entry.distribution.kind) {
+			case 'npx':
+				return localize('externalAcpAgents.registryDistributionNpx', "NPX");
+			case 'uvx':
+				return localize('externalAcpAgents.registryDistributionUvx', "UVX");
+			case 'binary':
+				return localize('externalAcpAgents.registryDistributionBinary', "Binary");
+		}
 	}
 
 	private isSideEffectCapability(capability: ExternalAcpAgentCapability): boolean {

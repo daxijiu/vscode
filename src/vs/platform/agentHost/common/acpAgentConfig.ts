@@ -60,6 +60,9 @@ export interface ExternalAcpAgentConfig {
 	readonly capabilities: readonly ExternalAcpAgentCapability[];
 	readonly envVariableNames?: readonly string[];
 	readonly secretRefs?: readonly string[];
+	readonly registryDraft?: boolean;
+	readonly registryId?: string;
+	readonly registryVersion?: string;
 	readonly applyState?: ExternalAcpAgentApplyState;
 	readonly connectionStatus?: ExternalAcpAgentConnectionStatus;
 	readonly createdAt: number;
@@ -158,6 +161,7 @@ export function validateExternalAcpAgentConfig(agent: ExternalAcpAgentConfig): E
 export function normalizeExternalAcpAgentConfig(agent: ExternalAcpAgentConfig): ExternalAcpAgentConfig {
 	const id = sanitizeExternalAcpAgentId(agent.id);
 	const now = Date.now();
+	const registryDraft = agent.registryDraft === true;
 	return {
 		id,
 		displayName: agent.displayName.trim() || id,
@@ -169,11 +173,14 @@ export function normalizeExternalAcpAgentConfig(agent: ExternalAcpAgentConfig): 
 		...(agent.loginHint?.trim() ? { loginHint: agent.loginHint.trim() } : {}),
 		...safePersistedLoginField('loginCommand', agent.loginCommand),
 		...safePersistedLoginField('loginHelpUrl', agent.loginHelpUrl),
-		enabled: agent.enabled !== false,
-		trusted: agent.trusted === true,
+		enabled: registryDraft ? false : agent.enabled !== false,
+		trusted: registryDraft ? false : agent.trusted === true,
 		capabilities: normalizeCapabilities(agent.capabilities),
 		...(agent.envVariableNames !== undefined ? { envVariableNames: sanitizeEnvVariableNames(agent.envVariableNames) } : {}),
 		...(agent.secretRefs !== undefined ? { secretRefs: normalizeStringList(agent.secretRefs) } : {}),
+		...(registryDraft ? { registryDraft: true } : {}),
+		...(agent.registryId?.trim() ? { registryId: sanitizeExternalAcpAgentId(agent.registryId) } : {}),
+		...(agent.registryVersion?.trim() ? { registryVersion: agent.registryVersion.trim() } : {}),
 		applyState: agent.applyState ?? 'pendingRestart',
 		...(agent.connectionStatus !== undefined ? { connectionStatus: normalizeConnectionStatus(agent.connectionStatus) } : {}),
 		createdAt: agent.createdAt ?? now,
@@ -197,6 +204,9 @@ export function createExternalAcpAgentConfig(options: {
 	readonly capabilities?: readonly ExternalAcpAgentCapability[];
 	readonly envVariableNames?: readonly string[];
 	readonly secretRefs?: readonly string[];
+	readonly registryDraft?: boolean;
+	readonly registryId?: string;
+	readonly registryVersion?: string;
 	readonly connectionStatus?: ExternalAcpAgentConnectionStatus;
 }): ExternalAcpAgentConfig {
 	const now = Date.now();
@@ -216,10 +226,25 @@ export function createExternalAcpAgentConfig(options: {
 		capabilities: options.capabilities ?? [ExternalAcpAgentCapability.Text, ExternalAcpAgentCapability.Reasoning],
 		...(options.envVariableNames !== undefined ? { envVariableNames: options.envVariableNames } : {}),
 		...(options.secretRefs !== undefined ? { secretRefs: options.secretRefs } : {}),
+		...(options.registryDraft !== undefined ? { registryDraft: options.registryDraft } : {}),
+		...(options.registryId !== undefined ? { registryId: options.registryId } : {}),
+		...(options.registryVersion !== undefined ? { registryVersion: options.registryVersion } : {}),
 		...(options.connectionStatus !== undefined ? { connectionStatus: options.connectionStatus } : {}),
 		applyState: 'pendingRestart',
 		createdAt: now,
 		updatedAt: now,
+	});
+}
+
+export function createRegistryDraftExternalAcpAgentConfig(options: Omit<Parameters<typeof createExternalAcpAgentConfig>[0], 'enabled' | 'trusted' | 'registryDraft'> & {
+	readonly registryId: string;
+	readonly registryVersion: string;
+}): ExternalAcpAgentConfig {
+	return createExternalAcpAgentConfig({
+		...options,
+		enabled: false,
+		trusted: false,
+		registryDraft: true,
 	});
 }
 
@@ -228,7 +253,7 @@ export function toExternalAcpAgentSnapshot(agents: readonly ExternalAcpAgentConf
 		version: ExternalAcpAgentSnapshotVersion,
 		updatedAt,
 		agents: agents.map(normalizeExternalAcpAgentConfig)
-			.filter(agent => agent.enabled && agent.trusted && validateExternalAcpAgentConfig(agent).valid)
+			.filter(agent => !agent.registryDraft && agent.enabled && agent.trusted && validateExternalAcpAgentConfig(agent).valid)
 			.map(agent => ({
 				id: agent.id,
 				displayName: agent.displayName,

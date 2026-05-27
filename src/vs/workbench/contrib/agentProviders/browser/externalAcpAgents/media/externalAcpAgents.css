@@ -95,6 +95,22 @@
 	background-color: var(--vscode-editor-background, #1f1f1f);
 }
 
+.eaa-registry-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+	gap: 10px;
+}
+
+.eaa-registry-card {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 12px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, #454545));
+	border-radius: 6px;
+	background-color: var(--vscode-editor-background, #1f1f1f);
+}
+
 .eaa-agent-row {
 	display: flex;
 	align-items: flex-start;
