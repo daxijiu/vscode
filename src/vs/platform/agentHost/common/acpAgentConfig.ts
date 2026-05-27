@@ -296,11 +296,7 @@ export function normalizeCapabilities(capabilities: readonly ExternalAcpAgentCap
 }
 
 function safeSnapshotCapabilities(capabilities: readonly ExternalAcpAgentCapability[]): readonly ExternalAcpAgentCapability[] {
-	return normalizeCapabilities(capabilities).filter(capability =>
-		capability !== ExternalAcpAgentCapability.Files
-		&& capability !== ExternalAcpAgentCapability.Terminal
-		&& capability !== ExternalAcpAgentCapability.Tools
-	);
+	return normalizeCapabilities(capabilities);
 }
 
 function normalizeStringList(values: readonly string[]): readonly string[] {

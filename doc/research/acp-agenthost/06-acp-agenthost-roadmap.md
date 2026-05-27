@@ -283,6 +283,11 @@ Acceptance:
 - Live capability toggles require reconnect/re-initialize before new file/terminal/tool capabilities are advertised.
 - Policy-disabled file/terminal/tool capabilities are not advertised and cannot execute side effects.
 
+Implementation status:
+
+- 2026-05-28: Phase 6A implemented the safe skeleton: capability negotiation is policy-gated and disabled by default for file write, terminal execution, and tool metadata; `session/request_permission` returns valid deny/cancel outcomes without side effects; ACP tool lifecycle updates are projected into AgentHost tool UI actions with redacted unsupported markers.
+- Real filesystem read/write, terminal execution/auth, MCP bridge, and actual tool invocation remain deferred to later Phase 6 slices.
+
 Difficulty: high.
 
 ## Phase 7 - Registry Browse And Managed Enablement

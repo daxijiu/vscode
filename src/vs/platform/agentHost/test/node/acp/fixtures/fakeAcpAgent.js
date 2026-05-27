@@ -10,6 +10,7 @@ const markerPath = process.argv[3];
 let buffer = '';
 let activeSessionId = 'fake-session-1';
 let pendingPromptId = undefined;
+let pendingPermissionRequestId = undefined;
 let cancelled = false;
 
 if (mode.startsWith('dispose-marker') && markerPath) {
@@ -44,13 +45,36 @@ function handleLine(line) {
 	if (request.method === 'session/cancel') {
 		cancelled = true;
 		if (pendingPromptId !== undefined) {
-			const id = pendingPromptId;
-			pendingPromptId = undefined;
-			writeResponse(id, { stopReason: 'cancelled' });
-			setTimeout(() => writeSessionUpdate(activeSessionId, {
-				sessionUpdate: 'agent_message_chunk',
-				content: { type: 'text', text: 'late after cancel' },
-			}), 5);
+			if (pendingPermissionRequestId === undefined) {
+				const id = pendingPromptId;
+				pendingPromptId = undefined;
+				writeResponse(id, { stopReason: 'cancelled' });
+				setTimeout(() => writeSessionUpdate(activeSessionId, {
+					sessionUpdate: 'agent_message_chunk',
+					content: { type: 'text', text: 'late after cancel' },
+				}), 5);
+			}
+			return;
+		}
+		return;
+	}
+
+	if (request.method === undefined && request.id === pendingPermissionRequestId) {
+		const outcome = request.result?.outcome?.outcome;
+		const selected = request.result?.outcome?.optionId;
+		const id = pendingPromptId;
+		pendingPermissionRequestId = undefined;
+		pendingPromptId = undefined;
+		if (id !== undefined) {
+			if (outcome === 'cancelled') {
+				writeResponse(id, { stopReason: 'cancelled' });
+			} else {
+				writeSessionUpdate(activeSessionId, {
+					sessionUpdate: 'agent_message_chunk',
+					content: { type: 'text', text: `permission:${selected || outcome || 'unknown'}` },
+				});
+				writeResponse(id, { stopReason: 'end_turn' });
+			}
 		}
 		return;
 	}
@@ -70,19 +94,25 @@ function handleLine(line) {
 			case 'cancel-race':
 			case 'late-update-after-complete':
 			case 'tool-call-unexpected':
+			case 'tool-call-lifecycle':
+			case 'tool-call-malicious-metadata':
+			case 'tool-call-failed':
+			case 'permission-request-denied':
+			case 'permission-pending-cancel':
+			case 'capabilities-echo':
 			case 'dispose-marker':
 			case 'dispose-marker-fail-second-session-new':
-				writeInitialize(request.id, 1);
+				writeInitialize(request.id, 1, request.params?.clientCapabilities);
 				break;
 			case 'dispose-marker-fail-second-initialize':
 				if (startedProcessCount() > 1) {
 					writeError(request.id, -32603, 'Initialize failed on replacement');
 				} else {
-					writeInitialize(request.id, 1);
+					writeInitialize(request.id, 1, request.params?.clientCapabilities);
 				}
 				break;
 			case 'unsupported-version':
-				writeInitialize(request.id, 2);
+				writeInitialize(request.id, 2, request.params?.clientCapabilities);
 				break;
 			case 'malformed-json':
 				process.stdout.write('{"jsonrpc":"2.0","id":');
@@ -95,7 +125,7 @@ function handleLine(line) {
 				break;
 			case 'stderr-secret':
 				process.stderr.write(`token=${process.env.ACP_FAKE_SECRET}\n`);
-				writeInitialize(request.id, 1);
+				writeInitialize(request.id, 1, request.params?.clientCapabilities);
 				break;
 			case 'exit-after-request':
 				process.exit(4);
@@ -210,6 +240,76 @@ function handlePrompt(request) {
 				kind: 'read',
 				status: 'pending',
 			});
+			writeResponse(request.id, { stopReason: 'end_turn' });
+			break;
+		case 'tool-call-lifecycle':
+			writeSessionUpdate(sessionId, {
+				sessionUpdate: 'tool_call',
+				toolCallId: 'tool-1',
+				title: 'Read file',
+				kind: 'read',
+				status: 'pending',
+			});
+			writeSessionUpdate(sessionId, {
+				sessionUpdate: 'tool_call_update',
+				toolCallId: 'tool-1',
+				title: 'Read file',
+				kind: 'read',
+				status: 'in_progress',
+				content: [{ type: 'text', text: 'secret-file-content' }],
+				locations: [{ path: '/secret/file.txt' }],
+			});
+			writeSessionUpdate(sessionId, {
+				sessionUpdate: 'tool_call_update',
+				toolCallId: 'tool-1',
+				title: 'Read file',
+				kind: 'read',
+				status: 'completed',
+				content: [{ type: 'text', text: 'terminal output token=abc123' }],
+			});
+			writeResponse(request.id, { stopReason: 'end_turn' });
+			break;
+		case 'tool-call-failed':
+			writeSessionUpdate(sessionId, {
+				sessionUpdate: 'tool_call',
+				toolCallId: 'tool-fail',
+				title: 'Run terminal',
+				kind: 'terminal',
+				status: 'pending',
+			});
+			writeSessionUpdate(sessionId, {
+				sessionUpdate: 'tool_call_update',
+				toolCallId: 'tool-fail',
+				title: 'Run terminal',
+				kind: 'terminal',
+				status: 'failed',
+				rawOutput: { text: 'terminal secret output' },
+			});
+			writeResponse(request.id, { stopReason: 'end_turn' });
+			break;
+		case 'tool-call-malicious-metadata':
+			writeSessionUpdate(sessionId, {
+				sessionUpdate: 'tool_call',
+				toolCallId: 'call-token-sk-abc123',
+				title: 'Read .env SECRET_FILE_CONTENT',
+				kind: 'terminal output token=ghp_secret',
+				status: 'pending',
+			});
+			writeSessionUpdate(sessionId, {
+				sessionUpdate: 'tool_call_update',
+				toolCallId: 'call-token-sk-abc123',
+				title: 'Read .env SECRET_FILE_CONTENT',
+				kind: 'terminal output token=ghp_secret',
+				status: 'completed',
+				content: [{ type: 'text', text: 'terminal output token=abc123' }],
+			});
+			writeResponse(request.id, { stopReason: 'end_turn' });
+			break;
+		case 'permission-request-denied':
+		case 'permission-pending-cancel':
+			pendingPromptId = request.id;
+			pendingPermissionRequestId = `permission-${request.id}`;
+			writePermissionRequest(pendingPermissionRequestId, sessionId);
 			break;
 		default:
 			writeResponse(request.id, { stopReason: 'end_turn' });
@@ -217,7 +317,7 @@ function handlePrompt(request) {
 	}
 }
 
-function writeInitialize(id, protocolVersion) {
+function writeInitialize(id, protocolVersion, receivedClientCapabilities) {
 	writeResponse(id, {
 		protocolVersion,
 		agentCapabilities: {},
@@ -226,6 +326,7 @@ function writeInitialize(id, protocolVersion) {
 			name: 'fake-acp-agent',
 			title: 'Fake ACP Agent',
 			version: '1.0.0',
+			...(mode === 'capabilities-echo' ? { _meta: { receivedClientCapabilities } } : {}),
 		},
 	});
 }
@@ -240,6 +341,29 @@ function writeError(id, code, message, data) {
 
 function writeSessionUpdate(sessionId, update) {
 	process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update } })}\n`);
+}
+
+function writePermissionRequest(id, sessionId) {
+	process.stdout.write(`${JSON.stringify({
+		jsonrpc: '2.0',
+		id,
+		method: 'session/request_permission',
+		params: {
+			sessionId,
+			toolCall: {
+				sessionUpdate: 'tool_call',
+				toolCallId: 'permission-tool',
+				title: 'Write file',
+				kind: 'write',
+				status: 'pending',
+				content: [{ type: 'text', text: 'do not leak this file content' }],
+			},
+			options: [
+				{ optionId: 'allow-once', name: 'Allow Once', kind: 'allow_once' },
+				{ optionId: 'reject-once', name: 'Reject Once', kind: 'reject_once' },
+			],
+		},
+	})}\n`);
 }
 
 function startedProcessCount() {

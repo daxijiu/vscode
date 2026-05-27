@@ -13,11 +13,19 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ExternalAcpAgentCapability, ExternalAcpAgentCwdPolicy, ExternalAcpAgentSnapshotAgent } from '../../../common/acpAgentConfig.js';
 import { ActionType } from '../../../common/state/sessionActions.js';
-import { ResponsePartKind, TurnState } from '../../../common/state/protocol/state.js';
+import { ResponsePartKind, ToolCallStatus, ToolResultContentType, TurnState } from '../../../common/state/protocol/state.js';
 import { AcpAgent, getAcpAgentSubscriptionDescription, toAcpAgentProviderId } from '../../../node/acp/acpAgent.js';
 
 suite('AcpAgent', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+
+	function hasActionType(action: unknown, type: ActionType): boolean {
+		if (typeof action !== 'object' || action === null) {
+			return false;
+		}
+		const candidate = action as { readonly type?: unknown };
+		return Object.prototype.hasOwnProperty.call(candidate, 'type') && candidate.type === type;
+	}
 
 	test('normalizes provider ids and describes external subscription ownership', () => {
 		const agent = disposables.add(new AcpAgent(createSnapshotAgent({ id: 'Cursor Agent', displayName: 'Cursor Agent', vendorLabel: 'Cursor' })));
@@ -260,21 +268,106 @@ suite('AcpAgent', () => {
 		assert.strictEqual(turn.responseParts[0].kind === ResponsePartKind.Markdown ? turn.responseParts[0].content : '', 'Finished');
 	});
 
-	test('unexpected tool calls fail clearly without waiting for tool execution', async () => {
-		const agent = disposables.add(new AcpAgent(fakeAgent('tool-call-unexpected')));
+	test('tool_call lifecycle updates render AgentHost tool actions without executing or leaking content', async () => {
+		const agent = disposables.add(new AcpAgent(fakeAgent('tool-call-lifecycle')));
+		const actions: string[] = [];
+		disposables.add(agent.onDidSessionProgress(signal => {
+			if (signal.kind === 'action') {
+				actions.push(signal.action.type);
+			}
+		}));
 		const created = await agent.createSession({ workingDirectory: URI.file(process.cwd()) });
 
 		await agent.sendMessage(created.session, 'Tool?', undefined, 'turn-1');
+		const turn = (await agent.getSessionMessages(created.session))[0];
+		const toolPart = turn.responseParts[0];
 
-		assert.deepStrictEqual((await agent.getSessionMessages(created.session)).map(turn => ({
+		assert.deepStrictEqual({
+			actions,
 			state: turn.state,
-			error: turn.error?.message,
-			system: turn.responseParts[0].kind === ResponsePartKind.SystemNotification ? turn.responseParts[0].content : undefined,
-		})), [{
-			state: TurnState.Error,
-			error: 'This ACP agent requested a tool call, but ACP tools are not enabled in this text-only milestone.',
-			system: 'This ACP agent requested a tool call, but ACP tools are not enabled in this text-only milestone.',
-		}]);
+			tool: toolPart.kind === ResponsePartKind.ToolCall ? {
+				status: toolPart.toolCall.status,
+				toolName: toolPart.toolCall.toolName,
+				displayName: toolPart.toolCall.displayName,
+				toolCallId: toolPart.toolCall.toolCallId,
+				success: toolPart.toolCall.status === ToolCallStatus.Completed ? toolPart.toolCall.success : undefined,
+				contentType: toolPart.toolCall.status === ToolCallStatus.Completed ? toolPart.toolCall.content?.[0]?.type : undefined,
+				contentLeaksSecret: JSON.stringify(toolPart).includes('abc123') || JSON.stringify(toolPart).includes('secret-file-content'),
+			} : undefined,
+		}, {
+			actions: [
+				ActionType.SessionToolCallStart,
+				ActionType.SessionToolCallReady,
+				ActionType.SessionToolCallDelta,
+				ActionType.SessionToolCallComplete,
+				ActionType.SessionTurnComplete,
+			],
+			state: TurnState.Complete,
+			tool: {
+				status: ToolCallStatus.Completed,
+				toolName: 'acp.tool',
+				displayName: 'ACP Tool',
+				toolCallId: 'acp-tool-1',
+				success: true,
+				contentType: ToolResultContentType.Text,
+				contentLeaksSecret: false,
+			},
+		});
+	});
+
+	test('redacts malicious tool_call title, kind, and id from action payloads', async () => {
+		const agent = disposables.add(new AcpAgent(fakeAgent('tool-call-malicious-metadata')));
+		const actions: unknown[] = [];
+		disposables.add(agent.onDidSessionProgress(signal => {
+			if (signal.kind === 'action') {
+				actions.push(signal.action);
+			}
+		}));
+		const created = await agent.createSession({ workingDirectory: URI.file(process.cwd()) });
+
+		await agent.sendMessage(created.session, 'Tool?', undefined, 'turn-1');
+		const payload = JSON.stringify({
+			actions,
+			turns: await agent.getSessionMessages(created.session),
+		});
+
+		assert.deepStrictEqual({
+			hasToolStart: actions.some(action => hasActionType(action, ActionType.SessionToolCallStart)),
+			hasOpaqueId: payload.includes('acp-tool-1'),
+			leaksMetadata: payload.includes('sk-abc123')
+				|| payload.includes('SECRET_FILE_CONTENT')
+				|| payload.includes('ghp_secret')
+				|| payload.includes('terminal output token=abc123'),
+		}, {
+			hasToolStart: true,
+			hasOpaqueId: true,
+			leaksMetadata: false,
+		});
+	});
+
+	test('failed tool_call lifecycle completes as a failed redacted tool result', async () => {
+		const agent = disposables.add(new AcpAgent(fakeAgent('tool-call-failed')));
+		const created = await agent.createSession({ workingDirectory: URI.file(process.cwd()) });
+
+		await agent.sendMessage(created.session, 'Tool?', undefined, 'turn-1');
+		const turn = (await agent.getSessionMessages(created.session))[0];
+		const toolPart = turn.responseParts[0];
+
+		assert.deepStrictEqual({
+			state: turn.state,
+			tool: toolPart.kind === ResponsePartKind.ToolCall && toolPart.toolCall.status === ToolCallStatus.Completed ? {
+				success: toolPart.toolCall.success,
+				error: toolPart.toolCall.error?.message,
+				leaksTerminalOutput: JSON.stringify(toolPart).includes('terminal secret output'),
+			} : undefined,
+		}, {
+			state: TurnState.Complete,
+			tool: {
+				success: false,
+				error: 'ACP tool failed or was rejected.',
+				leaksTerminalOutput: false,
+			},
+		});
 	});
 });
 

@@ -8,6 +8,7 @@ import { FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ExternalAcpAgentCapability, ExternalAcpAgentCwdPolicy, ExternalAcpAgentSnapshotAgent } from '../../../common/acpAgentConfig.js';
 import { AcpError, AcpErrorCode } from '../../../node/acp/acpErrors.js';
+import { AcpPermissionBridge } from '../../../node/acp/acpPermissionBridge.js';
 import { AcpProcess } from '../../../node/acp/acpProcess.js';
 
 suite('acpProcess', () => {
@@ -25,6 +26,52 @@ suite('acpProcess', () => {
 				title: 'Fake ACP Agent',
 				version: '1.0.0',
 			},
+		});
+	});
+
+	test('omits disabled side-effect capabilities from initialize by default', async () => {
+		const process = disposables.add(createProcess('capabilities-echo', {
+			agent: {
+				...fakeAgent('capabilities-echo'),
+				capabilities: [
+					ExternalAcpAgentCapability.Text,
+					ExternalAcpAgentCapability.Tools,
+					ExternalAcpAgentCapability.Files,
+					ExternalAcpAgentCapability.Terminal,
+				],
+			},
+		}));
+
+		const result = await process.initialize();
+
+		assert.deepStrictEqual(result.agentInfo?._meta?.receivedClientCapabilities, {});
+	});
+
+	test('sends only policy-enabled side-effect capabilities during initialize', async () => {
+		const process = disposables.add(createProcess('capabilities-echo', {
+			agent: {
+				...fakeAgent('capabilities-echo'),
+				capabilities: [
+					ExternalAcpAgentCapability.Text,
+					ExternalAcpAgentCapability.Tools,
+					ExternalAcpAgentCapability.Files,
+					ExternalAcpAgentCapability.Terminal,
+				],
+			},
+			capabilityPolicy: {
+				allowFileRead: true,
+				allowFileWrite: false,
+				allowTerminal: true,
+				allowTools: true,
+			},
+		}));
+
+		const result = await process.initialize();
+
+		assert.deepStrictEqual(result.agentInfo?._meta?.receivedClientCapabilities, {
+			fs: { readTextFile: true },
+			terminal: true,
+			_meta: { toolCalls: true },
 		});
 	});
 
@@ -194,6 +241,49 @@ suite('acpProcess', () => {
 		assert.deepStrictEqual(await prompt, { stopReason: 'cancelled' });
 	});
 
+	test('answers inbound permission requests with default deny outcome', async () => {
+		const process = disposables.add(createProcess('permission-request-denied'));
+		const updates: string[] = [];
+
+		await process.initialize();
+		disposables.add(process.onDidNotification(notification => {
+			const params = notification.params as { readonly update?: { readonly content?: { readonly text?: string } } };
+			const text = params.update?.content?.text;
+			if (text) {
+				updates.push(text);
+			}
+		}));
+		const session = await process.newSession(process.sessionCwd());
+		const result = await process.prompt({
+			sessionId: session.sessionId,
+			prompt: [{ type: 'text', text: 'Need permission' }],
+		});
+
+		assert.deepStrictEqual({
+			updates,
+			result,
+		}, {
+			updates: ['permission:reject-once'],
+			result: { stopReason: 'end_turn' },
+		});
+	});
+
+	test('cancel resolves a pending inbound permission request with cancelled outcome', async () => {
+		const permissionBridge = new AcpPermissionBridge({ autoDeny: false });
+		const process = disposables.add(createProcess('permission-pending-cancel', { permissionBridge }));
+
+		await process.initialize();
+		const session = await process.newSession(process.sessionCwd());
+		const prompt = process.prompt({
+			sessionId: session.sessionId,
+			prompt: [{ type: 'text', text: 'Need cancellable permission' }],
+		});
+		await wait(20);
+		await process.cancel(session.sessionId);
+
+		assert.deepStrictEqual(await prompt, { stopReason: 'cancelled' });
+	});
+
 	test('missing env and secret refs fail before spawn with structured errors', async () => {
 		const missingEnv = createProcess('success', {
 			agent: { ...fakeAgent('success'), envVariableNames: ['ACP_REQUIRED_TOKEN'] },
@@ -259,6 +349,10 @@ async function waitForExitCode(process: AcpProcess): Promise<void> {
 		if (process.diagnostic().exitCode !== undefined) {
 			return;
 		}
-		await new Promise(resolve => setTimeout(resolve, 5));
+		await wait(5);
 	}
+}
+
+function wait(ms: number): Promise<void> {
+	return new Promise(resolve => setTimeout(resolve, ms));
 }

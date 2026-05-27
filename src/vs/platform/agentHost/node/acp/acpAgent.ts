@@ -174,7 +174,13 @@ export class AcpAgent extends Disposable implements IAgent {
 		throw new Error(localize('acpAgent.changeModelUnsupported', "External ACP agent model selection is not available until ACP model capability support is implemented."));
 	}
 
-	respondToPermissionRequest(_requestId: string, _approved: boolean): void { }
+	respondToPermissionRequest(requestId: string, approved: boolean): void {
+		for (const entry of this._sessions.values()) {
+			if (entry.session.respondToPermissionRequest(requestId, approved)) {
+				return;
+			}
+		}
+	}
 
 	respondToUserInputRequest(_requestId: string, _response: SessionInputResponseKind, _answers?: Record<string, SessionInputAnswer>): void { }
 

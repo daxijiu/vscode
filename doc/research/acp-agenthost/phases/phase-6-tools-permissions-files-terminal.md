@@ -1,6 +1,6 @@
 # Phase 6 - Tools, Permissions, Files, Terminal
 
-Updated: 2026-05-27
+Updated: 2026-05-28
 
 ## Goal
 
@@ -84,6 +84,23 @@ This is the highest-risk runtime phase.
 - Policy-disabled file/terminal/tool capabilities are not advertised during ACP `initialize`.
 - Policy-disabled requests return valid ACP denial/error responses and do not execute side effects.
 - Logs are redacted.
+
+## Phase 6A Implementation Status
+
+- 2026-05-28: implemented the Phase 6A skeleton for capability negotiation, inbound permission mediation, and tool lifecycle projection.
+- ACP `initialize` now resolves client capabilities from the secret-free snapshot plus explicit policy. File read/write, terminal execution, and tool-call metadata are omitted by default; policy-disabled capabilities are not advertised.
+- ACP JSON-RPC inbound requests no longer all fail as `MethodNotFound`; `session/request_permission` is handled through an ACP permission bridge and returns valid deny/cancel outcomes. Unknown inbound requests remain `MethodNotFound`.
+- Pending permission requests are cancellable; turn/session cancellation resolves them with `{ outcome: 'cancelled' }` before notifying `session/cancel`.
+- ACP `tool_call` and `tool_call_update` session updates are mapped to AgentHost tool lifecycle actions. The Phase 6A mapper shows start/progress/complete/fail states with redacted unsupported markers and does not execute tools, read/write files, open terminals, or wait for tool results.
+- Fake ACP fixtures and focused tests cover disabled initialize capabilities, default permission denial, pending permission cancellation, tool lifecycle action ordering, unknown-request method-not-found behavior, and redaction of file/terminal/prompt-like tool content.
+
+Still deferred beyond Phase 6A:
+
+- Real filesystem read bridge with workspace containment.
+- File write/edit/changeset execution and approval.
+- Terminal create/output/wait/kill and terminal-auth.
+- MCP bridge and real tool invocation/result plumbing.
+- Dynamic live capability mutation without reconnect/re-initialize.
 
 ## Validation
 

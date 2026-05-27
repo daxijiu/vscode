@@ -7,10 +7,12 @@ import * as cp from 'child_process';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ExternalAcpAgentSnapshotAgent } from '../../common/acpAgentConfig.js';
+import { buildAcpClientCapabilities, AcpClientCapabilityPolicy } from './acpClientCapabilities.js';
 import { AcpConnection } from './acpConnection.js';
 import { acpProcessExitedError, acpProcessNotFoundError, acpUnsupportedProtocolVersionError, isAcpError, redactAcpDiagnostic, AcpError, AcpErrorCode } from './acpErrors.js';
+import { AcpPermissionBridge } from './acpPermissionBridge.js';
 import { resolveAcpRuntimeEnvironment } from './acpRuntimeEnvironment.js';
-import { AcpAuthenticateParams, AcpAuthenticateResult, AcpAuthMethod, AcpCancelSessionParams, AcpInitializeParams, AcpInitializeResult, AcpJsonRpcNotification, AcpMethod, AcpNewSessionParams, AcpNewSessionResult, AcpPromptParams, AcpPromptResult, AcpProtocolVersion } from './acpProtocol.js';
+import { AcpAuthenticateParams, AcpAuthenticateResult, AcpAuthMethod, AcpCancelSessionParams, AcpInitializeParams, AcpInitializeResult, AcpJsonRpcErrorCode, AcpJsonRpcNotification, AcpMethod, AcpNewSessionParams, AcpNewSessionResult, AcpPromptParams, AcpPromptResult, AcpProtocolVersion, AcpRequestPermissionParams } from './acpProtocol.js';
 
 export interface AcpProcessOptions {
 	readonly agent: ExternalAcpAgentSnapshotAgent;
@@ -20,6 +22,8 @@ export interface AcpProcessOptions {
 	readonly authenticateTimeoutMs?: number;
 	readonly sessionRequestTimeoutMs?: number;
 	readonly promptTimeoutMs?: number;
+	readonly capabilityPolicy?: AcpClientCapabilityPolicy;
+	readonly permissionBridge?: AcpPermissionBridge;
 }
 
 export interface AcpProcessDiagnostic {
@@ -45,19 +49,21 @@ export class AcpProcess extends Disposable {
 	private stderr = '';
 	private redactionValues: readonly string[] = [];
 	private authMethods: readonly AcpAuthMethod[] = [];
+	private readonly permissionBridge: AcpPermissionBridge;
 	private exitCode: number | null | undefined;
 	private signal: string | null | undefined;
 	private disposed = false;
 
 	constructor(private readonly options: AcpProcessOptions) {
 		super();
+		this.permissionBridge = this._register(options.permissionBridge ?? new AcpPermissionBridge());
 	}
 
 	async initialize(): Promise<AcpInitializeResult> {
 		this.start();
 		const params: AcpInitializeParams = {
 			protocolVersion: AcpProtocolVersion,
-			clientCapabilities: {},
+			clientCapabilities: buildAcpClientCapabilities(this.options.agent, this.options.capabilityPolicy),
 			clientInfo: {
 				name: 'vscode-agenthost',
 				title: 'VS Code AgentHost',
@@ -124,8 +130,13 @@ export class AcpProcess extends Disposable {
 
 	async cancel(sessionId: string): Promise<void> {
 		this.start();
+		this.permissionBridge.cancelPending(sessionId);
 		const params: AcpCancelSessionParams = { sessionId };
 		await this.connection.value!.notify(AcpMethod.SessionCancel, params);
+	}
+
+	respondToPermissionRequest(requestId: string, approved: boolean): boolean {
+		return this.permissionBridge.respond(requestId, approved);
 	}
 
 	kill(): void {
@@ -153,6 +164,7 @@ export class AcpProcess extends Disposable {
 			return;
 		}
 		this.disposed = true;
+		this.permissionBridge.cancelPending();
 		this.connection.clear();
 		if (this.child && !this.child.killed) {
 			try {
@@ -201,7 +213,17 @@ export class AcpProcess extends Disposable {
 			this.connection.value?.closeWithError(acpProcessExitedError(code, signal));
 		});
 
-		const connection = new AcpConnection(child.stdout, child.stdin);
+		const connection = new AcpConnection(child.stdout, child.stdin, async request => {
+			if (request.method === AcpMethod.SessionRequestPermission) {
+				return { result: await this.permissionBridge.requestPermission(request.params as AcpRequestPermissionParams) };
+			}
+			return {
+				error: {
+					code: AcpJsonRpcErrorCode.MethodNotFound,
+					message: `Unsupported ACP request: ${request.method}`,
+				},
+			};
+		});
 		this.connection.value = connection;
 		this._register(connection.onDidClose(err => {
 			if (err.acpCode === AcpErrorCode.MalformedJson) {

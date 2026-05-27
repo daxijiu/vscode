@@ -12,11 +12,11 @@ import { localize } from '../../../../nls.js';
 import { ExternalAcpAgentAuthMethodInfo, redactExternalAcpAgentStatusMessage } from '../../common/acpAgentConfig.js';
 import { AgentSignal, IAgentSessionMetadata, IAgentSessionProjectInfo } from '../../common/agentService.js';
 import { ActionType, SessionAction } from '../../common/state/sessionActions.js';
-import { MessageAttachment, ResponsePart, ResponsePartKind, Turn, TurnState, UsageInfo } from '../../common/state/protocol/state.js';
+import { MessageAttachment, ResponsePart, ResponsePartKind, ToolCallConfirmationReason, ToolCallStatus, ToolResultContentType, ToolCallResult, Turn, TurnState, UsageInfo } from '../../common/state/protocol/state.js';
 import { AcpErrorCode, isAcpError } from './acpErrors.js';
 import { AcpProcess } from './acpProcess.js';
 import { AcpAuthMethod, AcpMethod, AcpPromptResult, AcpSessionNotificationParams, AcpStopReason } from './acpProtocol.js';
-import { mapAcpSessionUpdate } from './acpSessionUpdateMapper.js';
+import { AcpMappedToolUpdate, mapAcpSessionUpdate } from './acpSessionUpdateMapper.js';
 
 export interface AcpAuthRecoveryContext {
 	readonly vendorLabel: string;
@@ -36,6 +36,10 @@ interface AcpInFlightTurn {
 	reasoningPartId: string | undefined;
 	usage: UsageInfo | undefined;
 	terminalEmitted: boolean;
+	startedToolCallIds: Set<string>;
+	readyToolCallIds: Set<string>;
+	toolCallIds: Map<string, string>;
+	nextToolCallId: number;
 }
 
 export class AcpAgentSession extends Disposable {
@@ -115,6 +119,10 @@ export class AcpAgentSession extends Disposable {
 		this._cancel(inFlight);
 	}
 
+	respondToPermissionRequest(requestId: string, approved: boolean): boolean {
+		return this._process.respondToPermissionRequest(requestId, approved);
+	}
+
 	getTurns(): readonly Turn[] {
 		return this._turns.map(turn => ({
 			...turn,
@@ -149,6 +157,10 @@ export class AcpAgentSession extends Disposable {
 			reasoningPartId: undefined,
 			usage: undefined,
 			terminalEmitted: false,
+			startedToolCallIds: new Set<string>(),
+			readyToolCallIds: new Set<string>(),
+			toolCallIds: new Map<string, string>(),
+			nextToolCallId: 1,
 		};
 	}
 
@@ -157,7 +169,7 @@ export class AcpAgentSession extends Disposable {
 		if (!inFlight || inFlight.terminalEmitted || params.sessionId !== this.acpSessionId) {
 			return;
 		}
-		const mapped = mapAcpSessionUpdate(params.update);
+		const mapped = mapAcpSessionUpdate(params.update, { mapToolCallId: toolCallId => this._mapToolCallId(inFlight, toolCallId) });
 		switch (mapped.kind) {
 			case 'text':
 				this._emitMarkdownDelta(inFlight, mapped.text);
@@ -176,6 +188,9 @@ export class AcpAgentSession extends Disposable {
 				if (mapped.updatedAt !== undefined && !Number.isNaN(mapped.updatedAt)) {
 					this._modifiedAt = mapped.updatedAt;
 				}
+				break;
+			case 'tool':
+				this._emitToolUpdate(inFlight, mapped.tool);
 				break;
 			case 'unsupported':
 				this._emitSystemNotification(inFlight, mapped.message);
@@ -316,11 +331,144 @@ export class AcpAgentSession extends Disposable {
 		});
 	}
 
+	private _emitToolUpdate(inFlight: AcpInFlightTurn, tool: AcpMappedToolUpdate): void {
+		if (this._isTerminal(inFlight)) {
+			return;
+		}
+		if (!inFlight.startedToolCallIds.has(tool.toolCallId)) {
+			this._emitToolStart(inFlight, tool);
+		}
+		if (tool.phase === 'update') {
+			this._emitToolReady(inFlight, tool);
+			if (tool.progress) {
+				this._emitToolDelta(inFlight, tool);
+			}
+			return;
+		}
+		if (tool.phase === 'complete' || tool.phase === 'fail') {
+			this._emitToolReady(inFlight, tool);
+			this._emitToolComplete(inFlight, tool, tool.phase === 'complete');
+		}
+	}
+
+	private _mapToolCallId(inFlight: AcpInFlightTurn, toolCallId: string): string {
+		const existing = inFlight.toolCallIds.get(toolCallId);
+		if (existing) {
+			return existing;
+		}
+		const mapped = `acp-tool-${inFlight.nextToolCallId++}`;
+		inFlight.toolCallIds.set(toolCallId, mapped);
+		return mapped;
+	}
+
+	private _emitToolStart(inFlight: AcpInFlightTurn, tool: AcpMappedToolUpdate): void {
+		inFlight.startedToolCallIds.add(tool.toolCallId);
+		const part = {
+			kind: ResponsePartKind.ToolCall,
+			toolCall: {
+				status: ToolCallStatus.Streaming,
+				toolCallId: tool.toolCallId,
+				toolName: tool.toolName,
+				displayName: tool.displayName,
+				invocationMessage: tool.invocationMessage,
+			},
+		} satisfies ResponsePart;
+		inFlight.responseParts.push(part);
+		this._emitAction({
+			type: ActionType.SessionToolCallStart,
+			turnId: inFlight.turnId,
+			toolCallId: tool.toolCallId,
+			toolName: tool.toolName,
+			displayName: tool.displayName,
+		});
+	}
+
+	private _emitToolReady(inFlight: AcpInFlightTurn, tool: AcpMappedToolUpdate): void {
+		if (inFlight.readyToolCallIds.has(tool.toolCallId)) {
+			return;
+		}
+		inFlight.readyToolCallIds.add(tool.toolCallId);
+		this._updateToolPartRunning(inFlight, tool);
+		this._emitAction({
+			type: ActionType.SessionToolCallReady,
+			turnId: inFlight.turnId,
+			toolCallId: tool.toolCallId,
+			invocationMessage: tool.invocationMessage,
+			toolInput: localize('acpAgent.toolInputRedacted', "ACP tool input is unsupported and redacted in Phase 6A."),
+			confirmed: ToolCallConfirmationReason.NotNeeded,
+		});
+	}
+
+	private _emitToolDelta(inFlight: AcpInFlightTurn, tool: AcpMappedToolUpdate): void {
+		this._emitAction({
+			type: ActionType.SessionToolCallDelta,
+			turnId: inFlight.turnId,
+			toolCallId: tool.toolCallId,
+			content: '',
+			invocationMessage: tool.progress,
+		});
+	}
+
+	private _emitToolComplete(inFlight: AcpInFlightTurn, tool: AcpMappedToolUpdate, success: boolean): void {
+		const result: ToolCallResult = {
+			success,
+			pastTenseMessage: success
+				? localize('acpAgent.toolResultCompleted', "ACP tool completed.")
+				: localize('acpAgent.toolResultFailed', "ACP tool failed or was rejected."),
+			content: [{
+				type: ToolResultContentType.Text,
+				text: success
+					? localize('acpAgent.toolResultRedactedComplete', "ACP tool output was redacted. Phase 6A does not execute tools or record file, terminal, or diff content.")
+					: localize('acpAgent.toolResultRedactedFailed', "ACP tool failure details were redacted. Phase 6A does not execute tools or record file, terminal, or diff content."),
+			}],
+			...(!success ? { error: { message: localize('acpAgent.toolResultError', "ACP tool failed or was rejected.") } } : {}),
+		};
+		this._updateToolPartCompleted(inFlight, tool, result);
+		this._emitAction({
+			type: ActionType.SessionToolCallComplete,
+			turnId: inFlight.turnId,
+			toolCallId: tool.toolCallId,
+			result,
+		});
+	}
+
 	private _emitTitleChanged(title: string): void {
 		this._emitAction({
 			type: ActionType.SessionTitleChanged,
 			title,
 		});
+	}
+
+	private _updateToolPartRunning(inFlight: AcpInFlightTurn, tool: AcpMappedToolUpdate): void {
+		const part = inFlight.responseParts.find(part => part.kind === ResponsePartKind.ToolCall && part.toolCall.toolCallId === tool.toolCallId);
+		if (part?.kind !== ResponsePartKind.ToolCall || part.toolCall.status === ToolCallStatus.Completed) {
+			return;
+		}
+		part.toolCall = {
+			...part.toolCall,
+			status: ToolCallStatus.Running,
+			invocationMessage: tool.invocationMessage,
+			toolInput: localize('acpAgent.toolInputRedacted', "ACP tool input is unsupported and redacted in Phase 6A."),
+			confirmed: ToolCallConfirmationReason.NotNeeded,
+		};
+	}
+
+	private _updateToolPartCompleted(inFlight: AcpInFlightTurn, tool: AcpMappedToolUpdate, result: ToolCallResult): void {
+		const part = inFlight.responseParts.find(part => part.kind === ResponsePartKind.ToolCall && part.toolCall.toolCallId === tool.toolCallId);
+		if (part?.kind !== ResponsePartKind.ToolCall) {
+			return;
+		}
+		part.toolCall = {
+			...part.toolCall,
+			status: ToolCallStatus.Completed,
+			invocationMessage: tool.invocationMessage,
+			toolInput: localize('acpAgent.toolInputRedacted', "ACP tool input is unsupported and redacted in Phase 6A."),
+			confirmed: ToolCallConfirmationReason.NotNeeded,
+			success: result.success,
+			pastTenseMessage: result.pastTenseMessage,
+			...(result.content !== undefined ? { content: result.content } : {}),
+			...(result.error !== undefined ? { error: result.error } : {}),
+		};
 	}
 
 	private _complete(inFlight: AcpInFlightTurn): void {

@@ -99,6 +99,34 @@ suite('acpConnection', () => {
 		});
 	});
 
+	test('handles whitelisted inbound JSON-RPC requests without resolving pending responses', async () => {
+		const { connection, input, output } = createConnection(async request => {
+			if (request.method === 'session/request_permission') {
+				return { result: { outcome: { outcome: 'selected', optionId: 'reject-once' } } };
+			}
+			return { error: { code: -32601, message: 'nope' } };
+		});
+		disposables.add(connection);
+
+		const request = connection.request<AcpInitializeParams, AcpInitializeResult>(AcpMethod.Initialize, initializeParams(), 1_000);
+		const outbound = JSON.parse(await readLine(output)) as { readonly id: number };
+		input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 'permission-1', method: 'session/request_permission', params: { sessionId: 's1' } })}\n`);
+		const permissionResponse = JSON.parse(await readLine(output));
+		input.write(`${JSON.stringify({ jsonrpc: '2.0', id: outbound.id, result: { protocolVersion: 1 } })}\n`);
+
+		assert.deepStrictEqual({
+			permissionResponse,
+			result: await request,
+		}, {
+			permissionResponse: {
+				jsonrpc: '2.0',
+				id: 'permission-1',
+				result: { outcome: { outcome: 'selected', optionId: 'reject-once' } },
+			},
+			result: { protocolVersion: 1 },
+		});
+	});
+
 	test('rejects request timeout without closing later requests', async () => {
 		const { connection } = createConnection();
 		disposables.add(connection);
@@ -116,11 +144,11 @@ suite('acpConnection', () => {
 		await assertAcpRejects(request, AcpErrorCode.ProcessExited);
 	});
 
-	function createConnection(): { readonly connection: AcpConnection; readonly input: PassThrough; readonly output: PassThrough } {
+	function createConnection(handler?: ConstructorParameters<typeof AcpConnection>[2]): { readonly connection: AcpConnection; readonly input: PassThrough; readonly output: PassThrough } {
 		const input = new PassThrough();
 		const output = new PassThrough();
 		return {
-			connection: new AcpConnection(input, output),
+			connection: new AcpConnection(input, output, handler),
 			input,
 			output,
 		};

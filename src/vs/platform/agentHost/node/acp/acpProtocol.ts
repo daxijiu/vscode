@@ -12,6 +12,7 @@ export const enum AcpMethod {
 	SessionPrompt = 'session/prompt',
 	SessionCancel = 'session/cancel',
 	SessionUpdate = 'session/update',
+	SessionRequestPermission = 'session/request_permission',
 }
 
 export type AcpJsonRpcId = number | string;
@@ -62,6 +63,11 @@ export interface AcpImplementation extends AcpJsonObject {
 }
 
 export interface AcpClientCapabilities extends AcpJsonObject {
+	readonly fs?: {
+		readonly readTextFile?: boolean;
+		readonly writeTextFile?: boolean;
+	};
+	readonly terminal?: boolean;
 }
 
 export interface AcpAgentCapabilities extends AcpJsonObject {
@@ -155,7 +161,32 @@ export interface AcpToolCallUpdate extends AcpJsonObject {
 	readonly sessionUpdate: 'tool_call' | 'tool_call_update';
 	readonly toolCallId?: string;
 	readonly title?: string;
+	readonly kind?: string;
 	readonly status?: string;
+	readonly content?: readonly AcpJsonValue[];
+	readonly rawInput?: AcpJsonObject;
+	readonly rawOutput?: AcpJsonObject;
+	readonly locations?: readonly AcpJsonValue[];
+}
+
+export interface AcpPermissionOption extends AcpJsonObject {
+	readonly optionId: string;
+	readonly name: string;
+	readonly kind: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always' | string;
+}
+
+export interface AcpRequestPermissionParams extends AcpJsonObject {
+	readonly sessionId: string;
+	readonly toolCall?: AcpToolCallUpdate;
+	readonly options?: readonly AcpPermissionOption[];
+}
+
+export type AcpRequestPermissionOutcome =
+	| { readonly outcome: 'selected'; readonly optionId: string }
+	| { readonly outcome: 'cancelled' };
+
+export interface AcpRequestPermissionResult extends AcpJsonObject {
+	readonly outcome: AcpRequestPermissionOutcome;
 }
 
 export interface AcpSessionInfoUpdate extends AcpJsonObject {

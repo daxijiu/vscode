@@ -6,6 +6,7 @@
 import { Readable, Writable } from 'stream';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { hasKey } from '../../../../base/common/types.js';
 import { acpErrorFromJsonRpcError, acpMalformedJsonError, acpProcessExitedError, acpTimeoutError, AcpError } from './acpErrors.js';
 import { AcpJsonObject, AcpJsonRpcError, AcpJsonRpcErrorCode, AcpJsonRpcId, AcpJsonRpcNotification, AcpJsonRpcRequest, AcpJsonRpcResponse, AcpJsonValue } from './acpProtocol.js';
 
@@ -15,6 +16,12 @@ interface PendingRequest {
 	readonly reject: (err: AcpError) => void;
 	readonly timeout: ReturnType<typeof setTimeout>;
 }
+
+export type AcpInboundRequestResult =
+	| { readonly result: AcpJsonValue }
+	| { readonly error: AcpJsonRpcError };
+
+export type AcpInboundRequestHandler = (request: AcpJsonRpcRequest) => Promise<AcpInboundRequestResult>;
 
 export class AcpConnection extends Disposable {
 	private readonly pending = new Map<AcpJsonRpcId, PendingRequest>();
@@ -30,6 +37,7 @@ export class AcpConnection extends Disposable {
 	constructor(
 		private readonly input: Readable,
 		private readonly output: Writable,
+		private readonly requestHandler?: AcpInboundRequestHandler,
 	) {
 		super();
 
@@ -148,7 +156,12 @@ export class AcpConnection extends Disposable {
 		}
 
 		if (isAcpJsonRpcRequest(message)) {
-			this.sendUnsupportedRequestResponse(message.id as AcpJsonRpcId, message.method as string);
+			void this.acceptRequest({
+				jsonrpc: '2.0',
+				id: message.id as AcpJsonRpcId,
+				method: message.method as string,
+				...(message.params !== undefined ? { params: message.params } : {}),
+			});
 			return;
 		}
 
@@ -178,14 +191,50 @@ export class AcpConnection extends Disposable {
 		pending.resolve(response.result ?? null);
 	}
 
+	private async acceptRequest(request: AcpJsonRpcRequest): Promise<void> {
+		if (!this.requestHandler) {
+			this.sendUnsupportedRequestResponse(request.id, request.method);
+			return;
+		}
+		try {
+			const result = await this.requestHandler(request);
+			if (hasKey(result, { error: true })) {
+				this.sendErrorResponse(request.id, result.error);
+				return;
+			}
+			this.sendResultResponse(request.id, result.result);
+		} catch (err) {
+			this.sendErrorResponse(request.id, {
+				code: AcpJsonRpcErrorCode.InternalError,
+				message: err instanceof Error && err.message ? err.message : 'ACP request failed.',
+			});
+		}
+	}
+
 	private sendUnsupportedRequestResponse(id: AcpJsonRpcId, method: string): void {
+		this.sendErrorResponse(id, {
+			code: AcpJsonRpcErrorCode.MethodNotFound,
+			message: `Unsupported ACP request: ${method}`,
+		});
+	}
+
+	private sendResultResponse(id: AcpJsonRpcId, result: AcpJsonValue): void {
 		this.output.write(`${JSON.stringify({
 			jsonrpc: '2.0',
 			id,
-			error: {
-				code: AcpJsonRpcErrorCode.MethodNotFound,
-				message: `Unsupported ACP request: ${method}`,
-			},
+			result,
+		})}\n`, err => {
+			if (err) {
+				this.close(acpProcessExitedError());
+			}
+		});
+	}
+
+	private sendErrorResponse(id: AcpJsonRpcId, error: AcpJsonRpcError): void {
+		this.output.write(`${JSON.stringify({
+			jsonrpc: '2.0',
+			id,
+			error,
 		})}\n`, err => {
 			if (err) {
 				this.close(acpProcessExitedError());

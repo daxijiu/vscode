@@ -132,7 +132,13 @@ suite('externalAcpAgentProviderService', () => {
 			envNames: ['CURSOR_TOKEN', 'HTTPS_PROXY'],
 			loginCommand: 'cursor-agent login',
 			loginHelpUrl: 'https://cursor.example/login',
-			capabilities: [ExternalAcpAgentCapability.Text, ExternalAcpAgentCapability.Reasoning],
+			capabilities: [
+				ExternalAcpAgentCapability.Text,
+				ExternalAcpAgentCapability.Reasoning,
+				ExternalAcpAgentCapability.Tools,
+				ExternalAcpAgentCapability.Files,
+				ExternalAcpAgentCapability.Terminal,
+			],
 			leaksRawEnvValue: false,
 		});
 	});
