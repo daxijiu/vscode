@@ -11,6 +11,13 @@ export const ExternalAcpAgentSnapshotVersion = 1;
 export const ExternalAcpAgentStorageDirName = 'external-acp-agents';
 export const ExternalAcpAgentRegistryFileName = 'manual-agents.json';
 export const ExternalAcpAgentSnapshotFileName = 'manual-agents-snapshot.json';
+export const ExternalAcpAgentsExecutionEnabledSetting = 'externalAcpAgents.execution.enabled';
+export const ExternalAcpAgentsExecutionEnabledEnvVar = 'VSCODE_EXTERNAL_ACP_AGENTS_EXECUTION_ENABLED';
+export const ExternalAcpAgentsRegistryBrowseEnabledSetting = 'externalAcpAgents.registryBrowse.enabled';
+export const ExternalAcpAgentsManagedInstallEnabledSetting = 'externalAcpAgents.managedInstall.enabled';
+export const ExternalAcpAgentsToolsEnabledSetting = 'externalAcpAgents.capabilities.tools.enabled';
+export const ExternalAcpAgentsFilesEnabledSetting = 'externalAcpAgents.capabilities.files.enabled';
+export const ExternalAcpAgentsTerminalEnabledSetting = 'externalAcpAgents.capabilities.terminal.enabled';
 
 export enum ExternalAcpAgentCwdPolicy {
 	None = 'none',
@@ -28,7 +35,7 @@ export enum ExternalAcpAgentCapability {
 }
 
 export type ExternalAcpAgentApplyState = 'clean' | 'pendingRestart' | 'snapshotWriteFailed' | 'invalidConfig';
-export type ExternalAcpAgentConnectionStatusKind = 'unknown' | 'authRequired' | 'loginHelpShown' | 'testSucceeded' | 'testFailed' | 'processNotFound' | 'missingRuntimeEnv' | 'timeout';
+export type ExternalAcpAgentConnectionStatusKind = 'unknown' | 'disabled' | 'authRequired' | 'loginHelpShown' | 'testSucceeded' | 'testFailed' | 'processNotFound' | 'missingRuntimeEnv' | 'timeout';
 export type ExternalAcpAgentConnectionStatusSource = 'cached' | 'userAction' | 'runtimeError' | 'testConnection';
 
 export interface ExternalAcpAgentAuthMethodInfo {
@@ -100,6 +107,13 @@ export interface ExternalAcpAgentSnapshot {
 export interface ExternalAcpAgentValidationResult {
 	readonly valid: boolean;
 	readonly message?: string;
+}
+
+export interface ExternalAcpAgentSnapshotPolicy {
+	readonly executionEnabled?: boolean;
+	readonly allowTools?: boolean;
+	readonly allowFiles?: boolean;
+	readonly allowTerminal?: boolean;
 }
 
 const AcpAgentIdMaxLength = 80;
@@ -248,7 +262,14 @@ export function createRegistryDraftExternalAcpAgentConfig(options: Omit<Paramete
 	});
 }
 
-export function toExternalAcpAgentSnapshot(agents: readonly ExternalAcpAgentConfig[], updatedAt = Date.now()): ExternalAcpAgentSnapshot {
+export function toExternalAcpAgentSnapshot(agents: readonly ExternalAcpAgentConfig[], updatedAt = Date.now(), policy: ExternalAcpAgentSnapshotPolicy = {}): ExternalAcpAgentSnapshot {
+	if (policy.executionEnabled === false) {
+		return {
+			version: ExternalAcpAgentSnapshotVersion,
+			updatedAt,
+			agents: [],
+		};
+	}
 	return {
 		version: ExternalAcpAgentSnapshotVersion,
 		updatedAt,
@@ -265,7 +286,7 @@ export function toExternalAcpAgentSnapshot(agents: readonly ExternalAcpAgentConf
 				...(agent.loginHint !== undefined ? { loginHint: agent.loginHint } : {}),
 				...(agent.loginCommand !== undefined ? { loginCommand: agent.loginCommand } : {}),
 				...(agent.loginHelpUrl !== undefined ? { loginHelpUrl: agent.loginHelpUrl } : {}),
-				capabilities: safeSnapshotCapabilities(agent.capabilities),
+				capabilities: safeSnapshotCapabilities(agent.capabilities, policy),
 				...(agent.envVariableNames !== undefined ? { envVariableNames: sanitizeEnvVariableNames(agent.envVariableNames) } : {}),
 				...(agent.secretRefs !== undefined ? { secretRefs: normalizeStringList(agent.secretRefs) } : {}),
 				...(agent.connectionStatus !== undefined ? { connectionStatus: normalizeConnectionStatus(agent.connectionStatus) } : {}),
@@ -320,8 +341,20 @@ export function normalizeCapabilities(capabilities: readonly ExternalAcpAgentCap
 	return Array.from(new Set(normalized.length ? normalized : [ExternalAcpAgentCapability.Text]));
 }
 
-function safeSnapshotCapabilities(capabilities: readonly ExternalAcpAgentCapability[]): readonly ExternalAcpAgentCapability[] {
-	return normalizeCapabilities(capabilities);
+function safeSnapshotCapabilities(capabilities: readonly ExternalAcpAgentCapability[], policy: ExternalAcpAgentSnapshotPolicy): readonly ExternalAcpAgentCapability[] {
+	const filtered = normalizeCapabilities(capabilities).filter(capability => {
+		switch (capability) {
+			case ExternalAcpAgentCapability.Tools:
+				return policy.allowTools !== false;
+			case ExternalAcpAgentCapability.Files:
+				return policy.allowFiles !== false;
+			case ExternalAcpAgentCapability.Terminal:
+				return policy.allowTerminal !== false;
+			default:
+				return true;
+		}
+	});
+	return filtered.length ? filtered : [ExternalAcpAgentCapability.Text];
 }
 
 function normalizeStringList(values: readonly string[]): readonly string[] {
@@ -354,6 +387,7 @@ function normalizeAuthMethods(methods: readonly ExternalAcpAgentAuthMethodInfo[]
 function normalizeConnectionStatusKind(kind: ExternalAcpAgentConnectionStatusKind): ExternalAcpAgentConnectionStatusKind {
 	switch (kind) {
 		case 'authRequired':
+		case 'disabled':
 		case 'loginHelpShown':
 		case 'testSucceeded':
 		case 'testFailed':

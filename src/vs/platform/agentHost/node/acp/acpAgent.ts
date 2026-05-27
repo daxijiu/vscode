@@ -10,7 +10,7 @@ import { basename } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
-import { ExternalAcpAgentCwdPolicy, ExternalAcpAgentSnapshotAgent, sanitizeExternalAcpAgentId } from '../../common/acpAgentConfig.js';
+import { ExternalAcpAgentSnapshotAgent, sanitizeExternalAcpAgentId } from '../../common/acpAgentConfig.js';
 import { AgentProvider, AgentSession, IAgent, IAgentCreateSessionConfig, IAgentCreateSessionResult, IAgentDescriptor, IAgentModelInfo, IAgentResolveSessionConfigParams, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata, IAgentSessionProjectInfo, AgentSignal } from '../../common/agentService.js';
 import { ISyncedCustomization } from '../../common/agentPluginManager.js';
 import { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
@@ -18,6 +18,7 @@ import { CustomizationRef, MessageAttachment, ModelSelection, PendingMessage, Pr
 import { AcpAgentSession, toAcpUserMessage } from './acpAgentSession.js';
 import { acpModelsToAgentModels, AcpNegotiatedCapabilities, EmptyAcpNegotiatedCapabilities, EmptyAcpSessionConfigSchema, resolveAcpSessionConfigValues } from './acpCapabilities.js';
 import { AcpProcess } from './acpProcess.js';
+import { resolveAcpLocalCwd } from './acpLocalCwd.js';
 
 const AcpAgentProviderPrefix = 'acp-';
 
@@ -29,6 +30,10 @@ export function toAcpAgentProviderId(agentId: string): AgentProvider {
 export function getAcpAgentSubscriptionDescription(agent: Pick<ExternalAcpAgentSnapshotAgent, 'displayName' | 'vendorLabel'>): string {
 	const owner = agent.vendorLabel?.trim() || agent.displayName.trim();
 	return localize('acpAgent.subscriptionDescription', "Uses your {0} subscription/account.", owner);
+}
+
+export interface AcpAgentOptions {
+	readonly executionEnabled?: boolean;
 }
 
 export class AcpAgent extends Disposable implements IAgent {
@@ -43,7 +48,7 @@ export class AcpAgent extends Disposable implements IAgent {
 	private _capabilities: AcpNegotiatedCapabilities = EmptyAcpNegotiatedCapabilities;
 	private readonly _sessions = new Map<string, { readonly session: AcpAgentSession; readonly store: DisposableStore }>();
 
-	constructor(private readonly agent: ExternalAcpAgentSnapshotAgent) {
+	constructor(private readonly agent: ExternalAcpAgentSnapshotAgent, private readonly options: AcpAgentOptions = {}) {
 		super();
 		this.id = toAcpAgentProviderId(agent.id);
 		this._models = observableValue<readonly IAgentModelInfo[]>(this, this._placeholderModels());
@@ -67,25 +72,28 @@ export class AcpAgent extends Disposable implements IAgent {
 	}
 
 	async createSession(config: IAgentCreateSessionConfig = {}): Promise<IAgentCreateSessionResult> {
+		if (this.options.executionEnabled === false) {
+			throw new Error(localize('acpAgent.executionDisabled', "External ACP agent execution is disabled by setting or policy."));
+		}
 		const sessionUri = config.session ?? AgentSession.uri(this.id, generateUuid());
 		const sessionKey = sessionUri.toString();
+		const localCwd = resolveAcpLocalCwd(this.agent, config.workingDirectory);
 
 		const process = new AcpProcess({
 			agent: this.agent,
-			workspaceCwd: config.workingDirectory?.fsPath,
+			workspaceCwd: localCwd.processCwd,
 		});
 		let store: DisposableStore | undefined;
 		try {
 			const initializeResult = await process.initialize();
-			const newSession = await process.newSession(process.sessionCwd());
+			const newSession = await process.newSession(localCwd.sessionCwd);
 			this._applyCapabilities(process.getCapabilities());
 			const createdAt = Date.now();
-			const workingDirectory = this._resolveWorkingDirectory(config.workingDirectory);
 			const session = new AcpAgentSession(
 				newSession.sessionId,
 				sessionUri,
 				createdAt,
-				workingDirectory,
+				localCwd.workingDirectory,
 				{
 					vendorLabel: this.agent.vendorLabel ?? this.agent.displayName,
 					...(this.agent.loginCommand ? { loginCommand: this.agent.loginCommand } : {}),
@@ -103,7 +111,7 @@ export class AcpAgent extends Disposable implements IAgent {
 			previousEntry?.store.dispose();
 			return {
 				session: sessionUri,
-				...(workingDirectory ? { workingDirectory, project: this._project(workingDirectory) } : {}),
+				...(localCwd.workingDirectory ? { workingDirectory: localCwd.workingDirectory, project: this._project(localCwd.workingDirectory) } : {}),
 			};
 		} catch (err) {
 			store?.dispose();
@@ -208,16 +216,6 @@ export class AcpAgent extends Disposable implements IAgent {
 	override dispose(): void {
 		void this.shutdown();
 		super.dispose();
-	}
-
-	private _resolveWorkingDirectory(requested: URI | undefined): URI | undefined {
-		if (requested) {
-			return requested;
-		}
-		if (this.agent.cwdPolicy === ExternalAcpAgentCwdPolicy.Fixed && this.agent.cwd) {
-			return URI.file(this.agent.cwd);
-		}
-		return undefined;
 	}
 
 	private _project(workingDirectory: URI): IAgentSessionProjectInfo {

@@ -8,8 +8,9 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { dirname } from '../../../../base/common/resources.js';
-import { ExternalAcpAgentConfig, ExternalAcpAgentConfigVersion, ExternalAcpAgentConnectionStatus, ExternalAcpAgentRegistry, ExternalAcpAgentSnapshot, createExternalAcpAgentConfig, createRegistryDraftExternalAcpAgentConfig, getExternalAcpAgentRegistryResourceFromGlobalStorageHome, getExternalAcpAgentSnapshotResourceFromGlobalStorageHome, normalizeConnectionStatus, normalizeExternalAcpAgentConfig, sanitizeExternalAcpAgentId, toExternalAcpAgentSnapshot, validateExternalAcpAgentConfig } from '../../../../platform/agentHost/common/acpAgentConfig.js';
+import { ExternalAcpAgentConfig, ExternalAcpAgentConfigVersion, ExternalAcpAgentConnectionStatus, ExternalAcpAgentRegistry, ExternalAcpAgentSnapshot, ExternalAcpAgentsExecutionEnabledSetting, ExternalAcpAgentsFilesEnabledSetting, ExternalAcpAgentsManagedInstallEnabledSetting, ExternalAcpAgentsRegistryBrowseEnabledSetting, ExternalAcpAgentsTerminalEnabledSetting, ExternalAcpAgentsToolsEnabledSetting, createExternalAcpAgentConfig, createRegistryDraftExternalAcpAgentConfig, getExternalAcpAgentRegistryResourceFromGlobalStorageHome, getExternalAcpAgentSnapshotResourceFromGlobalStorageHome, normalizeConnectionStatus, normalizeExternalAcpAgentConfig, sanitizeExternalAcpAgentId, toExternalAcpAgentSnapshot, validateExternalAcpAgentConfig } from '../../../../platform/agentHost/common/acpAgentConfig.js';
 import { AcpRegistryAgent, toAcpRegistryDraftOptions } from '../../../../platform/agentHost/common/acpRegistry.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -19,8 +20,7 @@ import { IUserDataProfileService } from '../../../services/userDataProfile/commo
 export const IExternalAcpAgentRegistryService = createDecorator<IExternalAcpAgentRegistryService>('externalAcpAgentRegistryService');
 export const IExternalAcpAgentSnapshotService = createDecorator<IExternalAcpAgentSnapshotService>('externalAcpAgentSnapshotService');
 export const IExternalAcpAgentConnectionTestService = createDecorator<IExternalAcpAgentConnectionTestService>('externalAcpAgentConnectionTestService');
-export const ExternalAcpAgentsRegistryBrowseEnabledSetting = 'externalAcpAgents.registryBrowse.enabled';
-export const ExternalAcpAgentsManagedInstallEnabledSetting = 'externalAcpAgents.managedInstall.enabled';
+export { ExternalAcpAgentsExecutionEnabledSetting, ExternalAcpAgentsFilesEnabledSetting, ExternalAcpAgentsManagedInstallEnabledSetting, ExternalAcpAgentsRegistryBrowseEnabledSetting, ExternalAcpAgentsTerminalEnabledSetting, ExternalAcpAgentsToolsEnabledSetting };
 
 export interface IExternalAcpAgentRegistryService {
 	readonly _serviceBrand: undefined;
@@ -266,6 +266,7 @@ export class ExternalAcpAgentSnapshotService extends Disposable implements IExte
 		@IFileService private readonly fileService: IFileService,
 		@IUserDataProfileService private readonly userDataProfileService: IUserDataProfileService,
 		@IUserDataProfilesService private readonly userDataProfilesService: IUserDataProfilesService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
@@ -282,7 +283,12 @@ export class ExternalAcpAgentSnapshotService extends Disposable implements IExte
 	}
 
 	private async doWriteSnapshot(): Promise<ExternalAcpAgentSnapshot> {
-		const snapshot = toExternalAcpAgentSnapshot(await this.registryService.listAgents());
+		const snapshot = toExternalAcpAgentSnapshot(await this.registryService.listAgents(), Date.now(), {
+			executionEnabled: this.configurationService.getValue<boolean>(ExternalAcpAgentsExecutionEnabledSetting) !== false,
+			allowTools: this.configurationService.getValue<boolean>(ExternalAcpAgentsToolsEnabledSetting) === true,
+			allowFiles: this.configurationService.getValue<boolean>(ExternalAcpAgentsFilesEnabledSetting) === true,
+			allowTerminal: this.configurationService.getValue<boolean>(ExternalAcpAgentsTerminalEnabledSetting) === true,
+		});
 		const resources = this.getSnapshotResources();
 		try {
 			const content = VSBuffer.fromString(JSON.stringify(snapshot, undefined, '\t'));

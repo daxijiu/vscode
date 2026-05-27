@@ -394,7 +394,7 @@ Director API key / OAuth / local / compatible Providers</code></pre>
 					</tr>
 					<tr>
 						<td>日志与诊断</td>
-						<td>提供 redacted stderr/protocol diagnostics，不默认暴露 prompt、文件内容或 secrets。</td>
+						<td>提供 allowlisted diagnostics，只记录 stderr 是否存在、字节数与行数；raw stderr、prompt、文件内容和 secrets 默认不落盘。</td>
 						<td>中到高</td>
 					</tr>
 				</tbody>

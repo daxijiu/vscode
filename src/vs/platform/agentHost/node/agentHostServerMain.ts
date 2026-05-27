@@ -70,7 +70,7 @@ import { AgentHostCheckpointService } from './agentHostCheckpointService.js';
 import { IAgentHostCheckpointService } from '../common/agentHostCheckpointService.js';
 import { createAgentHostTelemetryService } from './agentHostTelemetryService.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
-import { getExternalAcpAgentSnapshotResourceFromAppSettingsHome } from '../common/acpAgentConfig.js';
+import { ExternalAcpAgentsExecutionEnabledEnvVar, getExternalAcpAgentSnapshotResourceFromAppSettingsHome } from '../common/acpAgentConfig.js';
 import { registerAcpAgentsFromSnapshot } from './acp/acpAgentProviderRegistration.js';
 
 /** Log to stderr so messages appear in the terminal alongside the process. */
@@ -264,15 +264,19 @@ async function main(): Promise<void> {
 			agentService.registerProvider(directorAgent);
 			log('DirectorAgent registered');
 		}
-		const registeredAcpAgents = await registerAcpAgentsFromSnapshot({
-			agentService,
-			snapshotResource: getExternalAcpAgentSnapshotResourceFromAppSettingsHome(environmentService.appSettingsHome),
-			fileService,
-			logService,
-			disposables,
-		});
-		if (registeredAcpAgents > 0) {
-			log(`External ACP agents registered: ${registeredAcpAgents}`);
+		if (process.env[ExternalAcpAgentsExecutionEnabledEnvVar] !== '0') {
+			const registeredAcpAgents = await registerAcpAgentsFromSnapshot({
+				agentService,
+				snapshotResource: getExternalAcpAgentSnapshotResourceFromAppSettingsHome(environmentService.appSettingsHome),
+				fileService,
+				logService,
+				disposables,
+			});
+			if (registeredAcpAgents > 0) {
+				log(`External ACP agents registered: ${registeredAcpAgents}`);
+			}
+		} else {
+			logService.info('[ACP AgentHost] External ACP agent execution is disabled by setting or policy; skipping snapshot registration');
 		}
 	}
 

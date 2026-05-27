@@ -100,6 +100,7 @@ function handleLine(line) {
 			case 'permission-request-denied':
 			case 'permission-pending-cancel':
 			case 'capabilities-echo':
+			case 'crash-during-prompt':
 			case 'models-list':
 			case 'config-modes':
 			case 'meta-capability-boundary':
@@ -330,6 +331,10 @@ function handlePrompt(request) {
 			pendingPromptId = request.id;
 			pendingPermissionRequestId = `permission-${request.id}`;
 			writePermissionRequest(pendingPermissionRequestId, sessionId);
+			break;
+		case 'crash-during-prompt':
+			process.stderr.write('fatal crash token=abc123\n');
+			process.exit(5);
 			break;
 		default:
 			writeResponse(request.id, { stopReason: 'end_turn' });

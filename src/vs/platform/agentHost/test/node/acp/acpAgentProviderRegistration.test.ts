@@ -78,6 +78,28 @@ suite('registerAcpAgentsFromSnapshot', () => {
 		assert.deepStrictEqual(service.providers.map(provider => provider.id), ['acp-codebuddy']);
 	});
 
+	test('execution disabled gate prevents snapshot registration', async () => {
+		await writeJson(resource, {
+			version: ExternalAcpAgentSnapshotVersion,
+			updatedAt: 123,
+			agents: [
+				createSnapshotAgent({ id: 'cursor', displayName: 'Cursor Agent' }),
+			],
+		});
+		const service = new CapturingAgentService();
+
+		assert.strictEqual(await registerAcpAgentsFromSnapshot({
+			agentService: service,
+			snapshotResource: resource,
+			fileService,
+			logService: new NullLogService(),
+			disposables: disposables.add(new DisposableStore()),
+			executionEnabled: false,
+		}), 0);
+		assert.deepStrictEqual(service.providers, []);
+	});
+
+
 	test('registers valid snapshot agents when malformed entries are present', async () => {
 		await writeJson(resource, {
 			version: ExternalAcpAgentSnapshotVersion,

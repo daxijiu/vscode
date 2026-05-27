@@ -17,9 +17,14 @@ export interface RegisterAcpAgentsFromSnapshotOptions {
 	readonly fileService: IFileService;
 	readonly logService: ILogService;
 	readonly disposables?: DisposableStore;
+	readonly executionEnabled?: boolean;
 }
 
 export async function registerAcpAgentsFromSnapshot(options: RegisterAcpAgentsFromSnapshotOptions): Promise<number> {
+	if (options.executionEnabled === false) {
+		options.logService.info('[ACP AgentHost] External ACP agent execution is disabled by setting or policy; skipping snapshot registration');
+		return 0;
+	}
 	const loader = new AcpAgentSnapshotLoader(options.fileService, options.logService);
 	const snapshotAgents = await loader.load(options.snapshotResource);
 	const registeredProviderIds = new Set<string>();

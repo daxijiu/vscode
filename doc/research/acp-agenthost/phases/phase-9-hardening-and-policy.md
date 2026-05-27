@@ -1,6 +1,6 @@
 # Phase 9 - Hardening And Policy
 
-Updated: 2026-05-27
+Updated: 2026-05-28
 
 ## Goal
 
@@ -60,11 +60,11 @@ Until the product is ready for external release, ACP AgentHost support is an int
    - reconnect/restart;
    - user-visible failure.
 4. Add diagnostics with an explicit allowlist/redaction schema:
-   - default event type/status/duration only;
-   - redacted stderr;
-   - redacted protocol event summary;
-   - no raw prompts, tool args, file contents, terminal output, env values, tokens, or secrets by default;
-   - opt-in detailed local capture only with retention/export boundaries;
+	- default event type/status/duration only;
+	- stderr availability, byte count, and line count only;
+	- redacted protocol event summary;
+	- no raw prompts, tool args, file contents, terminal output, env values, tokens, or secrets by default;
+	- opt-in detailed local capture only with retention/export boundaries;
    - no telemetry upload for ACP runtime/process events during internal development/testing.
 5. Verify enterprise policy gates added by earlier phases.
 6. Add policy matrix tests:
@@ -156,3 +156,22 @@ Manual validation:
 - SSH/remote server, WSL, dev containers, Codespaces, and other remote targets are not first-release blockers.
 - During internal development/testing, external ACP AgentHost support is enabled by default rather than hidden behind an experiment gate.
 - ACP telemetry is off; do not upload ACP process/runtime failure events.
+
+## Implementation Status
+
+- 2026-05-28: Phase 9 implemented the first hardening/release-gate slice.
+- Windows command resolution now has an ACP-owned resolver for absolute/relative commands, PATH/PATHEXT lookup, direct `.exe` spawn, explicit `.cmd`/`.bat` `cmd.exe /d /s /c` shim behavior, missing-command errors, and redacted command summaries.
+- Local CWD handling is centralized: Phase 9 supports local file workspaces, fixed local CWD, or no CWD; remote/virtual workspaces fail with a clear message instead of being passed as ACP cwd.
+- Diagnostics now use an allowlisted process diagnostic shape: event type, status, duration, exit code, signal, fixed stderr-available message, stderr byte/line counts, and command summary only. Raw stderr text is deferred to a future opt-in local capture mode with explicit retention/export boundaries.
+- `externalAcpAgents.execution.enabled` gates snapshot registration, Test Connection, direct session creation, and runtime spawn. Registry browse remains browse-only, managed install remains disabled, and tools/files/terminal capability settings default false.
+- Crash during an active prompt is covered by a fake fixture test: the active turn receives a single redacted terminal error and the child process exits cleanly.
+- Release checklist, troubleshooting, local/remote matrix, and diagnostics schema are recorded in [ACP AgentHost Release Gate](../acp-agenthost-release-gate.md).
+
+## Deferred After Phase 9
+
+- Enterprise policy metadata beyond settings-level gates.
+- Vendor-side delete/archive.
+- Managed install, package manager execution, downloads, or extraction.
+- Real filesystem, terminal, or tool execution.
+- Remote AgentHost/runtime placement for SSH, WSL, dev containers, Codespaces, or remote server.
+- Director Provider Backend, Copilot CAPI, or credential bridge integration.

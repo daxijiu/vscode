@@ -16,7 +16,7 @@ import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/edit
 import { IWorkbenchContribution, WorkbenchPhase, registerWorkbenchContribution2 } from '../../../common/contributions.js';
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../common/editor.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
-import { ExternalAcpAgentRegistryService, ExternalAcpAgentSnapshotService, ExternalAcpAgentsManagedInstallEnabledSetting, ExternalAcpAgentsRegistryBrowseEnabledSetting, IExternalAcpAgentConnectionTestService, IExternalAcpAgentRegistryService, IExternalAcpAgentSnapshotService, UnavailableExternalAcpAgentConnectionTestService } from '../common/externalAcpAgentProviderService.js';
+import { ExternalAcpAgentRegistryService, ExternalAcpAgentSnapshotService, ExternalAcpAgentsExecutionEnabledSetting, ExternalAcpAgentsFilesEnabledSetting, ExternalAcpAgentsManagedInstallEnabledSetting, ExternalAcpAgentsRegistryBrowseEnabledSetting, ExternalAcpAgentsTerminalEnabledSetting, ExternalAcpAgentsToolsEnabledSetting, IExternalAcpAgentConnectionTestService, IExternalAcpAgentRegistryService, IExternalAcpAgentSnapshotService, UnavailableExternalAcpAgentConnectionTestService } from '../common/externalAcpAgentProviderService.js';
 import { ExternalAcpAgentsEditor } from './externalAcpAgents/externalAcpAgentsEditor.js';
 import { ExternalAcpAgentsEditorInput, ExternalAcpAgentsEditorInputSerializer } from './externalAcpAgents/externalAcpAgentsEditorInput.js';
 
@@ -43,6 +43,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	title: localize('externalAcpAgents.configurationTitle', "External ACP Agents"),
 	type: 'object',
 	properties: {
+		[ExternalAcpAgentsExecutionEnabledSetting]: {
+			type: 'boolean',
+			default: true,
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('externalAcpAgents.execution.enabled', "Controls whether enabled and trusted External ACP Agents may be written to the AgentHost snapshot, registered, tested, or launched. Disable this to prevent all external ACP process execution."),
+		},
 		[ExternalAcpAgentsRegistryBrowseEnabledSetting]: {
 			type: 'boolean',
 			default: true,
@@ -54,6 +60,24 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
 			markdownDescription: localize('externalAcpAgents.managedInstall.enabled', "Controls whether managed install UI for registry ACP agents may be enabled. Phase 7A keeps managed install unavailable even when this setting is changed."),
+		},
+		[ExternalAcpAgentsToolsEnabledSetting]: {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('externalAcpAgents.capabilities.tools.enabled', "Controls whether ACP tool-call capabilities may be advertised to external ACP runtimes. The default is disabled; Phase 6A still does not execute ACP tools."),
+		},
+		[ExternalAcpAgentsFilesEnabledSetting]: {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('externalAcpAgents.capabilities.files.enabled', "Controls whether ACP file capabilities may be advertised to external ACP runtimes. The default is disabled and real file access remains deferred."),
+		},
+		[ExternalAcpAgentsTerminalEnabledSetting]: {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('externalAcpAgents.capabilities.terminal.enabled', "Controls whether ACP terminal capabilities may be advertised to external ACP runtimes. The default is disabled and terminal execution remains deferred."),
 		},
 	}
 });

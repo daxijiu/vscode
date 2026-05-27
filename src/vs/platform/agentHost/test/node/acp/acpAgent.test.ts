@@ -87,6 +87,18 @@ suite('AcpAgent', () => {
 		}
 	});
 
+	test('execution disabled gate prevents createSession from spawning', async () => {
+		const agent = disposables.add(new AcpAgent(createSnapshotAgent({ command: 'definitely-not-a-real-acp-command' }), { executionEnabled: false }));
+
+		await assert.rejects(agent.createSession({ workingDirectory: URI.file(process.cwd()) }), /External ACP agent execution is disabled/);
+	});
+
+	test('workspace cwd policy rejects non-local workspace URIs before spawning', async () => {
+		const agent = disposables.add(new AcpAgent(createSnapshotAgent({ command: 'definitely-not-a-real-acp-command' })));
+
+		await assert.rejects(agent.createSession({ workingDirectory: URI.parse('vscode-remote://ssh-remote+host/workspace') }), /only local file workspaces/);
+	});
+
 	test('keeps placeholder model when initialize returns no model list', async () => {
 		const agent = disposables.add(new AcpAgent(fakeAgent('text-stream')));
 
@@ -503,6 +515,36 @@ suite('AcpAgent', () => {
 			state: TurnState.Error,
 			error: 'ACP request failed.',
 		}]);
+	});
+
+	test('crash during prompt emits one redacted terminal error and cleans up child', async () => {
+		const agent = disposables.add(new AcpAgent(fakeAgent('crash-during-prompt')));
+		const terminalActions: string[] = [];
+		disposables.add(agent.onDidSessionProgress(signal => {
+			if (signal.kind === 'action' && (signal.action.type === ActionType.SessionTurnCancelled || signal.action.type === ActionType.SessionTurnComplete || signal.action.type === ActionType.SessionError)) {
+				terminalActions.push(signal.action.type);
+			}
+		}));
+		const created = await agent.createSession({ workingDirectory: URI.file(process.cwd()) });
+
+		await agent.sendMessage(created.session, 'Crash safely', undefined, 'turn-1');
+		await wait(20);
+
+		assert.deepStrictEqual({
+			terminalActions,
+			turns: (await agent.getSessionMessages(created.session)).map(turn => ({
+				state: turn.state,
+				error: turn.error?.message,
+				leaksSecret: JSON.stringify(turn).includes('abc123'),
+			})),
+		}, {
+			terminalActions: [ActionType.SessionError],
+			turns: [{
+				state: TurnState.Error,
+				error: 'ACP runtime process exited.',
+				leaksSecret: false,
+			}],
+		});
 	});
 
 	test('cancels active turn once and absorbs late updates', async () => {

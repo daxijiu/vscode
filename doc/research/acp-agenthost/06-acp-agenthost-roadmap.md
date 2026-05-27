@@ -21,7 +21,7 @@ This roadmap deliberately does not include generic switching from third-party AC
 | 6 | [Tools, Permissions, Files, Terminal](./phases/phase-6-tools-permissions-files-terminal.md) | ACP side effects are mediated by native AgentHost permission/tool/file/terminal UI. | High | Phase 5 |
 | 7 | [Registry Browse And Managed Enablement](./phases/phase-7-registry-browse-and-managed-enablement.md) | Users can browse registry agents and create disabled drafts; managed install remains deferred design. | High/security | Phase 7A can run after Phase 3; Phase 7B deferred |
 | 8 | [Models, Modes, Config, Restore](./phases/phase-8-models-modes-config-restore.md) | Optional ACP capabilities are surfaced when supported; restore is staged behind feasibility and identity checks. | High | Phase 8A after Phase 5; restore/reconnect parts after Phase 6 |
-| 9 | [Hardening And Policy](./phases/phase-9-hardening-and-policy.md) | Enterprise policy, redacted diagnostics, remote/Windows behavior, and release criteria are complete. | High | All prior phases |
+| 9 | [Hardening And Policy](./phases/phase-9-hardening-and-policy.md) | Settings-level policy gates, redacted diagnostics, remote/Windows behavior, and release criteria are complete. | High | All prior phases |
 
 ## Phase 0 - Boundary And UX Contract
 
@@ -381,6 +381,8 @@ Implementation status:
 
 - 2026-05-28: Phase 8A implemented optional capability display and restore feasibility audit plumbing. ACP `initialize` capability metadata is now conservatively normalized for explicit model lists, modes/session config schema, static config completions, and restore/list/load indicators. AgentHost keeps the placeholder `external-acp-runtime` model until a successful explicit `createSession` returns a trustworthy model list; unsupported model changes, vendor restore/list/load, visible restore UI, and vendor-side delete/archive remain deferred.
 - Restore feasibility after 8A: the host can remember advertised restore/list/load indicators for audit purposes, but `listSessions()` remains local in-memory only, no ACP restore method is called, no transcript identity mapping is trusted yet, and no visible restore/list/load/resume UI is exposed.
+- 2026-05-28: Phase 9 completed the hardening/release-gate slice: ACP-owned Windows command resolution, local-only CWD guard, allowlisted redacted diagnostics, execution/capability settings-level gates, crash-mid-turn behavior, and the release checklist/local-remote matrix in [ACP AgentHost Release Gate](./acp-agenthost-release-gate.md). Phase 0 through Phase 9 are now complete for the first local desktop release target.
+- Phase 10+ remains deferred: enterprise policy metadata, managed install, real files/terminal/tools execution, vendor-side delete/archive, remote placement, and any Director Provider Backend/Copilot CAPI/credential-bridge integration are outside this release gate.
 
 Difficulty: high.
 

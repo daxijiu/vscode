@@ -19,6 +19,7 @@ import { getResolvedShellEnv } from '../../shell/node/shellEnv.js';
 import { NullTelemetryService } from '../../telemetry/common/telemetryUtils.js';
 import { UtilityProcess } from '../../utilityProcess/electron-main/utilityProcess.js';
 import { IAgentHostConnection, IAgentHostStarter } from '../common/agent.js';
+import { ExternalAcpAgentsExecutionEnabledEnvVar, ExternalAcpAgentsExecutionEnabledSetting } from '../common/acpAgentConfig.js';
 import { AgentHostClaudeAgentSdkPathSettingId, AgentHostClaudeSdkPathEnvVar, AgentHostDirectorAgentEnabledSettingId, AgentHostEnableDirectorAgentEnvVar, AgentHostOTelCaptureContentSettingId, AgentHostOTelDbSpanExporterEnabledSettingId, AgentHostOTelEnabledSettingId, AgentHostOTelExporterTypeSettingId, AgentHostOTelOtlpEndpointSettingId, AgentHostOTelOutfileSettingId, buildAgentHostOTelEnv } from '../common/agentService.js';
 import { deepClone } from '../../../base/common/objects.js';
 
@@ -74,6 +75,7 @@ export class ElectronAgentHostStarter extends Disposable implements IAgentHostSt
 			|| '';
 		const directorAgentEnabled = this._configurationService.getValue<boolean>(AgentHostDirectorAgentEnabledSettingId)
 			|| !!process.env[AgentHostEnableDirectorAgentEnvVar];
+		const externalAcpAgentsExecutionEnabled = this._configurationService.getValue<boolean>(ExternalAcpAgentsExecutionEnabledSetting) !== false;
 
 		// Translate `chat.agentHost.otel.*` settings into the env vars consumed by
 		// the agent host process. Any value already present on `process.env` wins
@@ -109,6 +111,7 @@ export class ElectronAgentHostStarter extends Disposable implements IAgentHostSt
 				VSCODE_VERBOSE_LOGGING: 'true',
 				...(claudeSdkPath ? { [AgentHostClaudeSdkPathEnvVar]: claudeSdkPath } : {}),
 				...(directorAgentEnabled ? { [AgentHostEnableDirectorAgentEnvVar]: '1' } : {}),
+				...(externalAcpAgentsExecutionEnabled ? {} : { [ExternalAcpAgentsExecutionEnabledEnvVar]: '0' }),
 				...otelEnv,
 			}
 		});

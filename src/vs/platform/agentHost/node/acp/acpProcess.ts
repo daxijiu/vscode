@@ -9,8 +9,10 @@ import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle
 import { ExternalAcpAgentSnapshotAgent } from '../../common/acpAgentConfig.js';
 import { AcpNegotiatedCapabilities, EmptyAcpNegotiatedCapabilities, normalizeAcpCapabilities } from './acpCapabilities.js';
 import { buildAcpClientCapabilities, AcpClientCapabilityPolicy } from './acpClientCapabilities.js';
+import { resolveAcpCommand, AcpRedactedCommandSummary, summarizeUnresolvedAcpCommand } from './acpCommandResolver.js';
 import { AcpConnection } from './acpConnection.js';
-import { acpProcessExitedError, acpProcessNotFoundError, acpUnsupportedProtocolVersionError, isAcpError, redactAcpDiagnostic, AcpError, AcpErrorCode } from './acpErrors.js';
+import { AcpAllowedDiagnostic, createAcpProcessDiagnostic, redactAcpDiagnostic } from './acpDiagnostics.js';
+import { acpProcessExitedError, acpProcessNotFoundError, acpUnsupportedProtocolVersionError, isAcpError, AcpError, AcpErrorCode } from './acpErrors.js';
 import { AcpPermissionBridge } from './acpPermissionBridge.js';
 import { resolveAcpRuntimeEnvironment } from './acpRuntimeEnvironment.js';
 import { AcpAuthenticateParams, AcpAuthenticateResult, AcpAuthMethod, AcpCancelSessionParams, AcpInitializeParams, AcpInitializeResult, AcpJsonRpcErrorCode, AcpJsonRpcNotification, AcpMethod, AcpNewSessionParams, AcpNewSessionResult, AcpPromptParams, AcpPromptResult, AcpProtocolVersion, AcpRequestPermissionParams } from './acpProtocol.js';
@@ -25,16 +27,6 @@ export interface AcpProcessOptions {
 	readonly promptTimeoutMs?: number;
 	readonly capabilityPolicy?: AcpClientCapabilityPolicy;
 	readonly permissionBridge?: AcpPermissionBridge;
-}
-
-export interface AcpProcessDiagnostic {
-	readonly command: string;
-	readonly cwd?: string;
-	readonly pid?: number;
-	readonly exitCode?: number | null;
-	readonly signal?: string | null;
-	readonly stderr: string;
-	readonly running: boolean;
 }
 
 const MaxStderrLength = 8192;
@@ -52,6 +44,9 @@ export class AcpProcess extends Disposable {
 	private authMethods: readonly AcpAuthMethod[] = [];
 	private capabilities: AcpNegotiatedCapabilities = EmptyAcpNegotiatedCapabilities;
 	private readonly permissionBridge: AcpPermissionBridge;
+	private commandSummary: AcpRedactedCommandSummary;
+	private startedAt: number | undefined;
+	private endedAt: number | undefined;
 	private exitCode: number | null | undefined;
 	private signal: string | null | undefined;
 	private disposed = false;
@@ -59,6 +54,7 @@ export class AcpProcess extends Disposable {
 	constructor(private readonly options: AcpProcessOptions) {
 		super();
 		this.permissionBridge = this._register(options.permissionBridge ?? new AcpPermissionBridge());
+		this.commandSummary = summarizeUnresolvedAcpCommand(options.agent.command, options.agent.args.length);
 	}
 
 	async initialize(): Promise<AcpInitializeResult> {
@@ -150,20 +146,20 @@ export class AcpProcess extends Disposable {
 		this.dispose();
 	}
 
-	diagnostic(): AcpProcessDiagnostic {
-		return {
-			command: this.options.agent.command,
-			...(this.cwd !== undefined ? { cwd: this.cwd } : {}),
-			...(this.child?.pid !== undefined ? { pid: this.child.pid } : {}),
+	diagnostic(): AcpAllowedDiagnostic {
+		return createAcpProcessDiagnostic({
+			startTime: this.startedAt,
+			endTime: this.endedAt,
+			running: this.child !== undefined && !this.child.killed && this.exitCode === undefined,
 			exitCode: this.exitCode,
 			signal: this.signal,
 			stderr: this.stderr,
-			running: this.child !== undefined && !this.child.killed && this.exitCode === undefined,
-		};
+			command: this.commandSummary,
+		});
 	}
 
 	sessionCwd(): string {
-		return this.cwd ?? this.options.workspaceCwd ?? process.cwd();
+		return this.cwd ?? '';
 	}
 
 	override dispose(): void {
@@ -174,6 +170,7 @@ export class AcpProcess extends Disposable {
 		this.permissionBridge.cancelPending();
 		this.connection.clear();
 		if (this.child && !this.child.killed) {
+			this.endedAt = Date.now();
 			try {
 				this.child.kill();
 			} catch {
@@ -194,29 +191,38 @@ export class AcpProcess extends Disposable {
 		this.cwd = runtimeEnvironment.cwd;
 		this.redactionValues = runtimeEnvironment.redactionValues;
 
+		const resolvedCommand = resolveAcpCommand(this.options.agent.command, this.options.agent.args, {
+			cwd: runtimeEnvironment.cwd,
+			env: runtimeEnvironment.env,
+		});
+		this.commandSummary = resolvedCommand.summary;
 		let child: cp.ChildProcessWithoutNullStreams;
 		try {
-			child = cp.spawn(this.options.agent.command, [...this.options.agent.args], {
+			child = cp.spawn(resolvedCommand.command, [...resolvedCommand.args], {
 				cwd: runtimeEnvironment.cwd,
 				env: runtimeEnvironment.env,
 				shell: false,
 				stdio: 'pipe',
+				windowsVerbatimArguments: resolvedCommand.windowsVerbatimArguments,
 			});
 		} catch (err) {
 			throw this.toSpawnError(err);
 		}
 
 		this.child = child;
+		this.startedAt = Date.now();
 		child.stderr.setEncoding('utf8');
 		child.stderr.on('data', chunk => this.appendStderr(String(chunk)));
 		child.on('error', err => {
 			this.exitCode = null;
 			this.signal = null;
+			this.endedAt = Date.now();
 			this.connection.value?.closeWithError(this.toSpawnError(err));
 		});
 		child.on('close', (code, signal) => {
 			this.exitCode = code;
 			this.signal = signal;
+			this.endedAt = Date.now();
 			this.connection.value?.closeWithError(acpProcessExitedError(code, signal));
 		});
 

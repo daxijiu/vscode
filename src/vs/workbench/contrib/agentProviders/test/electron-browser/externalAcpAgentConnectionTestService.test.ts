@@ -8,12 +8,14 @@ import { Event } from '../../../../../base/common/event.js';
 import { FileAccess, Schemas } from '../../../../../base/common/network.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { createExternalAcpAgentConfig, ExternalAcpAgentCwdPolicy } from '../../../../../platform/agentHost/common/acpAgentConfig.js';
+import { createExternalAcpAgentConfig, ExternalAcpAgentCwdPolicy, ExternalAcpAgentsExecutionEnabledSetting } from '../../../../../platform/agentHost/common/acpAgentConfig.js';
+import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { toUserDataProfile } from '../../../../../platform/userDataProfile/common/userDataProfile.js';
+import { toWorkspaceFolder, Workspace } from '../../../../../platform/workspace/common/workspace.js';
 import { IUserDataProfileService } from '../../../../services/userDataProfile/common/userDataProfile.js';
 import { TestContextService } from '../../../../test/common/workbenchTestServices.js';
 import { ExternalAcpAgentRegistryService } from '../../common/externalAcpAgentProviderService.js';
@@ -26,6 +28,8 @@ suite('ExternalAcpAgentConnectionTestService', () => {
 	let userDataProfileService: IUserDataProfileService;
 	let registryService: ExternalAcpAgentRegistryService;
 	let testService: ExternalAcpAgentConnectionTestService;
+	let configurationService: TestConfigurationService;
+	let contextService: TestContextService;
 
 	setup(() => {
 		const logService = new NullLogService();
@@ -39,7 +43,24 @@ suite('ExternalAcpAgentConnectionTestService', () => {
 			updateCurrentProfile: async () => { },
 		};
 		registryService = disposables.add(new ExternalAcpAgentRegistryService(fileService, userDataProfileService, logService));
-		testService = disposables.add(new ExternalAcpAgentConnectionTestService(registryService, new TestContextService()));
+		configurationService = new TestConfigurationService();
+		contextService = new TestContextService();
+		testService = disposables.add(new ExternalAcpAgentConnectionTestService(registryService, contextService, configurationService));
+	});
+
+	test('execution policy disables explicit test connection without spawning', async () => {
+		await registryService.saveAgent(createAgent('disabled-policy', process.execPath, true, true));
+		await configurationService.setUserConfiguration(ExternalAcpAgentsExecutionEnabledSetting, false);
+
+		const status = await testService.testConnection('disabled-policy');
+
+		assert.deepStrictEqual({
+			status: status.kind,
+			cached: (await registryService.getAgent('disabled-policy'))?.connectionStatus?.kind,
+		}, {
+			status: 'disabled',
+			cached: 'disabled',
+		});
 	});
 
 	test('does not launch disabled or untrusted agents during explicit test', async () => {
@@ -112,13 +133,39 @@ suite('ExternalAcpAgentConnectionTestService', () => {
 		assert.strictEqual(status.kind, 'timeout');
 	});
 
-	function createAgent(mode: string, command: string, enabled: boolean, trusted: boolean) {
+	test('explicit Test Connection rejects remote workspace cwd before spawning', async () => {
+		contextService.setWorkspace(new Workspace('remote', [toWorkspaceFolder(URI.parse('vscode-remote://ssh-remote+host/workspace'))], false, null, () => true));
+		await registryService.saveAgent(createAgent('remote-workspace', 'definitely-not-a-real-acp-command-for-vscode-tests', true, true, ExternalAcpAgentCwdPolicy.Workspace));
+
+		const status = await testService.testConnection('remote-workspace');
+
+		assert.deepStrictEqual({
+			status: status.kind,
+			message: status.message,
+			cached: (await registryService.getAgent('remote-workspace'))?.connectionStatus?.kind,
+		}, {
+			status: 'disabled',
+			message: 'External ACP agents currently support only local file workspaces. Remote, WSL, container, and virtual workspaces are deferred for a later ACP release.',
+			cached: 'disabled',
+		});
+	});
+
+	test('explicit Test Connection uses local workspace cwd resolver for workspace policy', async () => {
+		contextService.setWorkspace(new Workspace('local', [toWorkspaceFolder(URI.file(process.cwd()))], false, null, () => true));
+		await registryService.saveAgent(createAgent('authenticate-success', process.execPath, true, true, ExternalAcpAgentCwdPolicy.Workspace));
+
+		const status = await testService.testConnection('authenticate-success');
+
+		assert.strictEqual(status.kind, 'testSucceeded');
+	});
+
+	function createAgent(mode: string, command: string, enabled: boolean, trusted: boolean, cwdPolicy = ExternalAcpAgentCwdPolicy.None) {
 		return createExternalAcpAgentConfig({
 			id: mode,
 			displayName: `Fake ${mode}`,
 			command,
 			args: command === process.execPath ? [FileAccess.asFileUri('vs/platform/agentHost/test/node/acp/fixtures/fakeAcpAgent.js').fsPath, mode] : [],
-			cwdPolicy: ExternalAcpAgentCwdPolicy.None,
+			cwdPolicy,
 			enabled,
 			trusted,
 		});

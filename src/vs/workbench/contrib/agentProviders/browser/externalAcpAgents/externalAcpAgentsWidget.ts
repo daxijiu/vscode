@@ -693,6 +693,8 @@ export class ExternalAcpAgentsWidget extends Disposable {
 
 	private connectionStatusLabel(status: ExternalAcpAgentConnectionStatus | undefined): string {
 		switch (status?.kind) {
+			case 'disabled':
+				return localize('externalAcpAgents.status.disabled', "Disabled by Policy");
 			case 'authRequired':
 				return localize('externalAcpAgents.status.authRequired', "Auth Required");
 			case 'loginHelpShown':
@@ -727,6 +729,7 @@ export class ExternalAcpAgentsWidget extends Disposable {
 			case 'testSucceeded':
 				return 'success';
 			case 'authRequired':
+			case 'disabled':
 			case 'loginHelpShown':
 			case 'missingRuntimeEnv':
 			case 'timeout':

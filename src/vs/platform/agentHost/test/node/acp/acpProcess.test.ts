@@ -4,9 +4,13 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import * as fs from 'fs/promises';
+import * as os from 'os';
 import { FileAccess } from '../../../../../base/common/network.js';
+import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ExternalAcpAgentCapability, ExternalAcpAgentCwdPolicy, ExternalAcpAgentSnapshotAgent } from '../../../common/acpAgentConfig.js';
+import { AcpDiagnosticStatus } from '../../../node/acp/acpDiagnostics.js';
 import { AcpError, AcpErrorCode } from '../../../node/acp/acpErrors.js';
 import { AcpPermissionBridge } from '../../../node/acp/acpPermissionBridge.js';
 import { AcpProcess } from '../../../node/acp/acpProcess.js';
@@ -154,7 +158,7 @@ suite('acpProcess', () => {
 		await assertAcpRejects(process.authenticate('fake-login'), AcpErrorCode.Timeout);
 		process.dispose();
 
-		assert.strictEqual(process.diagnostic().running, false);
+		assert.strictEqual(process.diagnostic().status, AcpDiagnosticStatus.Exited);
 	});
 
 	test('unsupported protocol version fails clearly', async () => {
@@ -185,7 +189,7 @@ suite('acpProcess', () => {
 		const process = disposables.add(createProcess('malformed-json'));
 
 		await assertAcpRejects(process.initialize(), AcpErrorCode.MalformedJson);
-		assert.strictEqual(process.diagnostic().running, false);
+		assert.strictEqual(process.diagnostic().status, AcpDiagnosticStatus.Exited);
 	});
 
 	test('request timeout rejects initialize and kills the child without manual dispose', async () => {
@@ -193,7 +197,7 @@ suite('acpProcess', () => {
 
 		await assertAcpRejects(process.initialize(), AcpErrorCode.Timeout);
 
-		assert.strictEqual(process.diagnostic().running, false);
+		assert.strictEqual(process.diagnostic().status, AcpDiagnosticStatus.Exited);
 	});
 
 	test('process exit rejects pending initialize and records exit diagnostics', async () => {
@@ -202,10 +206,10 @@ suite('acpProcess', () => {
 		await assertAcpRejects(process.initialize(), AcpErrorCode.ProcessExited);
 		await waitForExitCode(process);
 		assert.deepStrictEqual({
-			running: process.diagnostic().running,
+			status: process.diagnostic().status,
 			exitCode: process.diagnostic().exitCode,
 		}, {
-			running: false,
+			status: AcpDiagnosticStatus.Exited,
 			exitCode: 4,
 		});
 	});
@@ -219,11 +223,34 @@ suite('acpProcess', () => {
 		await process.initialize();
 
 		assert.deepStrictEqual({
-			stderr: process.diagnostic().stderr.trim(),
-			leaked: process.diagnostic().stderr.includes('super-secret-token'),
+			stderrAvailable: process.diagnostic().stderrAvailable,
+			stderrLineCount: process.diagnostic().stderrLineCount,
+			leaked: JSON.stringify(process.diagnostic()).includes('super-secret-token') || JSON.stringify(process.diagnostic()).includes('token='),
 		}, {
-			stderr: 'token=[redacted]',
+			stderrAvailable: true,
+			stderrLineCount: 1,
 			leaked: false,
+		});
+	});
+
+	test('diagnostic command summary omits raw arguments', async () => {
+		const process = disposables.add(createProcess('success', {
+			agent: {
+				...fakeAgent('success'),
+				args: [...fakeAgent('success').args, '--token', 'super-secret-token'],
+			},
+		}));
+
+		await process.initialize();
+
+		assert.deepStrictEqual({
+			argCount: process.diagnostic().command.argCount,
+			resolvedBy: process.diagnostic().command.resolvedBy,
+			leaksArgSecret: JSON.stringify(process.diagnostic().command).includes('super-secret-token'),
+		}, {
+			argCount: 4,
+			resolvedBy: 'direct',
+			leaksArgSecret: false,
 		});
 	});
 
@@ -343,7 +370,90 @@ suite('acpProcess', () => {
 		}));
 
 		await assertAcpRejects(process.initialize(), AcpErrorCode.ProcessNotFound);
-		assert.strictEqual(process.diagnostic().running, false);
+		assert.strictEqual(process.diagnostic().status, AcpDiagnosticStatus.NotStarted);
+	});
+
+	test('Windows cmd shim spawns safe bat paths and arguments with spaces', async function () {
+		if (process.platform !== 'win32') {
+			this.skip();
+		}
+		const tempDir = await fs.mkdtemp(join(os.tmpdir(), 'vscode acp process '));
+		try {
+			const commandPath = join(tempDir, 'fake agent launcher.bat');
+			const markerPath = join(tempDir, 'safe launch marker.txt');
+			await fs.writeFile(commandPath, [
+				'@echo off',
+				'echo ran>"%ACP_MARKER%"',
+				'"%ACP_NODE_EXE%" "%ACP_FAKE_AGENT%" success %*',
+				'',
+			].join('\r\n'));
+
+			const acpProcess = disposables.add(createProcess('success', {
+				agent: {
+					...fakeAgent('success'),
+					command: commandPath,
+					args: ['safe profile'],
+					envVariableNames: ['ACP_NODE_EXE', 'ACP_FAKE_AGENT', 'ACP_MARKER'],
+				},
+				hostEnv: {
+					PATH: processEnvPath(),
+					ACP_NODE_EXE: process.execPath,
+					ACP_FAKE_AGENT: FileAccess.asFileUri('vs/platform/agentHost/test/node/acp/fixtures/fakeAcpAgent.js').fsPath,
+					ACP_MARKER: markerPath,
+				},
+			}));
+
+			assert.deepStrictEqual(await acpProcess.initialize(), {
+				protocolVersion: 1,
+				agentCapabilities: {},
+				authMethods: [],
+				agentInfo: {
+					name: 'fake-acp-agent',
+					title: 'Fake ACP Agent',
+					version: '1.0.0',
+				},
+			});
+			assert.strictEqual((await fs.readFile(markerPath, 'utf8')).trim(), 'ran');
+		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	test('Windows cmd shim rejects dangerous bat arguments before execution', async function () {
+		if (process.platform !== 'win32') {
+			this.skip();
+		}
+		const tempDir = await fs.mkdtemp(join(os.tmpdir(), 'vscode acp process '));
+		try {
+			const commandPath = join(tempDir, 'fake agent launcher.cmd');
+			const markerPath = join(tempDir, 'unsafe launch marker.txt');
+			await fs.writeFile(commandPath, [
+				'@echo off',
+				'echo ran>"%ACP_MARKER%"',
+				'"%ACP_NODE_EXE%" "%ACP_FAKE_AGENT%" success %*',
+				'',
+			].join('\r\n'));
+
+			const acpProcess = disposables.add(createProcess('success', {
+				agent: {
+					...fakeAgent('success'),
+					command: commandPath,
+					args: ['safe profile & echo unsafe'],
+					envVariableNames: ['ACP_NODE_EXE', 'ACP_FAKE_AGENT', 'ACP_MARKER'],
+				},
+				hostEnv: {
+					PATH: processEnvPath(),
+					ACP_NODE_EXE: process.execPath,
+					ACP_FAKE_AGENT: FileAccess.asFileUri('vs/platform/agentHost/test/node/acp/fixtures/fakeAcpAgent.js').fsPath,
+					ACP_MARKER: markerPath,
+				},
+			}));
+
+			await assertAcpRejects(acpProcess.initialize(), AcpErrorCode.UnsupportedCommand);
+			assert.strictEqual(await exists(markerPath), false);
+		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	function createProcess(mode: string, options: Partial<ConstructorParameters<typeof AcpProcess>[0]> = {}): AcpProcess {
@@ -381,6 +491,15 @@ async function waitForExitCode(process: AcpProcess): Promise<void> {
 			return;
 		}
 		await wait(5);
+	}
+}
+
+async function exists(path: string): Promise<boolean> {
+	try {
+		await fs.access(path);
+		return true;
+	} catch {
+		return false;
 	}
 }
 

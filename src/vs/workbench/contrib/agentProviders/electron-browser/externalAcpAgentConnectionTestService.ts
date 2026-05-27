@@ -5,9 +5,11 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
-import { ExternalAcpAgentConnectionStatus, ExternalAcpAgentConnectionStatusKind, toExternalAcpAgentSnapshot, validateExternalAcpAgentConfig } from '../../../../platform/agentHost/common/acpAgentConfig.js';
+import { ExternalAcpAgentConnectionStatus, ExternalAcpAgentConnectionStatusKind, ExternalAcpAgentsExecutionEnabledSetting, toExternalAcpAgentSnapshot, validateExternalAcpAgentConfig } from '../../../../platform/agentHost/common/acpAgentConfig.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 /* eslint-disable local/code-layering, local/code-import-patterns -- Desktop-only explicit connection tests reuse the AgentHost ACP runtime instead of duplicating process/protocol logic. */
 import { AcpErrorCode, isAcpError } from '../../../../platform/agentHost/node/acp/acpErrors.js';
+import { resolveAcpLocalCwd } from '../../../../platform/agentHost/node/acp/acpLocalCwd.js';
 import { AcpProcess } from '../../../../platform/agentHost/node/acp/acpProcess.js';
 import { AcpAuthMethod } from '../../../../platform/agentHost/node/acp/acpProtocol.js';
 import { toRedactedAcpAuthMethods } from '../../../../platform/agentHost/node/acp/acpAgentSession.js';
@@ -25,11 +27,15 @@ export class ExternalAcpAgentConnectionTestService extends Disposable implements
 	constructor(
 		@IExternalAcpAgentRegistryService private readonly registryService: IExternalAcpAgentRegistryService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 	}
 
 	async testConnection(id: string): Promise<ExternalAcpAgentConnectionStatus> {
+		if (this.configurationService.getValue<boolean>(ExternalAcpAgentsExecutionEnabledSetting) === false) {
+			return this.writeStatus(id, 'disabled', localize('externalAcpAgents.test.executionDisabled', "External ACP agent execution is disabled by setting or policy."));
+		}
 		const agent = await this.registryService.getAgent(id);
 		if (!agent) {
 			return this.writeStatus(id, 'testFailed', localize('externalAcpAgents.test.missingAgent', "External ACP agent config was not found."));
@@ -47,9 +53,18 @@ export class ExternalAcpAgentConnectionTestService extends Disposable implements
 			return this.writeStatus(agent.id, 'testFailed', localize('externalAcpAgents.test.notInSnapshot', "This external ACP agent is not eligible for the AgentHost snapshot."));
 		}
 
+		let workspaceCwd: string | undefined;
+		try {
+			workspaceCwd = resolveAcpLocalCwd(snapshotAgent, this.workspaceContextService.getWorkspace().folders[0]?.uri).processCwd;
+		} catch (err) {
+			return this.writeStatus(agent.id, 'disabled', err instanceof Error && err.message
+				? err.message
+				: localize('externalAcpAgents.test.localCwdUnsupported', "External ACP agent Test Connection is disabled for this workspace CWD."));
+		}
+
 		const acpProcess = new AcpProcess({
 			agent: snapshotAgent,
-			workspaceCwd: this.workspaceContextService.getWorkspace().folders[0]?.uri.fsPath,
+			workspaceCwd,
 			hostEnv: process.env,
 			initializeTimeoutMs: TestInitializeTimeoutMs,
 			authenticateTimeoutMs: TestAuthenticateTimeoutMs,

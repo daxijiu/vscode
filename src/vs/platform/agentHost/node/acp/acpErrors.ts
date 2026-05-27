@@ -4,12 +4,14 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { AcpJsonRpcError, AcpJsonRpcErrorCode, AcpJsonValue } from './acpProtocol.js';
+export { redactAcpDiagnostic } from './acpDiagnostics.js';
 
 export const enum AcpErrorCode {
 	AuthRequired = 'authRequired',
 	ProcessNotFound = 'processNotFound',
 	MissingRuntimeEnv = 'missingRuntimeEnv',
 	UnsupportedProtocolVersion = 'unsupportedProtocolVersion',
+	UnsupportedCommand = 'unsupportedCommand',
 	MalformedJson = 'malformedJson',
 	Timeout = 'timeout',
 	ProcessExited = 'processExited',
@@ -55,6 +57,10 @@ export function acpUnsupportedProtocolVersionError(actual: number): AcpError {
 	return new AcpError(AcpErrorCode.UnsupportedProtocolVersion, 'ACP agent returned an unsupported protocol version.', { actual });
 }
 
+export function acpUnsupportedCommandError(reason: string): AcpError {
+	return new AcpError(AcpErrorCode.UnsupportedCommand, 'ACP runtime command is not supported for safe launch. Prefer a .exe command or a wrapper with safe arguments.', { reason });
+}
+
 export function acpMalformedJsonError(): AcpError {
 	return new AcpError(AcpErrorCode.MalformedJson, 'ACP runtime emitted malformed JSON.');
 }
@@ -85,19 +91,6 @@ function toAcpErrorData(data: AcpJsonValue | undefined): AcpErrorData | undefine
 		return undefined;
 	}
 	return data as AcpErrorData;
-}
-
-export function redactAcpDiagnostic(value: string, secretValues: readonly string[] = []): string {
-	let redacted = value;
-	for (const secret of secretValues) {
-		if (secret.length >= 4) {
-			redacted = redacted.split(secret).join('[redacted]');
-		}
-	}
-	redacted = redacted.replace(/(bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, '$1[redacted]');
-	redacted = redacted.replace(/((?:api[_-]?key|token|secret|password)\s*=\s*)[^\s]+/gi, '$1[redacted]');
-	redacted = redacted.replace(/((?:api[_-]?key|token|secret|password)["']?\s*:\s*["'])[^\s"']+/gi, '$1[redacted]');
-	return redacted;
 }
 
 function redactedCommand(command: string): string {

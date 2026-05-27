@@ -8,12 +8,13 @@ import { Event } from '../../../../../base/common/event.js';
 import { Schemas } from '../../../../../base/common/network.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ExternalAcpAgentCapability, ExternalAcpAgentCwdPolicy, createExternalAcpAgentConfig, getExternalAcpAgentRegistryResourceFromGlobalStorageHome, getExternalAcpAgentSnapshotResourceFromGlobalStorageHome, isExternalAcpLoginHelpUrlAllowed, sanitizeExternalAcpAgentId } from '../../../../../platform/agentHost/common/acpAgentConfig.js';
+import { ExternalAcpAgentCapability, ExternalAcpAgentCwdPolicy, ExternalAcpAgentsExecutionEnabledSetting, ExternalAcpAgentsFilesEnabledSetting, ExternalAcpAgentsTerminalEnabledSetting, ExternalAcpAgentsToolsEnabledSetting, createExternalAcpAgentConfig, getExternalAcpAgentRegistryResourceFromGlobalStorageHome, getExternalAcpAgentSnapshotResourceFromGlobalStorageHome, isExternalAcpLoginHelpUrlAllowed, sanitizeExternalAcpAgentId } from '../../../../../platform/agentHost/common/acpAgentConfig.js';
 import { normalizeAcpRegistryAgent } from '../../../../../platform/agentHost/common/acpRegistry.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IUserDataProfilesService, toUserDataProfile } from '../../../../../platform/userDataProfile/common/userDataProfile.js';
 import { IUserDataProfileService } from '../../../../services/userDataProfile/common/userDataProfile.js';
 import { ExternalAcpAgentRegistryService, ExternalAcpAgentSnapshotService, UnavailableExternalAcpAgentConnectionTestService } from '../../common/externalAcpAgentProviderService.js';
@@ -26,6 +27,7 @@ suite('externalAcpAgentProviderService', () => {
 	let userDataProfilesService: IUserDataProfilesService;
 	let registryService: ExternalAcpAgentRegistryService;
 	let snapshotService: ExternalAcpAgentSnapshotService;
+	let configurationService: TestConfigurationService;
 
 	setup(() => {
 		const logService = new NullLogService();
@@ -57,8 +59,9 @@ suite('externalAcpAgentProviderService', () => {
 			cleanUpTransientProfiles: async () => { },
 		};
 
+		configurationService = new TestConfigurationService();
 		registryService = disposables.add(new ExternalAcpAgentRegistryService(fileService, userDataProfileService, logService));
-		snapshotService = disposables.add(new ExternalAcpAgentSnapshotService(registryService, fileService, userDataProfileService, userDataProfilesService, logService));
+		snapshotService = disposables.add(new ExternalAcpAgentSnapshotService(registryService, fileService, userDataProfileService, userDataProfilesService, configurationService, logService));
 	});
 
 	test('normalizes provider ids for AgentHost-safe ACP agent config', async () => {
@@ -117,6 +120,9 @@ suite('externalAcpAgentProviderService', () => {
 			trusted: false,
 		}));
 
+		await configurationService.setUserConfiguration(ExternalAcpAgentsToolsEnabledSetting, true);
+		await configurationService.setUserConfiguration(ExternalAcpAgentsFilesEnabledSetting, true);
+		await configurationService.setUserConfiguration(ExternalAcpAgentsTerminalEnabledSetting, true);
 		const snapshot = await snapshotService.writeSnapshot();
 		const registryText = JSON.stringify(await readJson(getExternalAcpAgentRegistryResourceFromGlobalStorageHome(userDataProfileService.currentProfile.globalStorageHome)));
 		const snapshotText = JSON.stringify(await readJson(getExternalAcpAgentSnapshotResourceFromGlobalStorageHome(userDataProfileService.currentProfile.globalStorageHome)));
@@ -460,6 +466,49 @@ suite('externalAcpAgentProviderService', () => {
 			currentExists: true,
 			defaultExists: true,
 		});
+	});
+
+	test('execution policy disables snapshot registration without deleting manual config', async () => {
+		await registryService.saveAgent(createExternalAcpAgentConfig({
+			id: 'cursor',
+			displayName: 'Cursor Agent',
+			command: 'cursor-agent',
+			args: ['acp'],
+			enabled: true,
+			trusted: true,
+		}));
+		await configurationService.setUserConfiguration(ExternalAcpAgentsExecutionEnabledSetting, false);
+
+		const snapshot = await snapshotService.writeSnapshot();
+
+		assert.deepStrictEqual({
+			configuredAgents: (await registryService.listAgents()).map(agent => agent.id),
+			snapshotAgents: snapshot.agents,
+		}, {
+			configuredAgents: ['cursor'],
+			snapshotAgents: [],
+		});
+	});
+
+	test('side-effect capability policy defaults to false in AgentHost snapshot', async () => {
+		await registryService.saveAgent(createExternalAcpAgentConfig({
+			id: 'cursor',
+			displayName: 'Cursor Agent',
+			command: 'cursor-agent',
+			args: ['acp'],
+			enabled: true,
+			trusted: true,
+			capabilities: [
+				ExternalAcpAgentCapability.Text,
+				ExternalAcpAgentCapability.Tools,
+				ExternalAcpAgentCapability.Files,
+				ExternalAcpAgentCapability.Terminal,
+			],
+		}));
+
+		const snapshot = await snapshotService.writeSnapshot();
+
+		assert.deepStrictEqual(snapshot.agents[0].capabilities, [ExternalAcpAgentCapability.Text]);
 	});
 
 	async function readJson(resource: URI): Promise<object> {

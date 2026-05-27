@@ -13,6 +13,7 @@ import { parseAgentHostDebugPort } from '../../environment/node/environmentServi
 import { ILogService } from '../../log/common/log.js';
 import { getResolvedShellEnv } from '../../shell/node/shellEnv.js';
 import { IAgentHostConnection, IAgentHostStarter } from '../common/agent.js';
+import { ExternalAcpAgentsExecutionEnabledEnvVar, ExternalAcpAgentsExecutionEnabledSetting } from '../common/acpAgentConfig.js';
 import { AgentHostClaudeAgentSdkPathSettingId, AgentHostClaudeSdkPathEnvVar, AgentHostDirectorAgentEnabledSettingId, AgentHostEnableDirectorAgentEnvVar, AgentHostOTelCaptureContentSettingId, AgentHostOTelDbSpanExporterEnabledSettingId, AgentHostOTelEnabledSettingId, AgentHostOTelExporterTypeSettingId, AgentHostOTelOtlpEndpointSettingId, AgentHostOTelOutfileSettingId, buildAgentHostOTelEnv } from '../common/agentService.js';
 
 /**
@@ -88,6 +89,9 @@ export class NodeAgentHostStarter extends Disposable implements IAgentHostStarte
 			|| !!process.env[AgentHostEnableDirectorAgentEnvVar];
 		if (directorAgentEnabled) {
 			env[AgentHostEnableDirectorAgentEnvVar] = '1';
+		}
+		if (this._configurationService.getValue<boolean>(ExternalAcpAgentsExecutionEnabledSetting) === false) {
+			env[ExternalAcpAgentsExecutionEnabledEnvVar] = '0';
 		}
 
 		// Translate `chat.agentHost.otel.*` settings into the env vars consumed by
