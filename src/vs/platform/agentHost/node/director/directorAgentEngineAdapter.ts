@@ -5,10 +5,12 @@
 
 import { CancellationError } from '../../../../base/common/errors.js';
 import { ResponsePartKind, ToolResultContentType, type MessageAttachment, type ToolCallResult, type ToolResultContent, type Turn, type UsageInfo } from '../../common/state/sessionState.js';
-import { buildDirectorNativeMessageRequest, type DirectorNormalizedMessage, type DirectorNormalizedToolCall, type DirectorNormalizedToolDefinition, type DirectorOpenAIReasoningEcho } from '../../common/directorProviderAdapters.js';
+import type { DirectorNormalizedMessage, DirectorNormalizedToolCall, DirectorNormalizedToolDefinition, DirectorOpenAIReasoningEcho } from '../../common/directorProviderAdapters.js';
 import type { DirectorResolvedProviderBackend } from '../../common/directorProviderBackend.js';
+import type { DirectorCreateMessageParams, DirectorCreateMessageResponse, DirectorLLMProvider, DirectorProviderRuntimeAuth, DirectorRuntimeProviderApiType, DirectorTokenUsage } from '../../common/directorProviderRuntime.js';
 import type { DirectorRuntimeCredential, IDirectorRuntimeCredentialService } from '../../common/directorRuntimeCredentials.js';
 import { isDirectorReadOnlyTool } from '../../common/directorToolPolicy.js';
+import { createDirectorProviderRuntime, DirectorProviderRuntimeHttpError } from './providers/directorProviderRuntimeFactory.js';
 
 export type DirectorAgentEngineEvent =
 	| { readonly type: 'system'; readonly message: string }
@@ -77,7 +79,6 @@ export class DirectorAgentEngineAdapter {
 		};
 
 		const tools = supportsToolCalling(backend) ? options.tools ?? [] : [];
-		const authHeader = credentialToHeaderValue(credential);
 		const messages = [...this.buildMessages(options, tools)];
 		const advertisedToolNames = new Set(tools.map(tool => tool.name));
 		const maxToolIterations = options.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS;
@@ -88,21 +89,29 @@ export class DirectorAgentEngineAdapter {
 
 		while (true) {
 			const stream = toolIterations === 0 && tools.length === 0 && supportsStreaming(backend);
-			let response: Response;
+			let response: DirectorCreateMessageResponse;
 			while (true) {
-				const request = buildDirectorNativeMessageRequest({
-					apiType: backend.apiType,
-					baseURL: backend.baseURL,
-					modelId: backend.modelId,
-					authHeader,
+				const provider = this.createProviderRuntime(backend, credential, reasoningEcho);
+				const request: DirectorCreateMessageParams = {
+					model: backend.modelId,
 					messages,
 					tools: tools.length ? tools : undefined,
 					maxTokens: 2048,
-					stream,
-					reasoningEcho,
-				});
+					abortSignal: options.abortSignal,
+				};
 				try {
-					response = await this.fetchProviderWithRetry(request, backend, credential, options.abortSignal, toolSideEffectOccurred);
+					if (stream && provider.createMessageStream) {
+						const streamed = yield* this.streamProviderResponse(provider, request, backend, options.abortSignal, toolSideEffectOccurred);
+						if (!streamed.text.trim() && !streamed.thinking?.trim()) {
+							throw new Error(`Director provider '${backend.providerInstanceId}' returned an empty response.`);
+						}
+						if (streamed.usage) {
+							yield { type: 'usage', usage: streamed.usage };
+						}
+						yield { type: 'result', subtype: 'success' };
+						return;
+					}
+					response = await this.runProviderRequestWithRetry(() => provider.createMessage(request), backend, options.abortSignal, toolSideEffectOccurred);
 					break;
 				} catch (err) {
 					if (!reasoningEcho && canApplyOpenAIReasoningEchoFallback(backend, err)) {
@@ -112,20 +121,7 @@ export class DirectorAgentEngineAdapter {
 					throw err;
 				}
 			}
-			if (stream) {
-				const streamed = yield* this.streamProviderResponse(backend, response, options.abortSignal);
-				if (!streamed.text.trim() && !streamed.thinking?.trim()) {
-					throw new Error(`Director provider '${backend.providerInstanceId}' returned an empty response.`);
-				}
-				if (streamed.usage) {
-					yield { type: 'usage', usage: streamed.usage };
-				}
-				yield { type: 'result', subtype: 'success' };
-				return;
-			}
-
-			const payload = await response.json() as unknown;
-			const parsed = parseProviderResponse(backend.apiType, payload);
+			const parsed = parseProviderRuntimeResponse(response);
 			if (parsed.thinking) {
 				yield { type: 'thinking', thinking: parsed.thinking };
 			}
@@ -203,48 +199,49 @@ export class DirectorAgentEngineAdapter {
 		return messages;
 	}
 
-	private async fetchProviderWithRetry(
-		request: ReturnType<typeof buildDirectorNativeMessageRequest>,
+	private createProviderRuntime(
 		backend: DirectorResolvedProviderBackend,
 		credential: DirectorRuntimeCredential,
+		reasoningEcho: DirectorOpenAIReasoningEcho | undefined,
+	): DirectorLLMProvider {
+		return createDirectorProviderRuntime(toRuntimeProviderApiType(backend.apiType), {
+			auth: credentialToRuntimeAuth(credential),
+			baseURL: backend.baseURL,
+			headers: backend.headers,
+			capabilities: backend.capabilities,
+			label: `Director provider '${backend.providerInstanceId}'`,
+			reasoningEcho,
+			fetch: (input, init) => this.fetcher(input.toString(), init ?? {}),
+		});
+	}
+
+	private async runProviderRequestWithRetry<T>(
+		request: () => Promise<T>,
+		backend: DirectorResolvedProviderBackend,
 		abortSignal: AbortSignal,
 		toolSideEffectOccurred: boolean,
-	): Promise<Response> {
-		const headers = { ...backend.headers, ...request.headers };
+	): Promise<T> {
 		let lastError: Error | undefined;
 		for (let attempt = 0; attempt < 2; attempt++) {
 			if (abortSignal.aborted) {
 				throw new CancellationError();
 			}
 			try {
-				const response = await this.fetcher(request.url, {
-					method: request.method,
-					headers,
-					body: request.body,
-					signal: abortSignal,
-				});
+				const response = await request();
 				if (abortSignal.aborted) {
 					throw new CancellationError();
 				}
-				if (response.ok) {
-					return response;
-				}
-				const text = await response.text().catch(() => '');
-				const error = new DirectorProviderHttpError(
-					response.status,
-					`Director provider '${backend.providerInstanceId}' returned ${response.status} ${response.statusText}${text ? `: ${redactCredential(text, credential)}` : ''}`
-				);
-				if (attempt === 0 && !toolSideEffectOccurred && shouldRetryStatus(response.status)) {
-					lastError = error;
-					continue;
-				}
-				throw error;
+				return response;
 			} catch (err) {
 				if (abortSignal.aborted || err instanceof CancellationError) {
 					throw new CancellationError();
 				}
 				const error = err instanceof Error ? err : new Error(String(err));
-				if (attempt === 0 && !toolSideEffectOccurred && !(error instanceof DirectorProviderHttpError)) {
+				if (attempt === 0 && !toolSideEffectOccurred && error instanceof DirectorProviderRuntimeHttpError && shouldRetryStatus(error.status)) {
+					lastError = error;
+					continue;
+				}
+				if (attempt === 0 && !toolSideEffectOccurred && !(error instanceof DirectorProviderRuntimeHttpError)) {
 					lastError = error;
 					continue;
 				}
@@ -255,33 +252,48 @@ export class DirectorAgentEngineAdapter {
 	}
 
 	private async *streamProviderResponse(
+		provider: DirectorLLMProvider,
+		params: DirectorCreateMessageParams,
 		backend: DirectorResolvedProviderBackend,
-		response: Response,
 		abortSignal: AbortSignal,
+		toolSideEffectOccurred: boolean,
 	): AsyncGenerator<DirectorAgentEngineEvent, ParsedProviderResponse> {
-		const accumulated: MutableParsedProviderResponse = { text: '', toolCalls: [] };
-		for await (const data of readServerSentEventData(response, abortSignal)) {
-			if (data === '[DONE]') {
-				break;
-			}
-			const parsed = parseJsonObject(data);
-			if (!parsed) {
-				continue;
-			}
-			const delta = parseProviderStreamDelta(backend.apiType, parsed);
-			if (delta.text) {
-				accumulated.text += delta.text;
-				yield { type: 'textDelta', text: delta.text };
-			}
-			if (delta.thinking) {
-				accumulated.thinking = (accumulated.thinking ?? '') + delta.thinking;
-				yield { type: 'thinkingDelta', thinking: delta.thinking };
-			}
-			if (delta.usage) {
-				accumulated.usage = mergeUsage(accumulated.usage, delta.usage);
+		let lastError: Error | undefined;
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const accumulated: MutableParsedProviderResponse = { text: '', toolCalls: [] };
+			let emittedDelta = false;
+			try {
+				for await (const event of provider.createMessageStream!(params)) {
+					if (event.type === 'text') {
+						accumulated.text += event.text;
+						emittedDelta = true;
+						yield { type: 'textDelta', text: event.text };
+					} else if (event.type === 'thinking') {
+						accumulated.thinking = (accumulated.thinking ?? '') + event.thinking;
+						emittedDelta = true;
+						yield { type: 'thinkingDelta', thinking: event.thinking };
+					} else if (event.type === 'message_complete') {
+						accumulated.usage = event.usage ? mergeUsage(accumulated.usage, toUsageInfo(event.usage)) : accumulated.usage;
+					}
+				}
+				return accumulated;
+			} catch (err) {
+				if (abortSignal.aborted || err instanceof CancellationError) {
+					throw new CancellationError();
+				}
+				const error = err instanceof Error ? err : new Error(String(err));
+				if (attempt === 0 && !emittedDelta && !toolSideEffectOccurred && error instanceof DirectorProviderRuntimeHttpError && shouldRetryStatus(error.status)) {
+					lastError = error;
+					continue;
+				}
+				if (attempt === 0 && !emittedDelta && !toolSideEffectOccurred && !(error instanceof DirectorProviderRuntimeHttpError)) {
+					lastError = error;
+					continue;
+				}
+				throw error;
 			}
 		}
-		return accumulated;
+		throw lastError ?? new Error(`Director provider '${backend.providerInstanceId}' stream request failed.`);
 	}
 }
 
@@ -384,14 +396,17 @@ function summarizeAttachments(attachments: readonly MessageAttachment[] | undefi
 	].join('\n');
 }
 
-function credentialToHeaderValue(credential: DirectorRuntimeCredential): string {
+function credentialToRuntimeAuth(credential: DirectorRuntimeCredential): DirectorProviderRuntimeAuth {
 	switch (credential.kind) {
 		case 'api-key':
-			return credential.value;
+			return { kind: 'api-key', value: credential.value };
 		case 'bearer':
-			return credential.accessToken;
+			return {
+				kind: 'bearer',
+				accessToken: credential.accessToken,
+			};
 		case 'none':
-			return '';
+			return { kind: 'api-key', value: '' };
 		case 'missing':
 			throw new Error(credential.message);
 	}
@@ -411,278 +426,37 @@ interface MutableParsedProviderResponse {
 	toolCalls: DirectorNormalizedToolCall[];
 }
 
-interface ProviderStreamDelta {
-	readonly text?: string;
-	readonly thinking?: string;
-	readonly usage?: UsageInfo;
-}
-
-function parseProviderResponse(apiType: DirectorResolvedProviderBackend['apiType'], payload: unknown): ParsedProviderResponse {
-	const value = asRecord(payload);
-	if (!value) {
-		return { text: '', toolCalls: [] };
-	}
-	switch (apiType) {
-		case 'anthropic-messages':
-			return {
-				text: readAnthropicText(value),
-				usage: readAnthropicUsage(value),
-				toolCalls: readAnthropicToolCalls(value),
-			};
-		case 'openai-completions':
-			return readOpenAIChatResponse(value);
-		case 'openai-codex':
-			return readOpenAIResponsesResponse(value);
-		case 'gemini-generative':
-			return {
-				text: readGeminiText(value),
-				usage: readGeminiUsage(value),
-				toolCalls: [],
-			};
-		case 'local':
-		case 'custom-http':
-			throw new Error(`Unsupported Director provider api type '${apiType}'.`);
-	}
-}
-
-function readAnthropicText(value: Record<string, unknown>): string {
-	const content = arrayField(value, 'content');
-	return content.map(block => {
-		const record = asRecord(block);
-		return stringField(record, 'type') === 'text' || stringField(record, 'text') !== undefined ? stringField(record, 'text') : undefined;
-	}).filter(Boolean).join('');
-}
-
-function readAnthropicUsage(value: Record<string, unknown>): UsageInfo | undefined {
-	const usage = asRecord(value.usage);
-	if (!usage) {
-		return undefined;
-	}
-	return {
-		inputTokens: numberField(usage, 'input_tokens'),
-		outputTokens: numberField(usage, 'output_tokens'),
-		cacheReadTokens: numberField(usage, 'cache_read_input_tokens'),
-	};
-}
-
-function readAnthropicToolCalls(value: Record<string, unknown>): readonly DirectorNormalizedToolCall[] {
-	return arrayField(value, 'content').flatMap(block => {
-		const record = asRecord(block);
-		if (!record || stringField(record, 'type') !== 'tool_use') {
-			return [];
-		}
-		const id = stringField(record, 'id');
-		const name = stringField(record, 'name');
-		if (!id || !name) {
-			return [];
-		}
-		return [{
-			id,
-			name,
-			input: stableStringify(record.input),
-		}];
-	});
-}
-
-function readOpenAIChatResponse(value: Record<string, unknown>): ParsedProviderResponse {
-	const choice = asRecord(arrayField(value, 'choices')[0]);
-	const message = asRecord(choice?.message);
-	const usage = asRecord(value.usage);
-	return {
-		text: stringField(message, 'content') ?? '',
-		thinking: stringField(message, 'reasoning_content'),
-		usage: usage ? {
-			inputTokens: numberField(usage, 'prompt_tokens'),
-			outputTokens: numberField(usage, 'completion_tokens'),
-		} : undefined,
-		toolCalls: readOpenAIToolCalls(message),
-	};
-}
-
-function readOpenAIToolCalls(message: Record<string, unknown> | undefined): readonly DirectorNormalizedToolCall[] {
-	return arrayField(message, 'tool_calls').flatMap(toolCall => {
-		const record = asRecord(toolCall);
-		const fn = asRecord(record?.function);
-		const id = stringField(record, 'id');
-		const name = stringField(fn, 'name');
-		if (!id || !name) {
-			return [];
-		}
-		return [{
-			id,
-			name,
-			input: stringField(fn, 'arguments') ?? '{}',
-		}];
-	});
-}
-
-function readOpenAIResponsesResponse(value: Record<string, unknown>): ParsedProviderResponse {
-	const outputText = stringField(value, 'output_text');
-	if (outputText) {
-		return { text: outputText, usage: readOpenAIResponsesUsage(value), toolCalls: [] };
-	}
-
-	const output = arrayField(value, 'output');
-	const text = output.flatMap(item => {
-		const content = arrayField(asRecord(item), 'content');
-		return content.map(block => stringField(asRecord(block), 'text') ?? stringField(asRecord(block), 'content')).filter((entry): entry is string => !!entry);
-	}).join('');
-	return { text, usage: readOpenAIResponsesUsage(value), toolCalls: [] };
-}
-
-function readOpenAIResponsesUsage(value: Record<string, unknown>): UsageInfo | undefined {
-	const usage = asRecord(value.usage);
-	if (!usage) {
-		return undefined;
-	}
-	return {
-		inputTokens: numberField(usage, 'input_tokens'),
-		outputTokens: numberField(usage, 'output_tokens'),
-	};
-}
-
-function readGeminiText(value: Record<string, unknown>): string {
-	const candidate = asRecord(arrayField(value, 'candidates')[0]);
-	const content = asRecord(candidate?.content);
-	return arrayField(content, 'parts')
-		.map(part => stringField(asRecord(part), 'text'))
-		.filter(Boolean)
-		.join('');
-}
-
-function readGeminiUsage(value: Record<string, unknown>): UsageInfo | undefined {
-	const usage = asRecord(value.usageMetadata);
-	if (!usage) {
-		return undefined;
-	}
-	return {
-		inputTokens: numberField(usage, 'promptTokenCount'),
-		outputTokens: numberField(usage, 'candidatesTokenCount'),
-	};
-}
-
-function parseProviderStreamDelta(apiType: DirectorResolvedProviderBackend['apiType'], value: Record<string, unknown>): ProviderStreamDelta {
-	switch (apiType) {
-		case 'openai-completions':
-			return readOpenAIChatStreamDelta(value);
-		case 'anthropic-messages':
-			return readAnthropicStreamDelta(value);
-		case 'openai-codex':
-		case 'gemini-generative':
-		case 'local':
-		case 'custom-http':
-			return {};
-	}
-}
-
-function readOpenAIChatStreamDelta(value: Record<string, unknown>): ProviderStreamDelta {
-	const choice = asRecord(arrayField(value, 'choices')[0]);
-	const delta = asRecord(choice?.delta);
-	const usage = asRecord(value.usage);
-	return {
-		text: stringField(delta, 'content'),
-		thinking: stringField(delta, 'reasoning_content'),
-		usage: usage ? {
-			inputTokens: numberField(usage, 'prompt_tokens'),
-			outputTokens: numberField(usage, 'completion_tokens'),
-		} : undefined,
-	};
-}
-
-function readAnthropicStreamDelta(value: Record<string, unknown>): ProviderStreamDelta {
-	const type = stringField(value, 'type');
-	if (type === 'content_block_delta') {
-		const delta = asRecord(value.delta);
-		return {
-			text: stringField(delta, 'text'),
-			thinking: stringField(delta, 'thinking'),
-		};
-	}
-	if (type === 'message_delta') {
-		const usage = asRecord(value.usage);
-		return {
-			usage: usage ? {
-				inputTokens: numberField(usage, 'input_tokens'),
-				outputTokens: numberField(usage, 'output_tokens'),
-				cacheReadTokens: numberField(usage, 'cache_read_input_tokens'),
-			} : undefined,
-		};
-	}
-	return {};
-}
-
-async function* readServerSentEventData(response: Response, abortSignal: AbortSignal): AsyncGenerator<string> {
-	if (!response.body) {
-		const text = await response.text();
-		for (const block of text.split(/\r?\n\r?\n/)) {
-			const data = readSseDataBlock(block);
-			if (data !== undefined) {
-				yield data;
-			}
-		}
-		return;
-	}
-	const reader = response.body.getReader();
-	const decoder = new TextDecoder();
-	let buffer = '';
-	try {
-		while (true) {
-			if (abortSignal.aborted) {
-				throw new CancellationError();
-			}
-			const { done, value } = await reader.read();
-			if (done) {
+function parseProviderRuntimeResponse(response: DirectorCreateMessageResponse): ParsedProviderResponse {
+	const textParts: string[] = [];
+	const thinkingParts: string[] = [];
+	const toolCalls: DirectorNormalizedToolCall[] = [];
+	for (const block of response.content) {
+		switch (block.type) {
+			case 'text':
+				textParts.push(block.text);
 				break;
-			}
-			buffer += decoder.decode(value, { stream: true });
-			let boundary = findSseBoundary(buffer);
-			while (boundary >= 0) {
-				const block = buffer.slice(0, boundary);
-				buffer = buffer.slice(buffer.charAt(boundary) === '\r' ? boundary + 4 : boundary + 2);
-				const data = readSseDataBlock(block);
-				if (data !== undefined) {
-					yield data;
-				}
-				boundary = findSseBoundary(buffer);
-			}
+			case 'thinking':
+				thinkingParts.push(block.thinking);
+				break;
+			case 'tool_use':
+				toolCalls.push(block.toolCall);
+				break;
 		}
-		buffer += decoder.decode();
-		const data = readSseDataBlock(buffer);
-		if (data !== undefined) {
-			yield data;
-		}
-	} finally {
-		reader.releaseLock();
 	}
+	return {
+		text: textParts.join(''),
+		...(thinkingParts.length ? { thinking: thinkingParts.join('') } : {}),
+		...(response.usage ? { usage: toUsageInfo(response.usage) } : {}),
+		toolCalls,
+	};
 }
 
-function findSseBoundary(buffer: string): number {
-	const lf = buffer.indexOf('\n\n');
-	const crlf = buffer.indexOf('\r\n\r\n');
-	if (lf === -1) {
-		return crlf;
-	}
-	if (crlf === -1) {
-		return lf;
-	}
-	return Math.min(lf, crlf);
-}
-
-function readSseDataBlock(block: string): string | undefined {
-	const data = block
-		.split(/\r?\n/)
-		.filter(line => line.startsWith('data:'))
-		.map(line => line.slice('data:'.length).trimStart())
-		.join('\n');
-	return data || undefined;
-}
-
-function parseJsonObject(data: string): Record<string, unknown> | undefined {
-	try {
-		return asRecord(JSON.parse(data) as unknown);
-	} catch {
-		return undefined;
-	}
+function toUsageInfo(usage: DirectorTokenUsage): UsageInfo {
+	return {
+		inputTokens: usage.input_tokens,
+		outputTokens: usage.output_tokens,
+		...(usage.cache_read_input_tokens !== undefined ? { cacheReadTokens: usage.cache_read_input_tokens } : {}),
+	};
 }
 
 function mergeUsage(previous: UsageInfo | undefined, next: UsageInfo): UsageInfo {
@@ -702,6 +476,19 @@ function supportsStreaming(backend: DirectorResolvedProviderBackend): boolean {
 
 function supportsToolCalling(backend: DirectorResolvedProviderBackend): boolean {
 	return backend.capabilities?.toolCalling === true && (backend.apiType === 'openai-completions' || backend.apiType === 'anthropic-messages');
+}
+
+function toRuntimeProviderApiType(apiType: DirectorResolvedProviderBackend['apiType']): DirectorRuntimeProviderApiType {
+	switch (apiType) {
+		case 'anthropic-messages':
+		case 'openai-completions':
+		case 'openai-codex':
+		case 'gemini-generative':
+			return apiType;
+		case 'local':
+		case 'custom-http':
+			throw new Error(`Unsupported Director provider api type '${apiType}'.`);
+	}
 }
 
 async function executeToolCalls(
@@ -798,7 +585,7 @@ function canApplyOpenAIReasoningEchoFallback(backend: DirectorResolvedProviderBa
 	if (backend.apiType !== 'openai-completions' || backend.providerKind !== 'openai-compatible') {
 		return false;
 	}
-	if (!(err instanceof DirectorProviderHttpError) || err.status !== 400) {
+	if (!(err instanceof DirectorProviderRuntimeHttpError) || err.status !== 400) {
 		return false;
 	}
 	return /reasoning_content/i.test(err.message)
@@ -846,42 +633,5 @@ function stringifyToolResultContent(content: ToolResultContent): string {
 			return `[terminal: ${content.title}]`;
 		case ToolResultContentType.Subagent:
 			return `[subagent: ${content.title}]`;
-	}
-}
-
-function redactCredential(value: string, credential: DirectorRuntimeCredential): string {
-	switch (credential.kind) {
-		case 'api-key':
-			return value.split(credential.value).join('<redacted>');
-		case 'bearer':
-			return value.split(credential.accessToken).join('<redacted>');
-		case 'none':
-		case 'missing':
-			return value;
-	}
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-	return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
-function arrayField(value: Record<string, unknown> | undefined, key: string): readonly unknown[] {
-	const field = value?.[key];
-	return Array.isArray(field) ? field : [];
-}
-
-function stringField(value: Record<string, unknown> | undefined, key: string): string | undefined {
-	const field = value?.[key];
-	return typeof field === 'string' ? field : undefined;
-}
-
-function numberField(value: Record<string, unknown>, key: string): number | undefined {
-	const field = value[key];
-	return typeof field === 'number' && Number.isFinite(field) ? field : undefined;
-}
-
-class DirectorProviderHttpError extends Error {
-	constructor(readonly status: number, message: string) {
-		super(message);
 	}
 }

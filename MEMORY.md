@@ -1,6 +1,6 @@
 # Project Memory - Director Agent / Provider Backend
 
-Updated: 2026-05-26
+Updated: 2026-05-27
 
 ## Project Context
 
@@ -30,7 +30,7 @@ Current remote-synced commits:
 - `be253aa6d52 feat: add gated director agenthost provider`
 - Latest Phase 3 close-out before this slice: `a01b3c8c4d7 Complete Director Phase 3 provider settings`
 
-The Phase 0-3 implementation has been accepted, committed, and pushed. Phase 4 now has a minimal provider-backed Director AgentHost turn slice ready for commit.
+The Phase 0-4 implementation has been accepted, committed, and pushed. Phase 7 has a completed provider/model projection and provider-runtime reuse slice ready for close-out.
 
 ## Project Goal
 
@@ -267,8 +267,10 @@ Phase 6:
 
 Phase 7:
 
-- Deeper Provider Settings polish and Agent Sessions model picker integration after Phase 3 restores the practical Director Settings entry.
-- Provider runtime, request/stream parsing, model resolver fallback, and direct model-provider projection should reuse the old Director 120 reference semantics from `E:\Projects\Director-Code-batch\Director-Code-112-check\vscode.generated\reference-director-120\layers\director\vscode`; avoid growing a second hand-written provider stack unless AgentHost/secret/Copilot boundaries require adaptation.
+- Completed locally on 2026-05-27: AgentHost Director model projection carries provider display name, API type, model family/version, context/output token limits, capabilities, and missing-auth status without secrets.
+- Completed locally on 2026-05-27: provider HTTP/SSE execution and response parsing moved behind `src/vs/platform/agentHost/node/director/providers/**`, and `DirectorAgentEngineAdapter` now consumes that shared node runtime instead of maintaining a second hand-written provider parser.
+- Completed locally on 2026-05-27: Workbench registers a `director-code` `LanguageModelChatProvider` surface that projects Director-managed registry/model metadata into broader model pickers without Copilot CAPI or GitHub Copilot auth. Direct `director-code` requests route through AgentHost Director sessions as the narrow Phase 7 bridge, keeping provider HTTP node-owned and credentials turn-time only.
+- Provider runtime, request/stream parsing, model resolver fallback, and direct model-provider projection should continue to reuse the old Director 120 reference semantics from `E:\Projects\Director-Code-batch\Director-Code-112-check\vscode.generated\reference-director-120\layers\director\vscode`; avoid growing a second hand-written provider stack unless AgentHost/secret/Copilot boundaries require adaptation.
 
 Phase 8:
 

@@ -7,16 +7,19 @@ import './providerSettings/media/directorSettings.css';
 
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
-import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/editor.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../common/editor.js';
+import { ILanguageModelsService } from '../../chat/common/languageModels.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { IDirectorRuntimeCredentialService } from '../../../../platform/agentHost/common/directorRuntimeCredentials.js';
 import { DirectorApiKeyService, DirectorModelResolverService, DirectorOAuthService, DirectorProviderConnectionTestService, DirectorProviderRegistryService, DirectorProviderSnapshotService, DirectorRuntimeCredentialService, IDirectorApiKeyService, IDirectorModelResolverService, IDirectorOAuthService, IDirectorProviderConnectionTestService, IDirectorProviderRegistryService, IDirectorProviderSnapshotService } from '../common/provider/directorProviderServices.js';
+import { createDirectorLanguageModelProviderDescriptor, DirectorLanguageModelProvider, DirectorLanguageModelVendor } from './directorLanguageModel/directorLanguageModelProvider.js';
 import { DirectorSettingsEditor } from './providerSettings/directorSettingsEditor.js';
 import { DirectorSettingsEditorInput, DirectorSettingsEditorInputSerializer } from './providerSettings/directorSettingsEditorInput.js';
 
@@ -41,11 +44,21 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 
 Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(DirectorSettingsEditorInput.ID, DirectorSettingsEditorInputSerializer);
 
-class DirectorCodeContribution implements IWorkbenchContribution {
+class DirectorCodeContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.directorCode';
 
-	constructor(@IDirectorProviderSnapshotService snapshotService: IDirectorProviderSnapshotService) {
+	constructor(
+		@IDirectorProviderSnapshotService snapshotService: IDirectorProviderSnapshotService,
+		@ILanguageModelsService languageModelsService: ILanguageModelsService,
+		@IInstantiationService instantiationService: IInstantiationService,
+	) {
+		super();
 		void snapshotService.writeSnapshot();
+		const descriptor = createDirectorLanguageModelProviderDescriptor();
+		languageModelsService.deltaLanguageModelChatProviderDescriptors([descriptor], []);
+		this._register(toDisposable(() => languageModelsService.deltaLanguageModelChatProviderDescriptors([], [descriptor])));
+		const provider = this._register(instantiationService.createInstance(DirectorLanguageModelProvider));
+		this._register(languageModelsService.registerLanguageModelProvider(DirectorLanguageModelVendor, provider));
 	}
 }
 

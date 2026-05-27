@@ -4,9 +4,18 @@ Updated: 2026-05-27
 
 ## Status
 
-In progress.
+Completed locally on 2026-05-27.
 
 Phase 7 follows Phase 4's accepted AgentHost Director runtime. The goal is to polish the provider/model surfaces around it and to stop provider-runtime drift from the old Director implementation. Configured Director providers should show up predictably in model pickers, and the runtime semantics should be reusable by later non-Copilot harnesses.
+
+Accepted Phase 7 slice:
+
+- AgentHost Director model projection carries provider display name, API type, family/version, token limits, capabilities, and missing-auth status without secrets.
+- AgentHost node provider runtime now owns HTTP/SSE request execution and response parsing under `src/vs/platform/agentHost/node/director/providers/**`; `DirectorAgentEngineAdapter` consumes that runtime instead of maintaining a second parser.
+- OpenAI-compatible, Anthropic Messages, Gemini, and OpenAI Codex response parsing stay behind the shared runtime boundary, with DeepSeek/OpenAI-compatible `reasoning_content` fallback preserved.
+- Workbench registers a `director-code` `LanguageModelChatProvider` descriptor and projects Director-managed models from the Workbench registry/model resolver into the broader model picker without Copilot CAPI or GitHub Copilot auth.
+- Direct `director-code` requests route through AgentHost Director sessions so provider HTTP remains node-owned; Workbench does not import AgentHost node transports or run provider HTTP itself.
+- Provider Settings model metadata and Refresh Models behavior from Phase 3 remain intact.
 
 ## Goal
 
@@ -103,6 +112,11 @@ Scope:
 - Resolve API-key/OAuth credentials only when a real `sendChatRequest` happens.
 - Use the shared Director provider runtime from Phase 7.2, not a Workbench-side duplicate request implementation.
 - Keep Director Settings as the provider management command.
+
+Accepted adaptation:
+
+- The direct `director-code` provider uses AgentHost Director sessions as the narrow request bridge for this phase. That preserves the node-owned provider runtime and turn-time credential bridge while avoiding a new Workbench-side HTTP stack.
+- Old `providerGroupProjection.ts` remains the semantic reference, but the current VS Code descriptor type only accepts the existing management descriptor shape here. Provider grouping can be expanded later if the model-provider descriptor schema grows a compatible configuration surface.
 
 Acceptance:
 

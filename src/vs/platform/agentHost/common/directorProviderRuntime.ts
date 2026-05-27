@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type { DirectorProviderApiType, DirectorProviderCapabilities } from './directorProviderBackend.js';
+import type { DirectorNormalizedMessage, DirectorNormalizedToolCall, DirectorNormalizedToolDefinition } from './directorProviderAdapters.js';
 
 export type DirectorRuntimeProviderApiType = Extract<DirectorProviderApiType, 'anthropic-messages' | 'openai-completions' | 'openai-codex' | 'gemini-generative'>;
 
@@ -24,44 +25,21 @@ export type DirectorProviderFetch = (input: RequestInfo | URL, init?: RequestIni
 export interface DirectorCreateMessageParams {
 	readonly model: string;
 	readonly maxTokens: number;
-	readonly system: string;
-	readonly messages: readonly DirectorNormalizedMessageParam[];
-	readonly tools?: readonly DirectorNormalizedTool[];
+	readonly messages: readonly DirectorNormalizedMessage[];
+	readonly tools?: readonly DirectorNormalizedToolDefinition[];
 	readonly thinking?: { readonly type: string; readonly budget_tokens?: number };
 	readonly abortSignal?: AbortSignal;
-}
-
-export interface DirectorNormalizedMessageParam {
-	readonly role: 'user' | 'assistant';
-	readonly content: string | readonly DirectorNormalizedContentBlock[];
-}
-
-export type DirectorNormalizedContentBlock =
-	| { readonly type: 'text'; readonly text: string }
-	| { readonly type: 'tool_use'; readonly id: string; readonly name: string; readonly input: unknown; readonly thoughtSignature?: string }
-	| { readonly type: 'tool_result'; readonly tool_use_id: string; readonly content: string; readonly is_error?: boolean }
-	| { readonly type: 'image'; readonly source: unknown }
-	| { readonly type: 'thinking'; readonly thinking: string };
-
-export interface DirectorNormalizedTool {
-	readonly name: string;
-	readonly description: string;
-	readonly input_schema: {
-		readonly type: 'object';
-		readonly properties: Record<string, unknown>;
-		readonly required?: readonly string[];
-	};
 }
 
 export interface DirectorCreateMessageResponse {
 	readonly content: readonly DirectorNormalizedResponseBlock[];
 	readonly stopReason: 'end_turn' | 'max_tokens' | 'tool_use' | string;
-	readonly usage: DirectorTokenUsage;
+	readonly usage?: DirectorTokenUsage;
 }
 
 export type DirectorNormalizedResponseBlock =
 	| { readonly type: 'text'; readonly text: string }
-	| { readonly type: 'tool_use'; readonly id: string; readonly name: string; readonly input: unknown; readonly thoughtSignature?: string }
+	| { readonly type: 'tool_use'; readonly toolCall: DirectorNormalizedToolCall; readonly thoughtSignature?: string }
 	| { readonly type: 'thinking'; readonly thinking: string };
 
 export interface DirectorTokenUsage {
@@ -77,7 +55,7 @@ export type DirectorProviderStreamEvent =
 	| { readonly type: 'tool_input_delta'; readonly json: string; readonly index?: number }
 	| { readonly type: 'tool_call_delta'; readonly index: number; readonly id?: string; readonly name?: string; readonly arguments?: string }
 	| { readonly type: 'thinking'; readonly thinking: string }
-	| { readonly type: 'message_complete'; readonly usage: DirectorTokenUsage; readonly stopReason: string };
+	| { readonly type: 'message_complete'; readonly usage?: DirectorTokenUsage; readonly stopReason: string };
 
 export interface DirectorLLMProvider {
 	readonly apiType: DirectorRuntimeProviderApiType;

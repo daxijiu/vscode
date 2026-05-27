@@ -457,6 +457,8 @@ Exit criteria:
 
 ### Phase 7 - Provider Settings Polish and Model Picker
 
+Status: completed locally on 2026-05-27. See `doc/director-agent-provider-phase7-plan.md`.
+
 Goal: polish provider/backend configuration and integrate it more deeply with Agent Sessions model/session selection, after Phase 3 has restored the practical Director Settings entry.
 
 Scope:
@@ -487,6 +489,8 @@ Exit criteria:
 - User can configure an API-key provider and select its model for a Director/Claude-like agent session.
 - Director-managed provider models can participate in AgentHost/model-picker flows without implying Copilot login or Copilot entitlement.
 - Restart preserves provider registry and model visibility.
+- AgentHost node owns provider HTTP/SSE runtime; Workbench only owns registry/settings/snapshot/model projection and direct-provider request wrapping.
+- Direct `director-code` model requests route through AgentHost Director sessions, so credentials are resolved only at turn time and never written into registry, snapshot, metadata, or logs.
 
 ### Phase 8 - OAuth Hardening and Additional Provider Support
 

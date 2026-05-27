@@ -44,6 +44,7 @@ Current docs:
 - `doc/director-agent-provider-phase2-plan.md`
 - `doc/director-agent-provider-phase3-plan.md`
 - `doc/director-agent-provider-phase4-plan.md`
+- `doc/director-agent-provider-phase7-plan.md`
 - `doc/research/claude-agenthost-phase-handoff.md`
 - `doc/research/custom-agent-provider-backend-plan.md`
 - `MEMORY.md`
@@ -165,3 +166,12 @@ Accepted Phase 4 implementation:
 - Plan Mode is recognized through AgentHost session config and deliberately gated with a clear message until old `director_present_plan` semantics have an AgentHost-shaped command/action contract.
 - Multi-turn history is normalized into provider messages with an in-memory trim guard; provider retry is side-effect-safe and does not replay calls after a tool side effect has run.
 - Deferred beyond Phase 4 / later tool-parity slices: old Director reviewable edit tools, real old Director Plan Mode presentation, durable compaction/session restore, local/custom runtime adapters, public OpenAI Responses support separate from OpenAI Codex, Claude SDK de-CAPI, and additional OAuth hardening. `execution_subagent` remains policy-listed and will surface when its AgentHost client-tool implementation is registered.
+
+Accepted Phase 7 implementation:
+
+- AgentHost Director model projection now carries provider display name, API type, model family/version, context/output token limits, capabilities, and missing-auth status without writing secrets into model metadata.
+- Provider HTTP/SSE runtime execution and response parsing live under `src/vs/platform/agentHost/node/director/providers/**`; common code keeps DTOs and pure helpers only.
+- `DirectorAgentEngineAdapter` consumes the shared node provider runtime while preserving provider-backed turns, DeepSeek/OpenAI-compatible `reasoning_content` fallback, provider-native tool calls, usage reporting, retry classification, and no retry after side-effecting tools.
+- Workbench registers a `director-code` `LanguageModelChatProvider` surface that projects Director-managed models from the Workbench registry/model resolver into broader VS Code model pickers without Copilot CAPI or GitHub Copilot auth.
+- Direct `director-code` requests route through AgentHost Director sessions for the narrow Phase 7 bridge, so provider HTTP remains node-owned and credentials still resolve only through the turn-time credential bridge.
+- Provider Settings / Refresh Models remain Workbench-owned and secret-redacted.
