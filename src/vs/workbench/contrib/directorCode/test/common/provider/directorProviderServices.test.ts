@@ -174,7 +174,7 @@ suite('directorProviderServices', () => {
 			...base,
 			models: [
 				{ id: `${base.id}:hidden-model`, providerModelId: 'hidden-model', name: 'Hidden Model', hidden: true, maxContextWindow: 1000 },
-				{ id: `${base.id}:visible-model`, providerModelId: 'visible-model', name: 'Visible Model', maxContextWindow: 2000 },
+				{ id: `${base.id}:visible-model`, providerModelId: 'visible-model', name: 'Visible Model', family: 'visible-family', version: '2026-05-27', maxContextWindow: 2000, maxOutputTokens: 4096 },
 			],
 			defaultModelId: `${base.id}:hidden-model`,
 		};
@@ -190,7 +190,10 @@ suite('directorProviderServices', () => {
 				id: model.id,
 				providerModelId: model.providerModelId,
 				name: model.name,
+				family: model.family,
+				version: model.version,
 				maxContextWindow: model.maxContextWindow,
+				maxOutputTokens: model.maxOutputTokens,
 			})),
 			leaksHidden: JSON.stringify(snapshot).includes('hidden-model'),
 		}, {
@@ -200,7 +203,10 @@ suite('directorProviderServices', () => {
 				id: `${base.id}:visible-model`,
 				providerModelId: 'visible-model',
 				name: 'Visible Model',
+				family: 'visible-family',
+				version: '2026-05-27',
 				maxContextWindow: 2000,
+				maxOutputTokens: 4096,
 			}],
 			leaksHidden: false,
 		});

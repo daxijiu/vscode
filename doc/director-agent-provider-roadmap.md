@@ -463,6 +463,7 @@ Scope:
 
 - Polish the Provider Manager UI restored in Phase 3.
 - Project provider models into AgentHost model picker.
+- Reuse old Director provider runtime semantics as the Phase 7 source of truth before broadening direct model-provider surfaces. The current reference tree is `E:\Projects\Director-Code-batch\Director-Code-112-check\vscode.generated\reference-director-120\layers\director\vscode`.
 - Evaluate and, if practical, expose Director Provider Backend models through VS Code's `LanguageModelChatProvider` surface so the broader VS Code model picker can see Director-managed providers without using Copilot CAPI. The provider projection should use Director Settings as its management command, return cached secret-free model metadata in silent discovery, and resolve credentials only when handling a real request.
 - Map Director model capabilities into VS Code language model metadata, including model name/family/version where available, token limits, image input, and tool-calling support.
 - Add session config schema for provider/model/harness selection if needed.
@@ -472,6 +473,7 @@ Source concepts to reuse:
 
 - Old `providerSettingsWidget.ts`
 - Old `directorCodeSettingsEditor.ts`
+- Old `providerTypes.ts`, `providerFactory.ts`, `abstractProvider.ts`, `requestFetch.ts`, `openaiProvider.ts`, `anthropicProvider.ts`, `geminiProvider.ts`, `openaiCodexProvider.ts`, and `modelResolver.ts`
 - Old `directorCodeModelProvider.ts`
 - Old `providerGroupProjection.ts`
 

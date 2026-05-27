@@ -13,14 +13,14 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../log/common/log.js';
 import { platformSessionSchema } from '../../common/agentHostSchema.js';
-import { DirectorAgentProviderId, IDirectorProviderBackendHub, isResolvedBackend, toAgentModelInfo } from '../../common/directorProviderBackend.js';
+import { DirectorAgentProviderId, IDirectorProviderBackendHub, isResolvedBackend, toAgentModelInfo, type DirectorProviderInstance } from '../../common/directorProviderBackend.js';
 import { IDirectorRuntimeCredentialService } from '../../common/directorRuntimeCredentials.js';
 import { ISyncedCustomization } from '../../common/agentPluginManager.js';
 import { AgentProvider, AgentSession, AgentSignal, IAgent, IAgentCreateSessionConfig, IAgentCreateSessionResult, IAgentDescriptor, IAgentModelInfo, IAgentResolveSessionConfigParams, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata } from '../../common/agentService.js';
 import { SessionConfigKey } from '../../common/sessionConfigKeys.js';
 import { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
 import { MessageAttachment, ModelSelection, ProtectedResourceMetadata, ToolDefinition } from '../../common/state/protocol/state.js';
-import { CustomizationRef, PendingMessage, SessionInputAnswer, SessionInputResponseKind, ToolCallResult, Turn } from '../../common/state/sessionState.js';
+import { CustomizationRef, PendingMessage, PolicyState, SessionInputAnswer, SessionInputResponseKind, ToolCallResult, Turn } from '../../common/state/sessionState.js';
 import { IAgentConfigurationService } from '../agentConfigurationService.js';
 import { DirectorAgentSession } from './directorAgentSession.js';
 
@@ -66,12 +66,32 @@ export class DirectorAgent extends Disposable implements IAgent {
 
 	private async doRefreshModels(): Promise<void> {
 		try {
+			const providers = await this._backendHub.listProviderInstances();
+			const providersById = new Map(providers.map(provider => [provider.id, provider]));
 			const models = await this._backendHub.listModels();
-			const availableModels = [];
+			const availableModels: IAgentModelInfo[] = [];
 			for (const model of models) {
+				const provider = providersById.get(model.providerInstanceId);
+				if (!provider?.enabled) {
+					continue;
+				}
+				const projectedModel = model.providerDisplayName !== undefined
+					? model
+					: { ...model, providerDisplayName: provider.displayName };
 				const resolved = await this._backendHub.resolveBackend({ providerInstanceId: model.providerInstanceId, modelId: model.id });
 				if (isResolvedBackend(resolved)) {
-					availableModels.push(toAgentModelInfo(this.id, model));
+					availableModels.push(toAgentModelInfo(this.id, projectedModel));
+				} else if (resolved.status === 'missingAuth') {
+					const modelInfo = toAgentModelInfo(this.id, projectedModel);
+					availableModels.push({
+						...modelInfo,
+						policyState: PolicyState.Unconfigured,
+						_meta: {
+							...(modelInfo._meta ?? {}),
+							authStateKind: getDirectorProviderAuthStateKind(provider),
+							statusMessage: resolved.message,
+						},
+					});
 				}
 			}
 			if (!equals(this._models.get(), availableModels)) {
@@ -285,6 +305,11 @@ export class DirectorAgent extends Disposable implements IAgent {
 	private _readMode(sessionUri: URI): 'interactive' | 'plan' | undefined {
 		return this._configurationService.getEffectiveValue(sessionUri.toString(), platformSessionSchema, SessionConfigKey.Mode);
 	}
+}
+
+function getDirectorProviderAuthStateKind(provider: DirectorProviderInstance): string | undefined {
+	const authState = (provider as DirectorProviderInstance & { readonly authState?: { readonly kind?: unknown } }).authState;
+	return typeof authState?.kind === 'string' ? authState.kind : undefined;
 }
 
 class DirectorSessionEntry extends Disposable {

@@ -140,6 +140,13 @@ Accepted Phase 3 implementation:
 
 Phase 4 should wrap the old Director `AgentEngine` as an AgentHost harness adapter. Keep Claude SDK de-CAPI migration, additional OAuth providers beyond OpenAI Codex OAuth, public OpenAI Responses support, and session restore in their later roadmap phases unless the user explicitly expands the scope.
 
+Director Provider porting rule:
+
+- Old Director provider runtime and model-provider projection code are the default source of truth for Phase 7 provider behavior because they were already accepted in the old Director line.
+- Reference `E:\Projects\Director-Code-batch\Director-Code-112-check\vscode.generated\reference-director-120\layers\director\vscode`, especially `providerTypes.ts`, `providerFactory.ts`, `abstractProvider.ts`, `requestFetch.ts`, `openaiProvider.ts`, `anthropicProvider.ts`, `geminiProvider.ts`, `openaiCodexProvider.ts`, `modelResolver.ts`, `directorCodeModelProvider.ts`, and `providerGroupProjection.ts`.
+- Reuse old request shape, streaming event, reasoning/tool/image conversion, model resolver fallback, and provider group projection semantics unless they conflict with the current AgentHost architecture, Director-owned Secret Storage boundary, or Copilot isolation.
+- Workbench may own registry/auth/secrets/settings/snapshot orchestration, but it must not import AgentHost node transports or grow a second provider HTTP runtime.
+
 Director Agent core/tool porting rule:
 
 - Old Director agent core, AgentEngine loop, tool registry, tool prompts/descriptions, tool execution, tool result handling, and Plan Mode semantics are the default source of truth because they were already accepted in the old Director line.

@@ -32,7 +32,7 @@ import { ChatRequestQueueKind, ElicitationState, IChatService, IChatMarkdownCont
 import { IChatEditingService } from '../../../common/editing/chatEditingService.js';
 import { IMarkdownString } from '../../../../../../base/common/htmlContent.js';
 import { IChatSessionsService, type IChatSessionRequestHistoryItem } from '../../../common/chatSessionsService.js';
-import { ILanguageModelsService, type ILanguageModelChatMetadata } from '../../../common/languageModels.js';
+import { ILanguageModelsService, type ILanguageModelChatMetadata, type IUserFriendlyLanguageModel } from '../../../common/languageModels.js';
 import { IProductService } from '../../../../../../platform/product/common/productService.js';
 import { IOpenerService } from '../../../../../../platform/opener/common/opener.js';
 import { TestInstantiationService } from '../../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
@@ -389,6 +389,7 @@ function createTestServices(disposables: DisposableStore, workingDirectoryResolv
 
 	const chatAgentService = new MockChatAgentService();
 	const chatWidgetService = new MockChatWidgetService();
+	const languageModelProviderDescriptors: IUserFriendlyLanguageModel[] = [];
 	const openerService: { openedUrls: (string | URI)[]; openShouldFail: boolean; openResult: boolean } & Partial<IOpenerService> = {
 		openedUrls: [],
 		openShouldFail: false,
@@ -417,7 +418,15 @@ function createTestServices(disposables: DisposableStore, workingDirectoryResolv
 	instantiationService.stub(IDefaultAccountService, { onDidChangeDefaultAccount: Event.None, getDefaultAccount: async () => null });
 	instantiationService.stub(IAuthenticationService, { onDidChangeSessions: Event.None, ...authServiceOverride });
 	instantiationService.stub(ILanguageModelsService, {
-		deltaLanguageModelChatProviderDescriptors: () => { },
+		deltaLanguageModelChatProviderDescriptors: (added, removed) => {
+			for (const descriptor of removed) {
+				const index = languageModelProviderDescriptors.findIndex(existing => existing.vendor === descriptor.vendor);
+				if (index >= 0) {
+					languageModelProviderDescriptors.splice(index, 1);
+				}
+			}
+			languageModelProviderDescriptors.push(...added);
+		},
 		registerLanguageModelProvider: () => toDisposable(() => { }),
 		lookupLanguageModel: (modelId: string) => languageModels?.get(modelId),
 	});
@@ -509,11 +518,11 @@ function createTestServices(disposables: DisposableStore, workingDirectoryResolv
 	} as Partial<IAgentHostUntitledProvisionalSessionService> as IAgentHostUntitledProvisionalSessionService);
 	instantiationService.stub(IOpenerService, openerService as IOpenerService);
 
-	return { instantiationService, agentHostService, chatAgentService, chatWidgetService, chatService, openerService };
+	return { instantiationService, agentHostService, chatAgentService, chatWidgetService, chatService, openerService, languageModelProviderDescriptors };
 }
 
 function createContribution(disposables: DisposableStore, opts?: { authServiceOverride?: Partial<IAuthenticationService>; workingDirectoryResolver?: { resolve(sessionResource: URI): URI | undefined; isNewSession?: (sessionResource: URI) => boolean }; languageModels?: ReadonlyMap<string, ILanguageModelChatMetadata>; provisionalServiceOverride?: Partial<IAgentHostUntitledProvisionalSessionService>; directorAgentEnabled?: boolean }) {
-	const { instantiationService, agentHostService, chatAgentService, chatWidgetService, chatService, openerService } = createTestServices(disposables, opts?.workingDirectoryResolver, opts?.authServiceOverride, opts?.languageModels, opts?.provisionalServiceOverride, opts?.directorAgentEnabled);
+	const { instantiationService, agentHostService, chatAgentService, chatWidgetService, chatService, openerService, languageModelProviderDescriptors } = createTestServices(disposables, opts?.workingDirectoryResolver, opts?.authServiceOverride, opts?.languageModels, opts?.provisionalServiceOverride, opts?.directorAgentEnabled);
 
 	const listController = disposables.add(instantiationService.createInstance(AgentHostSessionListController, 'agent-host-copilot', 'copilot', agentHostService, undefined, 'local', () => true));
 	const sessionHandler = disposables.add(instantiationService.createInstance(AgentHostSessionHandler, {
@@ -528,7 +537,7 @@ function createContribution(disposables: DisposableStore, opts?: { authServiceOv
 	}));
 	const contribution = disposables.add(instantiationService.createInstance(AgentHostContribution));
 
-	return { contribution, listController, sessionHandler, agentHostService, chatAgentService, chatWidgetService, chatService, instantiationService, openerService };
+	return { contribution, listController, sessionHandler, agentHostService, chatAgentService, chatWidgetService, chatService, instantiationService, openerService, languageModelProviderDescriptors };
 }
 
 function makeRequest(overrides: Partial<{ message: string; sessionResource: URI; variables: IChatAgentRequest['variables']; userSelectedModelId: string; modelConfiguration: Record<string, unknown>; agentHostSessionConfig: Record<string, string>; agentId: string }> = {}): IChatAgentRequest {
@@ -702,6 +711,27 @@ suite('AgentHostChatContribution', () => {
 			const { chatAgentService } = createContribution(disposables);
 
 			assert.ok(chatAgentService.registeredAgents.has('agent-host-copilot'));
+		});
+
+		test('adds Director Settings management command for Director models', async () => {
+			const { agentHostService, languageModelProviderDescriptors } = createContribution(disposables);
+
+			agentHostService.setRootState({
+				agents: [
+					{ provider: 'director', displayName: 'Director', description: 'Director agent', models: [] },
+					{ provider: 'copilot', displayName: 'Copilot', description: 'Copilot agent', models: [] },
+				],
+				activeSessions: 0,
+			});
+			await timeout(0);
+
+			assert.deepStrictEqual(languageModelProviderDescriptors.map(descriptor => ({
+				vendor: descriptor.vendor,
+				managementCommand: descriptor.managementCommand,
+			})), [
+				{ vendor: 'agent-host-director', managementCommand: 'director-code.openSettings' },
+				{ vendor: 'agent-host-copilot', managementCommand: undefined },
+			]);
 		});
 	});
 
@@ -2777,7 +2807,21 @@ suite('AgentHostChatContribution', () => {
 		test('maps models with correct metadata', async () => {
 			const provider = disposables.add(new AgentHostLanguageModelProvider('agent-host-copilot', 'agent-host-copilot'));
 			provider.updateModels([
-				{ provider: 'copilot', id: 'gpt-4o', name: 'GPT-4o', maxContextWindow: 128000, supportsVision: true, _meta: { multiplierNumeric: 1.5 } },
+				{
+					provider: 'copilot',
+					id: 'gpt-4o',
+					name: 'GPT-4o',
+					maxContextWindow: 128000,
+					supportsVision: true,
+					_meta: {
+						multiplierNumeric: 1.5,
+						providerDisplayName: 'OpenAI Compatible',
+						family: 'gpt-4o',
+						version: '2026-05-27',
+						maxOutputTokens: 16384,
+						capabilities: { vision: true, toolCalling: false, agentMode: true },
+					},
+				},
 			]);
 
 			const models = await provider.provideLanguageModelChatInfo({}, CancellationToken.None);
@@ -2785,8 +2829,13 @@ suite('AgentHostChatContribution', () => {
 			assert.strictEqual(models.length, 1);
 			assert.strictEqual(models[0].identifier, 'agent-host-copilot:gpt-4o');
 			assert.strictEqual(models[0].metadata.name, 'GPT-4o');
+			assert.strictEqual(models[0].metadata.detail, 'OpenAI Compatible');
+			assert.strictEqual(models[0].metadata.family, 'gpt-4o');
+			assert.strictEqual(models[0].metadata.version, '2026-05-27');
 			assert.strictEqual(models[0].metadata.maxInputTokens, 128000);
+			assert.strictEqual(models[0].metadata.maxOutputTokens, 16384);
 			assert.strictEqual(models[0].metadata.capabilities?.vision, true);
+			assert.strictEqual(models[0].metadata.capabilities?.toolCalling, false);
 			assert.strictEqual(models[0].metadata.pricing, '1.5x');
 			assert.strictEqual(models[0].metadata.multiplierNumeric, 1.5);
 			assert.strictEqual(models[0].metadata.targetChatSessionType, 'agent-host-copilot');

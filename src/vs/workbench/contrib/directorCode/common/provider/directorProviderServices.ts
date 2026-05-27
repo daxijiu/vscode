@@ -39,8 +39,10 @@ export interface DirectorStoredProviderModel {
 	readonly providerModelId?: string;
 	readonly name?: string;
 	readonly family?: string;
+	readonly version?: string;
 	readonly hidden?: boolean;
 	readonly maxContextWindow?: number;
+	readonly maxOutputTokens?: number;
 	readonly supportsVision?: boolean;
 	readonly capabilities?: DirectorProviderCapabilities;
 }
@@ -329,7 +331,9 @@ export class DirectorModelResolverService implements IDirectorModelResolverServi
 				providerModelId,
 				name: model.name ?? providerModelId,
 				family: model.family ?? provider.kind,
+				version: model.version,
 				maxContextWindow: model.maxContextWindow,
+				maxOutputTokens: model.maxOutputTokens,
 				supportsVision: model.supportsVision ?? false,
 				capabilities: model.capabilities ?? defaultCapabilities(provider.apiType),
 				apiType: provider.apiType,
@@ -426,6 +430,7 @@ export class DirectorModelResolverService implements IDirectorModelResolverServi
 				name: model.display_name,
 				family: model.id!.includes('claude') ? 'claude' : provider.kind,
 				maxContextWindow: model.max_input_tokens,
+				maxOutputTokens: model.max_tokens,
 			}));
 	}
 
@@ -450,6 +455,7 @@ export class DirectorModelResolverService implements IDirectorModelResolverServi
 					name: model.displayName,
 					family: 'gemini',
 					maxContextWindow: model.inputTokenLimit,
+					maxOutputTokens: model.outputTokenLimit,
 				});
 			});
 	}
@@ -711,8 +717,10 @@ function normalizeStoredModel(providerInstanceId: string, model: DirectorStoredP
 		providerModelId,
 		name: model.name ?? providerModelId,
 		...(model.family !== undefined ? { family: model.family } : {}),
+		...(model.version !== undefined ? { version: model.version } : {}),
 		...(model.hidden !== undefined ? { hidden: model.hidden } : {}),
 		...(model.maxContextWindow !== undefined ? { maxContextWindow: model.maxContextWindow } : {}),
+		...(model.maxOutputTokens !== undefined ? { maxOutputTokens: model.maxOutputTokens } : {}),
 		...(model.supportsVision !== undefined ? { supportsVision: model.supportsVision } : {}),
 		...(model.capabilities !== undefined ? { capabilities: model.capabilities } : {}),
 	};
@@ -806,7 +814,9 @@ interface DirectorOpenAICodexModelList {
 function createStoredModel(providerInstanceId: string, providerModelId: string, options: {
 	readonly name?: string;
 	readonly family?: string;
+	readonly version?: string;
 	readonly maxContextWindow?: number;
+	readonly maxOutputTokens?: number;
 	readonly supportsVision?: boolean;
 } = {}): DirectorStoredProviderModel {
 	const trimmedModelId = providerModelId.trim();
@@ -815,7 +825,9 @@ function createStoredModel(providerInstanceId: string, providerModelId: string, 
 		providerModelId: trimmedModelId,
 		name: options.name ?? trimmedModelId,
 		...(options.family !== undefined ? { family: options.family } : {}),
+		...(options.version !== undefined ? { version: options.version } : {}),
 		...(options.maxContextWindow !== undefined ? { maxContextWindow: options.maxContextWindow } : {}),
+		...(options.maxOutputTokens !== undefined ? { maxOutputTokens: options.maxOutputTokens } : {}),
 		...(options.supportsVision !== undefined ? { supportsVision: options.supportsVision } : {}),
 	};
 }

@@ -268,6 +268,7 @@ Phase 6:
 Phase 7:
 
 - Deeper Provider Settings polish and Agent Sessions model picker integration after Phase 3 restores the practical Director Settings entry.
+- Provider runtime, request/stream parsing, model resolver fallback, and direct model-provider projection should reuse the old Director 120 reference semantics from `E:\Projects\Director-Code-batch\Director-Code-112-check\vscode.generated\reference-director-120\layers\director\vscode`; avoid growing a second hand-written provider stack unless AgentHost/secret/Copilot boundaries require adaptation.
 
 Phase 8:
 

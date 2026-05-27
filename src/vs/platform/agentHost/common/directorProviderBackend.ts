@@ -55,8 +55,12 @@ export interface DirectorProviderModel {
 	readonly providerModelId?: string;
 	readonly name: string;
 	readonly family?: string;
+	readonly version?: string;
 	readonly maxContextWindow?: number;
+	readonly maxOutputTokens?: number;
 	readonly supportsVision: boolean;
+	readonly apiType?: DirectorProviderApiType;
+	readonly providerDisplayName?: string;
 	readonly capabilities?: DirectorProviderCapabilities;
 }
 
@@ -106,8 +110,24 @@ export function toAgentModelInfo(agentProvider: AgentProvider, model: DirectorPr
 		backendModelId: model.providerModelId ?? model.id,
 	};
 
+	if (model.providerDisplayName !== undefined) {
+		metadata.providerDisplayName = model.providerDisplayName;
+	}
+
+	if (model.apiType !== undefined) {
+		metadata.apiType = model.apiType;
+	}
+
 	if (model.family !== undefined) {
 		metadata.family = model.family;
+	}
+
+	if (model.version !== undefined) {
+		metadata.version = model.version;
+	}
+
+	if (model.maxOutputTokens !== undefined) {
+		metadata.maxOutputTokens = model.maxOutputTokens;
 	}
 
 	if (model.capabilities !== undefined) {

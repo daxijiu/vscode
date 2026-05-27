@@ -824,7 +824,7 @@ export class ProviderSettingsWidget extends Disposable {
 		}
 		const existingHasKey = args.existing ? await this.apiKeyService.hasProviderInstanceKey(args.existing.id) : false;
 		if (!args.keyInput.value.trim() && !existingHasKey) {
-			args.status(localize('directorSettings.refreshModelsMissingCredential', "A saved API key is required before models can be refreshed."), 'error');
+			args.status(localize('directorSettings.refreshModelsMissingCredential', "Saved provider credentials are required before models can be refreshed."), 'error');
 			return;
 		}
 

@@ -17,7 +17,7 @@ suite('directorProviderAdapters', () => {
 	];
 
 	test('builds provider-native request shapes from normalized messages', () => {
-		const anthropic = buildDirectorNativeMessageRequest({ apiType: 'anthropic-messages', baseURL: 'https://api.anthropic.com', modelId: 'claude-test', authHeader: 'secret', messages, maxTokens: 7, stream: true });
+		const anthropic = buildDirectorNativeMessageRequest({ apiType: 'anthropic-messages', baseURL: 'https://api.anthropic.com/v1', modelId: 'claude-test', authHeader: 'secret', messages, maxTokens: 7, stream: true });
 		const openai = buildDirectorNativeMessageRequest({ apiType: 'openai-completions', baseURL: 'https://api.openai.com/v1/', modelId: 'gpt-test', authHeader: 'secret', messages });
 		const gemini = buildDirectorNativeMessageRequest({ apiType: 'gemini-generative', baseURL: 'https://generativelanguage.googleapis.com/v1beta', modelId: 'gemini test', authHeader: 'secret', messages });
 		const codex = buildDirectorNativeMessageRequest({ apiType: 'openai-codex', baseURL: 'https://chatgpt.com/backend-api/codex', modelId: 'gpt-codex', authHeader: 'secret', messages });
@@ -64,6 +64,26 @@ suite('directorProviderAdapters', () => {
 				beta: 'responses=experimental',
 				inputRoles: ['user', 'user', 'assistant'],
 			},
+		});
+	});
+
+	test('uses max_completion_tokens for OpenAI o-series models', () => {
+		const request = buildDirectorNativeMessageRequest({
+			apiType: 'openai-completions',
+			baseURL: 'https://api.openai.com/v1',
+			modelId: 'o3-mini',
+			authHeader: 'secret',
+			messages,
+			maxTokens: 123,
+		});
+		const body = JSON.parse(request.body) as { readonly max_tokens?: number; readonly max_completion_tokens?: number };
+
+		assert.deepStrictEqual({
+			maxTokens: body.max_tokens,
+			maxCompletionTokens: body.max_completion_tokens,
+		}, {
+			maxTokens: undefined,
+			maxCompletionTokens: 123,
 		});
 	});
 

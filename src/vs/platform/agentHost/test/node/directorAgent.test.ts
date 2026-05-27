@@ -121,6 +121,8 @@ suite('DirectorAgent', () => {
 				id: model.id,
 				name: model.name,
 				providerInstanceId: model._meta?.providerInstanceId,
+				...(model.policyState !== undefined ? { policyState: model.policyState } : {}),
+				...(typeof model._meta?.statusMessage === 'string' ? { statusMessage: model._meta.statusMessage } : {}),
 			})),
 		}, {
 			descriptor: {
@@ -133,6 +135,14 @@ suite('DirectorAgent', () => {
 			models: [
 				{ provider: 'director', id: 'echo', name: 'Director Echo', providerInstanceId: 'director-fake' },
 				{ provider: 'director', id: 'echo-large', name: 'Director Echo Large', providerInstanceId: 'director-fake' },
+				{
+					provider: 'director',
+					id: 'needs-key',
+					name: 'Director Needs Key',
+					providerInstanceId: 'director-missing-key',
+					policyState: 'unconfigured',
+					statusMessage: 'Director provider \'director-missing-key\' requires api-key credentials.',
+				},
 			],
 		});
 	});

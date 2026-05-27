@@ -41,6 +41,12 @@ export class AgentHostLanguageModelProvider extends Disposable implements ILangu
 			.filter(m => m.policyState !== 'disabled')
 			.map(m => {
 				const multiplierNumeric = typeof m._meta?.multiplierNumeric === 'number' ? m._meta.multiplierNumeric : undefined;
+				const capabilities = readModelCapabilities(m);
+				const providerDisplayName = readStringMeta(m, 'providerDisplayName');
+				const maxOutputTokens = readNumberMeta(m, 'maxOutputTokens');
+				const family = readStringMeta(m, 'family') ?? m.id;
+				const version = readStringMeta(m, 'version') ?? '1.0';
+				const tooltip = readStringMeta(m, 'statusMessage');
 				return {
 					identifier: `${this._vendor}:${m.id}`,
 					metadata: {
@@ -48,19 +54,21 @@ export class AgentHostLanguageModelProvider extends Disposable implements ILangu
 						name: m.name,
 						id: m.id,
 						vendor: this._vendor,
-						version: '1.0',
-						family: m.id,
+						version,
+						family,
 						maxInputTokens: m.maxContextWindow ?? 0,
-						maxOutputTokens: 0,
+						maxOutputTokens: maxOutputTokens ?? 0,
 						isDefaultForLocation: {},
 						isUserSelectable: true,
+						detail: providerDisplayName,
+						tooltip,
 						pricing: multiplierNumeric !== undefined ? `${multiplierNumeric}x` : undefined,
 						multiplierNumeric,
 						targetChatSessionType: this._sessionType,
 						capabilities: {
-							vision: m.supportsVision ?? false,
-							toolCalling: true,
-							agentMode: true,
+							vision: capabilities.vision ?? m.supportsVision ?? false,
+							toolCalling: capabilities.toolCalling ?? true,
+							agentMode: capabilities.agentMode ?? true,
 						},
 						configurationSchema: this._toLanguageModelConfigurationSchema(m.configSchema),
 					},
@@ -97,4 +105,27 @@ export class AgentHostLanguageModelProvider extends Disposable implements ILangu
 	async provideTokenCount(): Promise<number> {
 		return 0;
 	}
+}
+
+function readStringMeta(model: SessionModelInfo, key: string): string | undefined {
+	const value = model._meta?.[key];
+	return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+}
+
+function readNumberMeta(model: SessionModelInfo, key: string): number | undefined {
+	const value = model._meta?.[key];
+	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function readModelCapabilities(model: SessionModelInfo): { readonly vision?: boolean; readonly toolCalling?: boolean; readonly agentMode?: boolean } {
+	const value = model._meta?.capabilities;
+	if (!value || typeof value !== 'object') {
+		return {};
+	}
+	const candidate = value as Record<string, unknown>;
+	return {
+		vision: typeof candidate.vision === 'boolean' ? candidate.vision : undefined,
+		toolCalling: typeof candidate.toolCalling === 'boolean' ? candidate.toolCalling : undefined,
+		agentMode: typeof candidate.agentMode === 'boolean' ? candidate.agentMode : undefined,
+	};
 }

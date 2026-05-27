@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type { DirectorProviderApiType } from './directorProviderBackend.js';
+import { applyDirectorOpenAIMaxTokens, buildDirectorProviderUrl } from './directorProviderRuntime.js';
 
 export type DirectorNormalizedMessageRole = 'system' | 'user' | 'assistant' | 'tool';
 
@@ -67,7 +68,7 @@ export function buildDirectorNativeMessageRequest(options: DirectorNativeMessage
 		case 'anthropic-messages':
 			return {
 				apiType: options.apiType,
-				url: `${normalizedBaseURL}/v1/messages`,
+				url: buildDirectorProviderUrl(normalizedBaseURL, '/v1/messages'),
 				method: 'POST',
 				headers: {
 					'content-type': 'application/json',
@@ -83,27 +84,29 @@ export function buildDirectorNativeMessageRequest(options: DirectorNativeMessage
 					stream: options.stream === true,
 				}),
 			};
-		case 'openai-completions':
+		case 'openai-completions': {
+			const openAIBody: Record<string, unknown> = {
+				model: options.modelId,
+				messages: buildOpenAIChatMessages(options.messages, options.reasoningEcho),
+				...(options.tools?.length ? { tools: buildOpenAITools(options.tools), tool_choice: 'auto' } : {}),
+				stream: options.stream === true,
+			};
+			applyDirectorOpenAIMaxTokens(openAIBody, options.modelId, maxTokens);
 			return {
 				apiType: options.apiType,
-				url: `${normalizedBaseURL}/chat/completions`,
+				url: buildDirectorProviderUrl(normalizedBaseURL, '/chat/completions'),
 				method: 'POST',
 				headers: {
 					authorization: `Bearer ${options.authHeader}`,
 					'content-type': 'application/json',
 				},
-				body: JSON.stringify({
-					model: options.modelId,
-					max_tokens: maxTokens,
-					messages: buildOpenAIChatMessages(options.messages, options.reasoningEcho),
-					...(options.tools?.length ? { tools: buildOpenAITools(options.tools), tool_choice: 'auto' } : {}),
-					stream: options.stream === true,
-				}),
+				body: JSON.stringify(openAIBody),
 			};
+		}
 		case 'openai-codex':
 			return {
 				apiType: options.apiType,
-				url: `${normalizedBaseURL}/responses`,
+				url: buildDirectorProviderUrl(normalizedBaseURL, '/responses'),
 				method: 'POST',
 				headers: {
 					authorization: `Bearer ${options.authHeader}`,
@@ -124,7 +127,7 @@ export function buildDirectorNativeMessageRequest(options: DirectorNativeMessage
 		case 'gemini-generative':
 			return {
 				apiType: options.apiType,
-				url: `${normalizedBaseURL}/models/${encodeURIComponent(options.modelId)}:generateContent`,
+				url: buildDirectorProviderUrl(normalizedBaseURL, `/models/${encodeURIComponent(options.modelId)}:generateContent`),
 				method: 'POST',
 				headers: {
 					'content-type': 'application/json',

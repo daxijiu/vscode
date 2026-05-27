@@ -11,6 +11,7 @@ import { observableValue } from '../../../../../../base/common/observable.js';
 import { ThemeIcon } from '../../../../../../base/common/themables.js';
 import { localize } from '../../../../../../nls.js';
 import { AgentHostDirectorAgentEnabledSettingId, AgentHostEnabledSettingId, IAgentHostService, type AgentProvider } from '../../../../../../platform/agentHost/common/agentService.js';
+import { DirectorAgentProviderId } from '../../../../../../platform/agentHost/common/directorProviderBackend.js';
 import { type ProtectedResourceMetadata } from '../../../../../../platform/agentHost/common/state/protocol/state.js';
 import { type AgentInfo, type CustomizationRef, type RootState } from '../../../../../../platform/agentHost/common/state/sessionState.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
@@ -246,7 +247,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 		// Language model provider.
 		// Order matters: `updateModels` must be called after
 		// `registerLanguageModelProvider` so the initial `onDidChange` is observed.
-		const vendorDescriptor = { vendor, displayName: agent.displayName, configuration: undefined, managementCommand: undefined, when: undefined };
+		const vendorDescriptor = { vendor, displayName: agent.displayName, configuration: undefined, managementCommand: agent.provider === DirectorAgentProviderId ? 'director-code.openSettings' : undefined, when: undefined };
 		this._languageModelsService.deltaLanguageModelChatProviderDescriptors([vendorDescriptor], []);
 		store.add(toDisposable(() => this._languageModelsService.deltaLanguageModelChatProviderDescriptors([], [vendorDescriptor])));
 		const modelProvider = store.add(new AgentHostLanguageModelProvider(sessionType, vendor));
