@@ -69,6 +69,8 @@ import { registerPendingEditContentProvider } from './copilot/pendingEditContent
 import { join } from '../../../base/common/path.js';
 import { createAgentHostTelemetryService } from './agentHostTelemetryService.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
+import { getExternalAcpAgentSnapshotResourceFromAppSettingsHome } from '../common/acpAgentConfig.js';
+import { registerAcpAgentsFromSnapshot } from './acp/acpAgentProviderRegistration.js';
 
 // Entry point for the agent host utility process.
 // Sets up IPC, logging, and registers agent providers (Copilot).
@@ -177,6 +179,13 @@ async function startAgentHost(): Promise<void> {
 		if (process.env[AgentHostEnableDirectorAgentEnvVar]) {
 			agentService.registerProvider(instantiationService.createInstance(DirectorAgent));
 		}
+		await registerAcpAgentsFromSnapshot({
+			agentService,
+			snapshotResource: getExternalAcpAgentSnapshotResourceFromAppSettingsHome(environmentService.appSettingsHome),
+			fileService,
+			logService,
+			disposables,
+		});
 	} catch (err) {
 		logService.error('Failed to create AgentService', err);
 		throw err;

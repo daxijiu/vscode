@@ -59,6 +59,7 @@ interface ISessionTypePickerItem {
 	readonly providerId: string;
 	readonly sessionTypeId: string;
 	readonly label: string;
+	readonly description?: string;
 	readonly checked?: boolean;
 }
 
@@ -210,12 +211,17 @@ export class SessionTypePicker extends Disposable {
 			}
 			lastProviderId = providerId;
 			const isCurrent = this._picked?.providerId === providerId && this._picked?.sessionTypeId === sessionType.id;
-			const item: ISessionTypePickerItem = isCurrent
-				? { providerId, sessionTypeId: sessionType.id, label: sessionType.label, checked: true }
-				: { providerId, sessionTypeId: sessionType.id, label: sessionType.label };
+			const item: ISessionTypePickerItem = {
+				providerId,
+				sessionTypeId: sessionType.id,
+				label: sessionType.label,
+				...(sessionType.description ? { description: sessionType.description } : {}),
+				...(isCurrent ? { checked: true } : {}),
+			};
 			groupedItems.push({
 				kind: ActionListItemKind.Action,
 				label: sessionType.label,
+				detail: sessionType.description,
 				group: hasDuplicateLabels ? {
 					title: isFirstInGroup ? groupTitle : '',
 					icon: sessionType.icon,
@@ -245,7 +251,13 @@ export class SessionTypePicker extends Disposable {
 			undefined,
 			[],
 			{
-				getAriaLabel: (item) => item.label ?? '',
+				getAriaLabel: (element) => {
+					const item = element.item;
+					if (!item) {
+						return element.label ?? '';
+					}
+					return item.description ? localize('sessionTypePicker.itemAriaLabelWithDescription', "{0}, {1}", item.label, item.description) : item.label;
+				},
 				getWidgetAriaLabel: () => localize('sessionTypePicker.ariaLabel', "Session Type"),
 			},
 			{ showGroupTitleOnFirstItem: hasDuplicateLabels },

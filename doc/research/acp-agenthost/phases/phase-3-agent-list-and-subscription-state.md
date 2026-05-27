@@ -103,6 +103,13 @@ npm run compile-check-ts-native
 npm run test-node -- --grep agentHost
 ```
 
+Validation run:
+
+- 2026-05-27: `npm run compile-check-ts-native` passed.
+- 2026-05-27: `npm run transpile-client` passed.
+- 2026-05-27: `npm run test-node -- --run src/vs/platform/agentHost/test/node/acp/acpConnection.test.ts --run src/vs/platform/agentHost/test/node/acp/acpProcess.test.ts --run src/vs/platform/agentHost/test/node/acp/acpAgent.test.ts --run src/vs/platform/agentHost/test/node/acp/acpAgentSnapshotLoader.test.ts --run src/vs/platform/agentHost/test/node/acp/acpAgentProviderRegistration.test.ts` passed, 23 tests.
+- 2026-05-27: `npm run test-browser-no-install -- --run src/vs/sessions/contrib/providers/agentHost/test/browser/localAgentHostSessionsProvider.test.ts` passed, 70 tests.
+
 ## Risks
 
 - Current Agent Sessions UI may only show provider label/icon, not enough detail for subscription ownership.

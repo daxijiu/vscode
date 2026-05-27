@@ -165,6 +165,13 @@ Acceptance:
 - Provider id works with `AgentSession.uri`.
 - Unsupported `IAgent` methods do not crash visible agent-list or session-creation UI paths.
 
+Implementation status:
+
+- 2026-05-27: implemented AgentHost startup/reconnect snapshot registration for enabled, trusted, valid manual External ACP Agents using stable `acp-*` provider ids, duplicate/invalid-entry skip warnings, and an `AcpAgent` `IAgent` skeleton.
+- The skeleton publishes external subscription/account wording through the provider descriptor and a placeholder ACP runtime model, while `createSession`, `sendMessage`, and model changes remain explicit Phase 4/8 unsupported paths.
+- Agent Sessions now carries AgentHost root `AgentInfo.description` into session type descriptions and renders it as picker detail text, so "uses your vendor subscription/account" copy is visible without polluting the label.
+- This phase intentionally does not call `AcpProcess.initialize()`, launch third-party CLIs, probe login state, watch snapshots, dynamically unregister providers, connect Director Provider Backend, or use Copilot CAPI.
+
 Difficulty: medium.
 
 ## Phase 4 - Basic Text Session

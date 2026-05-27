@@ -70,6 +70,8 @@ import { AgentHostCheckpointService } from './agentHostCheckpointService.js';
 import { IAgentHostCheckpointService } from '../common/agentHostCheckpointService.js';
 import { createAgentHostTelemetryService } from './agentHostTelemetryService.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
+import { getExternalAcpAgentSnapshotResourceFromAppSettingsHome } from '../common/acpAgentConfig.js';
+import { registerAcpAgentsFromSnapshot } from './acp/acpAgentProviderRegistration.js';
 
 /** Log to stderr so messages appear in the terminal alongside the process. */
 function log(msg: string): void {
@@ -261,6 +263,16 @@ async function main(): Promise<void> {
 			const directorAgent = disposables.add(instantiationService.createInstance(DirectorAgent));
 			agentService.registerProvider(directorAgent);
 			log('DirectorAgent registered');
+		}
+		const registeredAcpAgents = await registerAcpAgentsFromSnapshot({
+			agentService,
+			snapshotResource: getExternalAcpAgentSnapshotResourceFromAppSettingsHome(environmentService.appSettingsHome),
+			fileService,
+			logService,
+			disposables,
+		});
+		if (registeredAcpAgents > 0) {
+			log(`External ACP agents registered: ${registeredAcpAgents}`);
 		}
 	}
 

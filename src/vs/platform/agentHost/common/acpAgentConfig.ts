@@ -94,6 +94,10 @@ export function getExternalAcpAgentSnapshotResourceFromGlobalStorageHome(globalS
 	return joinPath(getExternalAcpAgentStorageHomeFromGlobalStorageHome(globalStorageHome), ExternalAcpAgentSnapshotFileName);
 }
 
+export function getExternalAcpAgentSnapshotResourceFromAppSettingsHome(appSettingsHome: URI): URI {
+	return getExternalAcpAgentSnapshotResourceFromGlobalStorageHome(joinPath(appSettingsHome, 'globalStorage'));
+}
+
 export function sanitizeExternalAcpAgentId(value: string): string {
 	const id = value.trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, '-').replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '').slice(0, AcpAgentIdMaxLength);
 	return id || 'acp-agent';

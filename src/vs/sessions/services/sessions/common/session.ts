@@ -17,6 +17,8 @@ export interface ISessionType {
 	readonly id: string;
 	/** Display label (e.g., 'Copilot CLI', 'Cloud'). */
 	readonly label: string;
+	/** Optional detail text shown in pickers. */
+	readonly description?: string;
 	/** Icon for this session type. */
 	readonly icon: ThemeIcon;
 }

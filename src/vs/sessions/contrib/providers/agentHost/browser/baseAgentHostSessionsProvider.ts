@@ -1163,11 +1163,12 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 		const next = orderedAgents.map((agent): ISessionType => ({
 			id: agent.provider,
 			label: this._formatSessionTypeLabel(agent.displayName?.trim() || agent.provider),
+			...(agent.description?.trim() ? { description: agent.description.trim() } : {}),
 			icon: this.iconForAgentProvider(agent.provider) ?? this.icon,
 		}));
 
 		const prev = this._sessionTypes;
-		if (prev.length === next.length && prev.every((t, i) => t.id === next[i].id && t.label === next[i].label)) {
+		if (prev.length === next.length && prev.every((t, i) => t.id === next[i].id && t.label === next[i].label && t.description === next[i].description)) {
 			return;
 		}
 		this._sessionTypes = next;

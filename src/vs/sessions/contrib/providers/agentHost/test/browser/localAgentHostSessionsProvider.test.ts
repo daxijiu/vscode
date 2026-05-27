@@ -364,6 +364,17 @@ suite('LocalAgentHostSessionsProvider', () => {
 		]);
 	});
 
+	test('session types carry root agent descriptions for picker detail text', () => {
+		agentHost.setAgents([
+			{ provider: 'acp-cursor', displayName: 'Cursor Agent', description: 'Uses your Cursor subscription/account.', models: [] } as AgentInfo,
+		]);
+		const provider = createProvider(disposables, agentHost);
+
+		assert.deepStrictEqual(provider.sessionTypes.map(t => ({ id: t.id, label: t.label, description: t.description })), [
+			{ id: 'acp-cursor', label: 'Cursor Agent', description: 'Uses your Cursor subscription/account.' },
+		]);
+	});
+
 	test('reports no session types before rootState hydrates', () => {
 		agentHost.clearRootState();
 		const provider = createProvider(disposables, agentHost);
