@@ -115,6 +115,7 @@ class TestAgentHostTerminalManager implements IAgentHostTerminalManager {
 	hasTerminal(): boolean { return false; }
 	getExitCode(): number | undefined { return undefined; }
 	supportsCommandDetection(): boolean { return false; }
+	killTerminal(): void { }
 	disposeTerminal(): void { }
 	getTerminalInfos(): [] { return []; }
 	getTerminalState(): undefined { return undefined; }

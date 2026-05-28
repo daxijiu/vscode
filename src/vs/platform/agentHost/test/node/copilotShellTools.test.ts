@@ -17,14 +17,14 @@ import { ServiceCollection } from '../../../instantiation/common/serviceCollecti
 import { ILogService, NullLogService } from '../../../log/common/log.js';
 import type { CreateTerminalParams } from '../../common/state/protocol/commands.js';
 import { TerminalClaimKind, type TerminalClaim, type TerminalInfo } from '../../common/state/protocol/state.js';
-import { formatTerminalText, IAgentHostTerminalManager, type ICommandFinishedEvent, type ISendTextOptions } from '../../node/agentHostTerminalManager.js';
+import { formatTerminalText, IAgentHostTerminalManager, type ICreateAgentHostTerminalOptions, type ICommandFinishedEvent, type ISendTextOptions } from '../../node/agentHostTerminalManager.js';
 import { createShellTools, isMultilineCommand, ShellManager, prefixForHistorySuppression, shellTypeForExecutable } from '../../node/copilot/copilotShellTools.js';
 
 class TestAgentHostTerminalManager implements IAgentHostTerminalManager {
 	declare readonly _serviceBrand: undefined;
 
 	defaultShell = '/bin/bash';
-	readonly created: { params: CreateTerminalParams; options?: { shell?: string; preventShellHistory?: boolean; nonInteractive?: boolean } }[] = [];
+	readonly created: { params: CreateTerminalParams; options?: ICreateAgentHostTerminalOptions }[] = [];
 	readonly writes: { uri: string; data: string }[] = [];
 	readonly sentTexts: { uri: string; data: string; options: ISendTextOptions }[] = [];
 	readonly existingTerminalUris = new Set<string>();
@@ -37,7 +37,7 @@ class TestAgentHostTerminalManager implements IAgentHostTerminalManager {
 	readonly onDidSendText = this._onDidSendText.event;
 	private readonly _altBufferPromises: DeferredPromise<void>[] = [];
 
-	async createTerminal(params: CreateTerminalParams, options?: { shell?: string; preventShellHistory?: boolean; nonInteractive?: boolean }): Promise<void> {
+	async createTerminal(params: CreateTerminalParams, options?: ICreateAgentHostTerminalOptions): Promise<void> {
 		this.created.push({ params, options: { ...options, shell: options?.shell ?? this.defaultShell } });
 	}
 	writeInput(uri: string, data: string): void {
@@ -73,6 +73,7 @@ class TestAgentHostTerminalManager implements IAgentHostTerminalManager {
 	hasTerminal(uri: string): boolean { return this.existingTerminalUris.has(uri); }
 	getExitCode(): number | undefined { return undefined; }
 	supportsCommandDetection(): boolean { return this.commandDetectionSupported; }
+	killTerminal(): void { }
 	disposeTerminal(): void { }
 	getTerminalInfos(): TerminalInfo[] { return []; }
 	getTerminalState(): undefined { return undefined; }

@@ -16,7 +16,8 @@ import { acpProcessExitedError, acpProcessNotFoundError, acpUnsupportedProtocolV
 import { AcpFileSystemBridge } from './acpFileSystemBridge.js';
 import { AcpPermissionBridge } from './acpPermissionBridge.js';
 import { resolveAcpRuntimeEnvironment } from './acpRuntimeEnvironment.js';
-import { AcpAuthenticateParams, AcpAuthenticateResult, AcpAuthMethod, AcpCancelSessionParams, AcpInitializeParams, AcpInitializeResult, AcpJsonRpcErrorCode, AcpJsonRpcNotification, AcpMethod, AcpNewSessionParams, AcpNewSessionResult, AcpPromptParams, AcpPromptResult, AcpProtocolVersion, AcpReadTextFileParams, AcpRequestPermissionParams, AcpWriteTextFileParams } from './acpProtocol.js';
+import { AcpAuthenticateParams, AcpAuthenticateResult, AcpAuthMethod, AcpCancelSessionParams, AcpInitializeParams, AcpInitializeResult, AcpJsonRpcErrorCode, AcpJsonRpcNotification, AcpMethod, AcpNewSessionParams, AcpNewSessionResult, AcpPromptParams, AcpPromptResult, AcpProtocolVersion, AcpReadTextFileParams, AcpRequestPermissionParams, AcpTerminalCreateParams, AcpTerminalIdParams, AcpWriteTextFileParams } from './acpProtocol.js';
+import { AcpTerminalBridge } from './acpTerminalBridge.js';
 
 export interface AcpProcessOptions {
 	readonly agent: ExternalAcpAgentSnapshotAgent;
@@ -29,6 +30,7 @@ export interface AcpProcessOptions {
 	readonly capabilityPolicy?: AcpClientCapabilityPolicy;
 	readonly permissionBridge?: AcpPermissionBridge;
 	readonly fileSystemBridge?: AcpFileSystemBridge;
+	readonly terminalBridge?: AcpTerminalBridge;
 }
 
 const MaxStderrLength = 8192;
@@ -56,6 +58,9 @@ export class AcpProcess extends Disposable {
 	constructor(private readonly options: AcpProcessOptions) {
 		super();
 		this.permissionBridge = this._register(options.permissionBridge ?? new AcpPermissionBridge());
+		if (options.terminalBridge) {
+			this._register(options.terminalBridge);
+		}
 		this.commandSummary = summarizeUnresolvedAcpCommand(options.agent.command, options.agent.args.length);
 	}
 
@@ -254,6 +259,56 @@ export class AcpProcess extends Disposable {
 					return { result: await this.options.fileSystemBridge.writeTextFile(request.params as AcpWriteTextFileParams) };
 				} catch (err) {
 					return { error: this.options.fileSystemBridge.toJsonRpcError(err) };
+				}
+			}
+			if (request.method === AcpMethod.TerminalCreate) {
+				if (!this.options.terminalBridge) {
+					return this.unsupportedRequest(request.method);
+				}
+				try {
+					return { result: await this.options.terminalBridge.create(request.params as AcpTerminalCreateParams) };
+				} catch (err) {
+					return { error: this.options.terminalBridge.toJsonRpcError(err) };
+				}
+			}
+			if (request.method === AcpMethod.TerminalOutput) {
+				if (!this.options.terminalBridge) {
+					return this.unsupportedRequest(request.method);
+				}
+				try {
+					return { result: this.options.terminalBridge.output(request.params as AcpTerminalIdParams) };
+				} catch (err) {
+					return { error: this.options.terminalBridge.toJsonRpcError(err) };
+				}
+			}
+			if (request.method === AcpMethod.TerminalWaitForExit) {
+				if (!this.options.terminalBridge) {
+					return this.unsupportedRequest(request.method);
+				}
+				try {
+					return { result: await this.options.terminalBridge.waitForExit(request.params as AcpTerminalIdParams) };
+				} catch (err) {
+					return { error: this.options.terminalBridge.toJsonRpcError(err) };
+				}
+			}
+			if (request.method === AcpMethod.TerminalKill) {
+				if (!this.options.terminalBridge) {
+					return this.unsupportedRequest(request.method);
+				}
+				try {
+					return { result: this.options.terminalBridge.kill(request.params as AcpTerminalIdParams) };
+				} catch (err) {
+					return { error: this.options.terminalBridge.toJsonRpcError(err) };
+				}
+			}
+			if (request.method === AcpMethod.TerminalRelease) {
+				if (!this.options.terminalBridge) {
+					return this.unsupportedRequest(request.method);
+				}
+				try {
+					return { result: this.options.terminalBridge.release(request.params as AcpTerminalIdParams) };
+				} catch (err) {
+					return { error: this.options.terminalBridge.toJsonRpcError(err) };
 				}
 			}
 			return this.unsupportedRequest(request.method);

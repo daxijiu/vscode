@@ -185,6 +185,7 @@ async function startAgentHost(): Promise<void> {
 				snapshotResource: getExternalAcpAgentSnapshotResourceFromAppSettingsHome(environmentService.appSettingsHome),
 				fileService,
 				logService,
+				terminalManager: agentService.terminalManager,
 				disposables,
 			});
 		} else {

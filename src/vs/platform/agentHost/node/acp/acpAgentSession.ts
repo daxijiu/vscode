@@ -17,6 +17,7 @@ import { AcpErrorCode, isAcpError } from './acpErrors.js';
 import { AcpProcess } from './acpProcess.js';
 import { AcpAuthMethod, AcpMethod, AcpPermissionOption, AcpPromptResult, AcpRequestPermissionParams, AcpSessionNotificationParams, AcpStopReason } from './acpProtocol.js';
 import { AcpMappedToolUpdate, mapAcpSessionUpdate } from './acpSessionUpdateMapper.js';
+import { AcpTerminalBridge } from './acpTerminalBridge.js';
 
 export interface AcpAuthRecoveryContext {
 	readonly vendorLabel: string;
@@ -59,6 +60,7 @@ export class AcpAgentSession extends Disposable {
 		readonly workingDirectory: URI | undefined,
 		private readonly _authContext: AcpAuthRecoveryContext,
 		private readonly _process: AcpProcess,
+		private readonly _terminalBridge?: AcpTerminalBridge,
 	) {
 		super();
 		this._modifiedAt = createdAt;
@@ -170,7 +172,10 @@ export class AcpAgentSession extends Disposable {
 		if (!inFlight || inFlight.terminalEmitted || params.sessionId !== this.acpSessionId) {
 			return;
 		}
-		const mapped = mapAcpSessionUpdate(params.update, { mapToolCallId: toolCallId => this._mapToolCallId(inFlight, toolCallId) });
+		const mapped = mapAcpSessionUpdate(params.update, {
+			mapToolCallId: toolCallId => this._mapToolCallId(inFlight, toolCallId),
+			mapTerminalContent: terminalId => this._terminalBridge?.terminalContent(terminalId),
+		});
 		switch (mapped.kind) {
 			case 'text':
 				this._emitMarkdownDelta(inFlight, mapped.text);
@@ -209,7 +214,10 @@ export class AcpAgentSession extends Disposable {
 			return;
 		}
 		const mapped = params.toolCall
-			? mapAcpSessionUpdate(params.toolCall, { mapToolCallId: toolCallId => toolCallId })
+			? mapAcpSessionUpdate(params.toolCall, {
+				mapToolCallId: toolCallId => toolCallId,
+				mapTerminalContent: terminalId => this._terminalBridge?.terminalContent(terminalId),
+			})
 			: undefined;
 		const tool = mapped?.kind === 'tool'
 			? mapped.tool

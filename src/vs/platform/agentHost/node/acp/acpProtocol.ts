@@ -15,6 +15,11 @@ export const enum AcpMethod {
 	SessionRequestPermission = 'session/request_permission',
 	FsReadTextFile = 'fs/read_text_file',
 	FsWriteTextFile = 'fs/write_text_file',
+	TerminalCreate = 'terminal/create',
+	TerminalOutput = 'terminal/output',
+	TerminalWaitForExit = 'terminal/wait_for_exit',
+	TerminalKill = 'terminal/kill',
+	TerminalRelease = 'terminal/release',
 }
 
 export type AcpJsonRpcId = number | string;
@@ -218,6 +223,40 @@ export interface AcpWriteTextFileParams extends AcpJsonObject {
 	readonly sessionId: string;
 	readonly path: string;
 	readonly content: string;
+}
+
+export interface AcpEnvVariable extends AcpJsonObject {
+	readonly name: string;
+	readonly value: string;
+}
+
+export interface AcpTerminalCreateParams extends AcpJsonObject {
+	readonly sessionId: string;
+	readonly command: string;
+	readonly args?: readonly string[];
+	readonly env?: readonly AcpEnvVariable[];
+	readonly cwd?: string;
+	readonly outputByteLimit?: number;
+}
+
+export interface AcpTerminalCreateResult extends AcpJsonObject {
+	readonly terminalId: string;
+}
+
+export interface AcpTerminalIdParams extends AcpJsonObject {
+	readonly sessionId: string;
+	readonly terminalId: string;
+}
+
+export interface AcpTerminalExitStatus extends AcpJsonObject {
+	readonly exitCode: number | null;
+	readonly signal: string | null;
+}
+
+export interface AcpTerminalOutputResult extends AcpJsonObject {
+	readonly output: string;
+	readonly truncated: boolean;
+	readonly exitStatus?: AcpTerminalExitStatus;
 }
 
 export interface AcpSessionInfoUpdate extends AcpJsonObject {

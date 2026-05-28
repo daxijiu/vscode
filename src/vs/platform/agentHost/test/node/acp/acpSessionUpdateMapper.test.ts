@@ -97,4 +97,26 @@ suite('acpSessionUpdateMapper', () => {
 			hasPhase6Placeholder: false,
 		});
 	});
+
+	test('maps ACP terminal content to native AgentHost terminal content when available', () => {
+		const mapped = mapAcpSessionUpdate({
+			sessionUpdate: 'tool_call_update',
+			toolCallId: 'call-1',
+			kind: 'execute',
+			content: [{ type: 'terminal', terminalId: 'term-1' }],
+		}, {
+			mapTerminalContent: terminalId => terminalId === 'term-1'
+				? { resource: 'agenthost-terminal://acp/term-1', title: 'npm test' }
+				: undefined,
+		});
+
+		if (mapped.kind !== 'tool') {
+			assert.fail(`Expected tool update, got ${mapped.kind}`);
+		}
+		assert.deepStrictEqual(mapped.tool.content, [{
+			type: 'terminal',
+			resource: 'agenthost-terminal://acp/term-1',
+			title: 'npm test',
+		}]);
+	});
 });

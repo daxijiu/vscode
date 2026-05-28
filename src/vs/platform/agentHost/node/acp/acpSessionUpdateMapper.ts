@@ -31,6 +31,7 @@ export interface AcpMappedToolUpdate {
 
 export interface AcpSessionUpdateMapperOptions {
 	readonly mapToolCallId?: (toolCallId: string) => string;
+	readonly mapTerminalContent?: (terminalId: string) => { readonly resource: string; readonly title: string } | undefined;
 }
 
 export function mapAcpSessionUpdate(update: AcpSessionUpdate, options: AcpSessionUpdateMapperOptions = {}): AcpMappedSessionUpdate {
@@ -99,7 +100,7 @@ function mapToolUpdate(update: AcpToolCallUpdate, options: AcpSessionUpdateMappe
 	const displayName = sanitizeDisplayText(update.title, 160) ?? displayNameForKind(kind);
 	const toolName = `acp.${kind}`;
 	const phase = mapToolStatus(update);
-	const content = mapToolContent(update);
+	const content = mapToolContent(update, options);
 	const rawInputPreview = previewJson(update.rawInput, 4000);
 	const rawOutputPreview = previewJson(update.rawOutput, 6000);
 	const locationsPreview = previewLocations(update.locations);
@@ -220,14 +221,14 @@ function boundedDisplayText(value: string, maxLength: number): string {
 	return `${value.slice(0, maxLength)}...`;
 }
 
-function mapToolContent(update: AcpToolCallUpdate): readonly ToolResultContent[] {
+function mapToolContent(update: AcpToolCallUpdate, options: AcpSessionUpdateMapperOptions): readonly ToolResultContent[] {
 	if (!Array.isArray(update.content)) {
 		return [];
 	}
-	return update.content.map(mapToolContentBlock).filter((content): content is ToolResultContent => content !== undefined);
+	return update.content.map(value => mapToolContentBlock(value, options)).filter((content): content is ToolResultContent => content !== undefined);
 }
 
-function mapToolContentBlock(value: AcpJsonValue): ToolResultContent | undefined {
+function mapToolContentBlock(value: AcpJsonValue, options: AcpSessionUpdateMapperOptions): ToolResultContent | undefined {
 	if (!isAcpJsonObjectLike(value)) {
 		return textContent(previewValue(value, 2000));
 	}
@@ -244,6 +245,14 @@ function mapToolContentBlock(value: AcpJsonValue): ToolResultContent | undefined
 	}
 	if (type === 'terminal') {
 		const terminalId = readString(value, 'terminalId') ?? readString(value, 'terminal_id');
+		const terminal = terminalId ? options.mapTerminalContent?.(terminalId) : undefined;
+		if (terminal) {
+			return {
+				type: ToolResultContentType.Terminal,
+				resource: terminal.resource,
+				title: terminal.title,
+			};
+		}
 		return textContent(terminalId
 			? localize('acpAgent.toolContentTerminal', "Terminal: {0}", terminalId)
 			: localize('acpAgent.toolContentTerminalUnknown', "Terminal output reported by the ACP agent."));

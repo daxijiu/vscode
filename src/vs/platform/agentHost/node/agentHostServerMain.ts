@@ -270,6 +270,7 @@ async function main(): Promise<void> {
 				snapshotResource: getExternalAcpAgentSnapshotResourceFromAppSettingsHome(environmentService.appSettingsHome),
 				fileService,
 				logService,
+				terminalManager: agentService.terminalManager,
 				disposables,
 			});
 			if (registeredAcpAgents > 0) {

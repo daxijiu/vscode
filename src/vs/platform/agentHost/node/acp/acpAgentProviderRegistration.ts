@@ -8,6 +8,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../files/common/files.js';
 import { ILogService } from '../../../log/common/log.js';
 import { IAgent } from '../../common/agentService.js';
+import { IAgentHostTerminalManager } from '../agentHostTerminalManager.js';
 import { AcpAgent, toAcpAgentProviderId } from './acpAgent.js';
 import { AcpAgentSnapshotLoader } from './acpAgentSnapshotLoader.js';
 
@@ -16,6 +17,7 @@ export interface RegisterAcpAgentsFromSnapshotOptions {
 	readonly snapshotResource: URI;
 	readonly fileService: IFileService;
 	readonly logService: ILogService;
+	readonly terminalManager?: IAgentHostTerminalManager;
 	readonly disposables?: DisposableStore;
 	readonly executionEnabled?: boolean;
 }
@@ -38,7 +40,7 @@ export async function registerAcpAgentsFromSnapshot(options: RegisterAcpAgentsFr
 		}
 		registeredProviderIds.add(providerId);
 
-		const agent = new AcpAgent(snapshotAgent, { fileService: options.fileService });
+		const agent = new AcpAgent(snapshotAgent, { fileService: options.fileService, terminalManager: options.terminalManager });
 		try {
 			options.agentService.registerProvider(agent);
 			options.disposables?.add(agent);

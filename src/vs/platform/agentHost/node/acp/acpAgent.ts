@@ -22,6 +22,8 @@ import { AcpFileSystemBridge } from './acpFileSystemBridge.js';
 import { AcpPermissionBridge } from './acpPermissionBridge.js';
 import { AcpProcess } from './acpProcess.js';
 import { resolveAcpLocalCwd } from './acpLocalCwd.js';
+import { AcpTerminalBridge } from './acpTerminalBridge.js';
+import { IAgentHostTerminalManager } from '../agentHostTerminalManager.js';
 
 const AcpAgentProviderPrefix = 'acp-';
 
@@ -38,6 +40,7 @@ export function getAcpAgentSubscriptionDescription(agent: Pick<ExternalAcpAgentS
 export interface AcpAgentOptions {
 	readonly executionEnabled?: boolean;
 	readonly fileService?: IFileService;
+	readonly terminalManager?: IAgentHostTerminalManager;
 }
 
 export class AcpAgent extends Disposable implements IAgent {
@@ -83,6 +86,7 @@ export class AcpAgent extends Disposable implements IAgent {
 		const sessionKey = sessionUri.toString();
 		const localCwd = resolveAcpLocalCwd(this.agent, config.workingDirectory);
 		const fileSystemBridge = this._createFileSystemBridge(localCwd.workingDirectory ?? config.workingDirectory, config.activeClient?.clientId);
+		const terminalBridge = this._createTerminalBridge(localCwd.workingDirectory ?? config.workingDirectory, sessionUri);
 
 		const permissionBridge = new AcpPermissionBridge({ autoDeny: false });
 		const process = new AcpProcess({
@@ -91,14 +95,17 @@ export class AcpAgent extends Disposable implements IAgent {
 			capabilityPolicy: {
 				allowFileRead: fileSystemBridge !== undefined,
 				allowFileWrite: fileSystemBridge !== undefined,
+				allowTerminal: terminalBridge !== undefined,
 			},
 			permissionBridge,
 			...(fileSystemBridge ? { fileSystemBridge } : {}),
+			...(terminalBridge ? { terminalBridge } : {}),
 		});
 		let store: DisposableStore | undefined;
 		try {
 			const initializeResult = await process.initialize();
 			const newSession = await process.newSession(localCwd.sessionCwd);
+			terminalBridge?.setSessionId(newSession.sessionId);
 			this._applyCapabilities(process.getCapabilities());
 			const createdAt = Date.now();
 			const session = new AcpAgentSession(
@@ -113,6 +120,7 @@ export class AcpAgent extends Disposable implements IAgent {
 					...(initializeResult.authMethods ? { authMethods: initializeResult.authMethods } : {}),
 				},
 				process,
+				terminalBridge,
 			);
 			store = new DisposableStore();
 			store.add(session);
@@ -248,6 +256,16 @@ export class AcpAgent extends Disposable implements IAgent {
 			workspaceRoot: workingDirectory,
 			...(activeClientId ? { activeClientId } : {}),
 		});
+	}
+
+	private _createTerminalBridge(workingDirectory: URI | undefined, sessionUri: URI): AcpTerminalBridge | undefined {
+		if (!this.options.terminalManager || !workingDirectory || workingDirectory.scheme !== 'file' || workingDirectory.authority) {
+			return undefined;
+		}
+		if (!this.agent.capabilities.includes(ExternalAcpAgentCapability.Terminal)) {
+			return undefined;
+		}
+		return new AcpTerminalBridge(this.options.terminalManager, workingDirectory, sessionUri);
 	}
 
 	private _applyCapabilities(capabilities: AcpNegotiatedCapabilities): void {

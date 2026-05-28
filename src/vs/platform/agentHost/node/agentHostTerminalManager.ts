@@ -61,6 +61,15 @@ export interface IFormatTerminalTextOptions {
 	forceBracketedPasteMode?: boolean;
 }
 
+export interface ICreateAgentHostTerminalOptions {
+	readonly shell?: string;
+	readonly args?: readonly string[];
+	readonly env?: Readonly<Record<string, string>>;
+	readonly preventShellHistory?: boolean;
+	readonly nonInteractive?: boolean;
+	readonly shellIntegration?: boolean;
+}
+
 export function removeServerHandledTerminalQueries(data: string, state: ITerminalQueryFilterState): string {
 	if (
 		!state.pendingData
@@ -108,7 +117,7 @@ export function formatTerminalText(data: string, options: IFormatTerminalTextOpt
  */
 export interface IAgentHostTerminalManager {
 	readonly _serviceBrand: undefined;
-	createTerminal(params: CreateTerminalParams, options?: { shell?: string; preventShellHistory?: boolean; nonInteractive?: boolean }): Promise<void>;
+	createTerminal(params: CreateTerminalParams, options?: ICreateAgentHostTerminalOptions): Promise<void>;
 	writeInput(uri: string, data: string): void;
 	sendText(uri: string, data: string, options: ISendTextOptions): Promise<void>;
 	onData(uri: string, cb: (data: string) => void): IDisposable;
@@ -121,6 +130,7 @@ export interface IAgentHostTerminalManager {
 	hasTerminal(uri: string): boolean;
 	getExitCode(uri: string): number | undefined;
 	supportsCommandDetection(uri: string): boolean;
+	killTerminal(uri: string): void;
 	disposeTerminal(uri: string): void;
 	getTerminalInfos(): TerminalInfo[];
 	getTerminalState(uri: string): TerminalState | undefined;
@@ -249,7 +259,7 @@ export class AgentHostTerminalManager extends Disposable implements IAgentHostTe
 	 * Create a new terminal backed by node-pty.
 	 * Spawns the user's default shell.
 	 */
-	async createTerminal(params: CreateTerminalParams, options?: { shell?: string; preventShellHistory?: boolean; nonInteractive?: boolean }): Promise<void> {
+	async createTerminal(params: CreateTerminalParams, options?: ICreateAgentHostTerminalOptions): Promise<void> {
 		const uri = params.channel;
 		if (this._terminals.has(uri)) {
 			throw new Error(`Terminal already exists: ${uri}`);
@@ -291,60 +301,69 @@ export class AgentHostTerminalManager extends Disposable implements IAgentHostTe
 			env['GIT_TERMINAL_PROMPT'] = '0';
 			env['DEBIAN_FRONTEND'] = 'noninteractive';
 		}
-		let shellArgs: string[] = [];
-		if (platform.isMacintosh) {
+		if (options?.env) {
+			for (const [key, value] of Object.entries(options.env)) {
+				env[key] = value;
+			}
+		}
+		let shellArgs: string[] = options?.args ? [...options.args] : [];
+		const shellIntegration = options?.shellIntegration !== false;
+		if (shellIntegration && platform.isMacintosh && !options?.args) {
 			const shellName = pathParse(shell).name;
 			if (shellName.match(/(zsh|bash)/)) {
 				shellArgs = ['--login'];
 			}
 		}
 
-		const injection = await getShellIntegrationInjection(
-			{ executable: shell, args: shellArgs, forceShellIntegration: true },
-			{
-				shellIntegration: { enabled: true, suggestEnabled: false, nonce },
-				windowsUseConptyDll: false,
-				environmentVariableCollections: undefined,
-				workspaceFolder: undefined,
-				isScreenReaderOptimized: false,
-			},
-			undefined,
-			this._logService,
-			this._productService,
-		);
-
 		let commandTracker: ICommandTracker | undefined;
+		if (shellIntegration) {
+			const injection = await getShellIntegrationInjection(
+				{ executable: shell, args: shellArgs, forceShellIntegration: true },
+				{
+					shellIntegration: { enabled: true, suggestEnabled: false, nonce },
+					windowsUseConptyDll: false,
+					environmentVariableCollections: undefined,
+					workspaceFolder: undefined,
+					isScreenReaderOptimized: false,
+				},
+				undefined,
+				this._logService,
+				this._productService,
+			);
 
-		if (injection.type === 'injection') {
-			this._logService.info(`[TerminalManager] Shell integration injected for ${uri}`);
-			if (injection.envMixin) {
-				for (const [key, value] of Object.entries(injection.envMixin)) {
-					if (value !== undefined) {
-						env[key] = value;
+			if (injection.type === 'injection') {
+				this._logService.info(`[TerminalManager] Shell integration injected for ${uri}`);
+				if (injection.envMixin) {
+					for (const [key, value] of Object.entries(injection.envMixin)) {
+						if (value !== undefined) {
+							env[key] = value;
+						}
 					}
 				}
-			}
-			if (injection.newArgs) {
-				shellArgs = injection.newArgs;
-			}
-			if (injection.filesToCopy) {
-				for (const f of injection.filesToCopy) {
-					try {
-						await fs.promises.mkdir(dirname(f.dest), { recursive: true });
-						await fs.promises.copyFile(f.source, f.dest);
-					} catch {
-						// Swallow — another process may be using the same temp dir
+				if (injection.newArgs) {
+					shellArgs = injection.newArgs;
+				}
+				if (injection.filesToCopy) {
+					for (const f of injection.filesToCopy) {
+						try {
+							await fs.promises.mkdir(dirname(f.dest), { recursive: true });
+							await fs.promises.copyFile(f.source, f.dest);
+						} catch {
+							// Swallow — another process may be using the same temp dir
+						}
 					}
 				}
+				commandTracker = {
+					parser: new Osc633Parser(),
+					nonce,
+					commandCounter: 0,
+					detectionAvailableEmitted: false,
+				};
+			} else {
+				this._logService.info(`[TerminalManager] Shell integration not available for ${uri}: ${injection.reason}`);
 			}
-			commandTracker = {
-				parser: new Osc633Parser(),
-				nonce,
-				commandCounter: 0,
-				detectionAvailableEmitted: false,
-			};
 		} else {
-			this._logService.info(`[TerminalManager] Shell integration not available for ${uri}: ${injection.reason}`);
+			this._logService.info(`[TerminalManager] Shell integration disabled for ${uri}`);
 		}
 
 		const ptyProcess = await this._spawnPty(shell, shellArgs, {
@@ -440,7 +459,9 @@ export class AgentHostTerminalManager extends Disposable implements IAgentHostTe
 			store.add(toDisposable(() => clearInterval(titleInterval)));
 		}
 
-		await raceCancellablePromises([onFirstData.p, timeout(WAIT_FOR_PROMPT_TIMEOUT)]);
+		if (shellIntegration) {
+			await raceCancellablePromises([onFirstData.p, timeout(WAIT_FOR_PROMPT_TIMEOUT)]);
+		}
 
 		this._broadcastTerminalList();
 	}
@@ -546,6 +567,19 @@ export class AgentHostTerminalManager extends Disposable implements IAgentHostTe
 	/** Get the exit code for a terminal, or undefined if still running. */
 	getExitCode(uri: string): number | undefined {
 		return this._terminals.get(uri)?.exitCode;
+	}
+
+	/** Kill a terminal's process while keeping the retained terminal state visible. */
+	killTerminal(uri: string): void {
+		const terminal = this._terminals.get(uri);
+		if (!terminal || terminal.exitCode !== undefined) {
+			return;
+		}
+		try {
+			terminal.pty.kill();
+		} catch {
+			// Ignore races with process exit.
+		}
 	}
 
 	/** Resize a terminal. */
