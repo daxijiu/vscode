@@ -146,9 +146,17 @@ suite('AcpTerminalBridge', () => {
 			truncated: false,
 			exitStatus: { exitCode: 130, signal: null },
 		});
+		assert.deepStrictEqual(bridge.terminalContent(result.terminalId), {
+			resource,
+			title: 'node',
+		});
 
 		assert.strictEqual(bridge.release({ sessionId: 'session', terminalId: result.terminalId }), null);
 		assert.throws(() => bridge.output({ sessionId: 'session', terminalId: result.terminalId }), /not found/);
+		assert.deepStrictEqual(bridge.terminalContent(result.terminalId), {
+			resource,
+			title: 'node',
+		});
 		bridge.dispose();
 		assert.deepStrictEqual(manager.disposed, [resource]);
 	});

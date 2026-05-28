@@ -32,6 +32,7 @@ interface AcpManagedTerminal {
 export class AcpTerminalBridge extends Disposable {
 
 	private readonly terminals = new Map<string, AcpManagedTerminal>();
+	private readonly terminalContentById = new Map<string, { readonly resource: string; readonly title: string }>();
 	private readonly retainedResources = new Set<string>();
 	private acpSessionId: string | undefined;
 
@@ -48,11 +49,7 @@ export class AcpTerminalBridge extends Disposable {
 	}
 
 	terminalContent(terminalId: string): { readonly resource: string; readonly title: string } | undefined {
-		const terminal = this.terminals.get(terminalId);
-		if (terminal) {
-			return { resource: terminal.resource, title: terminal.title };
-		}
-		return undefined;
+		return this.terminalContentById.get(terminalId);
 	}
 
 	async create(params: AcpTerminalCreateParams): Promise<AcpTerminalCreateResult> {
@@ -76,6 +73,7 @@ export class AcpTerminalBridge extends Disposable {
 			exitCode: undefined,
 		};
 		this.terminals.set(terminalId, terminal);
+		this.terminalContentById.set(terminalId, { resource, title });
 		this.retainedResources.add(resource);
 		try {
 			await this.terminalManager.createTerminal({
@@ -103,6 +101,7 @@ export class AcpTerminalBridge extends Disposable {
 			return { terminalId };
 		} catch (err) {
 			this.terminals.delete(terminalId);
+			this.terminalContentById.delete(terminalId);
 			this.retainedResources.delete(resource);
 			terminal.disposables.dispose();
 			this.terminalManager.disposeTerminal(resource);
@@ -168,6 +167,7 @@ export class AcpTerminalBridge extends Disposable {
 			terminal.disposables.dispose();
 		}
 		this.terminals.clear();
+		this.terminalContentById.clear();
 		for (const resource of this.retainedResources) {
 			this.terminalManager.disposeTerminal(resource);
 		}
