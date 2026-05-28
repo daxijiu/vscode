@@ -13,9 +13,10 @@ import { resolveAcpCommand, AcpRedactedCommandSummary, summarizeUnresolvedAcpCom
 import { AcpConnection } from './acpConnection.js';
 import { AcpAllowedDiagnostic, createAcpProcessDiagnostic, redactAcpDiagnostic } from './acpDiagnostics.js';
 import { acpProcessExitedError, acpProcessNotFoundError, acpUnsupportedProtocolVersionError, isAcpError, AcpError, AcpErrorCode } from './acpErrors.js';
+import { AcpFileSystemBridge } from './acpFileSystemBridge.js';
 import { AcpPermissionBridge } from './acpPermissionBridge.js';
 import { resolveAcpRuntimeEnvironment } from './acpRuntimeEnvironment.js';
-import { AcpAuthenticateParams, AcpAuthenticateResult, AcpAuthMethod, AcpCancelSessionParams, AcpInitializeParams, AcpInitializeResult, AcpJsonRpcErrorCode, AcpJsonRpcNotification, AcpMethod, AcpNewSessionParams, AcpNewSessionResult, AcpPromptParams, AcpPromptResult, AcpProtocolVersion, AcpRequestPermissionParams } from './acpProtocol.js';
+import { AcpAuthenticateParams, AcpAuthenticateResult, AcpAuthMethod, AcpCancelSessionParams, AcpInitializeParams, AcpInitializeResult, AcpJsonRpcErrorCode, AcpJsonRpcNotification, AcpMethod, AcpNewSessionParams, AcpNewSessionResult, AcpPromptParams, AcpPromptResult, AcpProtocolVersion, AcpReadTextFileParams, AcpRequestPermissionParams, AcpWriteTextFileParams } from './acpProtocol.js';
 
 export interface AcpProcessOptions {
 	readonly agent: ExternalAcpAgentSnapshotAgent;
@@ -27,6 +28,7 @@ export interface AcpProcessOptions {
 	readonly promptTimeoutMs?: number;
 	readonly capabilityPolicy?: AcpClientCapabilityPolicy;
 	readonly permissionBridge?: AcpPermissionBridge;
+	readonly fileSystemBridge?: AcpFileSystemBridge;
 }
 
 const MaxStderrLength = 8192;
@@ -234,12 +236,27 @@ export class AcpProcess extends Disposable {
 			if (request.method === AcpMethod.SessionRequestPermission) {
 				return { result: await this.permissionBridge.requestPermission(request.params as AcpRequestPermissionParams) };
 			}
-			return {
-				error: {
-					code: AcpJsonRpcErrorCode.MethodNotFound,
-					message: `Unsupported ACP request: ${request.method}`,
-				},
-			};
+			if (request.method === AcpMethod.FsReadTextFile) {
+				if (!this.options.fileSystemBridge) {
+					return this.unsupportedRequest(request.method);
+				}
+				try {
+					return { result: await this.options.fileSystemBridge.readTextFile(request.params as AcpReadTextFileParams) };
+				} catch (err) {
+					return { error: this.options.fileSystemBridge.toJsonRpcError(err) };
+				}
+			}
+			if (request.method === AcpMethod.FsWriteTextFile) {
+				if (!this.options.fileSystemBridge) {
+					return this.unsupportedRequest(request.method);
+				}
+				try {
+					return { result: await this.options.fileSystemBridge.writeTextFile(request.params as AcpWriteTextFileParams) };
+				} catch (err) {
+					return { error: this.options.fileSystemBridge.toJsonRpcError(err) };
+				}
+			}
+			return this.unsupportedRequest(request.method);
 		});
 		this.connection.value = connection;
 		this._register(connection.onDidClose(err => {
@@ -254,6 +271,15 @@ export class AcpProcess extends Disposable {
 		if (this.stderr.length > MaxStderrLength) {
 			this.stderr = this.stderr.slice(this.stderr.length - MaxStderrLength);
 		}
+	}
+
+	private unsupportedRequest(method: string): { readonly error: { readonly code: AcpJsonRpcErrorCode.MethodNotFound; readonly message: string } } {
+		return {
+			error: {
+				code: AcpJsonRpcErrorCode.MethodNotFound,
+				message: `Unsupported ACP request: ${method}`,
+			},
+		};
 	}
 
 	private toSpawnError(err: unknown): AcpError {

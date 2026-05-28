@@ -10,13 +10,15 @@ import { basename } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
-import { ExternalAcpAgentSnapshotAgent, sanitizeExternalAcpAgentId } from '../../common/acpAgentConfig.js';
+import { IFileService } from '../../../files/common/files.js';
+import { ExternalAcpAgentCapability, ExternalAcpAgentSnapshotAgent, sanitizeExternalAcpAgentId } from '../../common/acpAgentConfig.js';
 import { AgentProvider, AgentSession, IAgent, IAgentCreateSessionConfig, IAgentCreateSessionResult, IAgentDescriptor, IAgentModelInfo, IAgentResolveSessionConfigParams, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata, IAgentSessionProjectInfo, AgentSignal } from '../../common/agentService.js';
 import { ISyncedCustomization } from '../../common/agentPluginManager.js';
 import { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
 import { CustomizationRef, MessageAttachment, ModelSelection, PendingMessage, ProtectedResourceMetadata, SessionInputAnswer, SessionInputResponseKind, ToolCallResult, ToolDefinition, Turn } from '../../common/state/protocol/state.js';
 import { AcpAgentSession, toAcpUserMessage } from './acpAgentSession.js';
 import { acpModelsToAgentModels, AcpNegotiatedCapabilities, EmptyAcpNegotiatedCapabilities, EmptyAcpSessionConfigSchema, resolveAcpSessionConfigValues } from './acpCapabilities.js';
+import { AcpFileSystemBridge } from './acpFileSystemBridge.js';
 import { AcpPermissionBridge } from './acpPermissionBridge.js';
 import { AcpProcess } from './acpProcess.js';
 import { resolveAcpLocalCwd } from './acpLocalCwd.js';
@@ -35,6 +37,7 @@ export function getAcpAgentSubscriptionDescription(agent: Pick<ExternalAcpAgentS
 
 export interface AcpAgentOptions {
 	readonly executionEnabled?: boolean;
+	readonly fileService?: IFileService;
 }
 
 export class AcpAgent extends Disposable implements IAgent {
@@ -79,12 +82,18 @@ export class AcpAgent extends Disposable implements IAgent {
 		const sessionUri = config.session ?? AgentSession.uri(this.id, generateUuid());
 		const sessionKey = sessionUri.toString();
 		const localCwd = resolveAcpLocalCwd(this.agent, config.workingDirectory);
+		const fileSystemBridge = this._createFileSystemBridge(localCwd.workingDirectory ?? config.workingDirectory, config.activeClient?.clientId);
 
 		const permissionBridge = new AcpPermissionBridge({ autoDeny: false });
 		const process = new AcpProcess({
 			agent: this.agent,
 			workspaceCwd: localCwd.processCwd,
+			capabilityPolicy: {
+				allowFileRead: fileSystemBridge !== undefined,
+				allowFileWrite: fileSystemBridge !== undefined,
+			},
 			permissionBridge,
+			...(fileSystemBridge ? { fileSystemBridge } : {}),
 		});
 		let store: DisposableStore | undefined;
 		try {
@@ -226,6 +235,19 @@ export class AcpAgent extends Disposable implements IAgent {
 			uri: workingDirectory,
 			displayName: basename(workingDirectory) || workingDirectory.fsPath || workingDirectory.path,
 		};
+	}
+
+	private _createFileSystemBridge(workingDirectory: URI | undefined, activeClientId: string | undefined): AcpFileSystemBridge | undefined {
+		if (!this.options.fileService || !workingDirectory || workingDirectory.scheme !== 'file' || workingDirectory.authority) {
+			return undefined;
+		}
+		if (!this.agent.capabilities.includes(ExternalAcpAgentCapability.Files)) {
+			return undefined;
+		}
+		return new AcpFileSystemBridge(this.options.fileService, {
+			workspaceRoot: workingDirectory,
+			...(activeClientId ? { activeClientId } : {}),
+		});
 	}
 
 	private _applyCapabilities(capabilities: AcpNegotiatedCapabilities): void {

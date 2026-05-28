@@ -6,11 +6,14 @@
 import assert from 'assert';
 import * as fs from 'fs/promises';
 import * as os from 'os';
-import { FileAccess } from '../../../../../base/common/network.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { FileAccess, Schemas } from '../../../../../base/common/network.js';
 import { join } from '../../../../../base/common/path.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { FileService } from '../../../../files/common/fileService.js';
+import { DiskFileSystemProvider } from '../../../../files/node/diskFileSystemProvider.js';
+import { NullLogService } from '../../../../log/common/log.js';
 import { ExternalAcpAgentCapability, ExternalAcpAgentCwdPolicy, ExternalAcpAgentSnapshotAgent } from '../../../common/acpAgentConfig.js';
 import { ActionType } from '../../../common/state/sessionActions.js';
 import { ResponsePartKind, ToolCallStatus, ToolResultContentType, TurnState } from '../../../common/state/protocol/state.js';
@@ -720,6 +723,61 @@ suite('AcpAgent', () => {
 			],
 			response: 'permission:reject-once',
 		});
+	});
+
+	test('bridges ACP fs/read_text_file requests for a local workspace', async () => {
+		const tempDir = await fs.mkdtemp(join(os.tmpdir(), 'vscode-acp-agent-fs-'));
+		const store = new DisposableStore();
+		try {
+			const logService = new NullLogService();
+			const fileService = store.add(new FileService(logService));
+			store.add(fileService.registerProvider(Schemas.file, store.add(new DiskFileSystemProvider(logService))));
+			const targetPath = join(tempDir, 'readme.txt');
+			await fs.writeFile(targetPath, 'one\ntwo\nthree\nfour\n');
+			const agent = store.add(new AcpAgent(fakeAgent('client-fs-read', {
+				args: [FileAccess.asFileUri('vs/platform/agentHost/test/node/acp/fixtures/fakeAcpAgent.js').fsPath, 'client-fs-read', targetPath],
+				capabilities: [ExternalAcpAgentCapability.Text, ExternalAcpAgentCapability.Reasoning, ExternalAcpAgentCapability.Files],
+			}), { fileService }));
+
+			const created = await agent.createSession({ workingDirectory: URI.file(tempDir) });
+			await agent.sendMessage(created.session, 'Read via client fs', undefined, 'turn-1');
+			const turn = (await agent.getSessionMessages(created.session))[0];
+
+			assert.strictEqual(turn.responseParts[0]?.kind === ResponsePartKind.Markdown ? turn.responseParts[0].content : undefined, 'fs-read:two\nthree\n');
+		} finally {
+			store.dispose();
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	test('bridges ACP fs/write_text_file requests for a local workspace', async () => {
+		const tempDir = await fs.mkdtemp(join(os.tmpdir(), 'vscode-acp-agent-fs-'));
+		const store = new DisposableStore();
+		try {
+			const logService = new NullLogService();
+			const fileService = store.add(new FileService(logService));
+			store.add(fileService.registerProvider(Schemas.file, store.add(new DiskFileSystemProvider(logService))));
+			const targetPath = join(tempDir, 'created.txt');
+			const agent = store.add(new AcpAgent(fakeAgent('client-fs-write', {
+				args: [FileAccess.asFileUri('vs/platform/agentHost/test/node/acp/fixtures/fakeAcpAgent.js').fsPath, 'client-fs-write', targetPath],
+				capabilities: [ExternalAcpAgentCapability.Text, ExternalAcpAgentCapability.Reasoning, ExternalAcpAgentCapability.Files],
+			}), { fileService }));
+
+			const created = await agent.createSession({ workingDirectory: URI.file(tempDir) });
+			await agent.sendMessage(created.session, 'Write via client fs', undefined, 'turn-1');
+			const turn = (await agent.getSessionMessages(created.session))[0];
+
+			assert.deepStrictEqual({
+				response: turn.responseParts[0]?.kind === ResponsePartKind.Markdown ? turn.responseParts[0].content : undefined,
+				content: await fs.readFile(targetPath, 'utf8'),
+			}, {
+				response: 'fs-write:ok',
+				content: 'written through ACP client fs\n',
+			});
+		} finally {
+			store.dispose();
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
 	});
 });
 

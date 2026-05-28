@@ -27,6 +27,11 @@ import {
  */
 export const AGENT_HOST_CLIENT_RESOURCE_CHANNEL = 'agentHostClientResource';
 
+export interface IAgentHostClientTextResourceAccess {
+	readText(resource: URI): Promise<string | undefined>;
+	writeText?(resource: URI, content: string, options?: { readonly createOnly?: boolean }): Promise<boolean>;
+}
+
 /**
  * Server-side channel implementation handling resource RPCs from the
  * agent host. Backed by the local {@link IFileService} on the renderer.
@@ -36,6 +41,7 @@ export class AgentHostClientResourceChannel implements IServerChannel {
 	constructor(
 		private readonly _fileService: IFileService,
 		private readonly _ahpLogger?: AhpJsonlLogger,
+		private readonly _textResourceAccess?: IAgentHostClientTextResourceAccess,
 	) { }
 
 	listen<T>(_ctx: unknown, event: string): Event<T> {
@@ -84,7 +90,16 @@ export class AgentHostClientResourceChannel implements IServerChannel {
 				return result as T;
 			}
 			case 'resourceRead': {
-				const content = await this._fileService.readFile(URI.parse(a.uri as string));
+				const resource = URI.parse(a.uri as string);
+				const text = await this._textResourceAccess?.readText(resource);
+				if (text !== undefined) {
+					const result: ResourceReadResult = {
+						data: text,
+						encoding: ContentEncoding.Utf8,
+					};
+					return result as T;
+				}
+				const content = await this._fileService.readFile(resource);
 				const result: ResourceReadResult = {
 					data: encodeBase64(content.value),
 					encoding: ContentEncoding.Base64,
@@ -97,6 +112,12 @@ export class AgentHostClientResourceChannel implements IServerChannel {
 				const buf = params.encoding === ContentEncoding.Base64
 					? decodeBase64(params.data)
 					: VSBuffer.fromString(params.data);
+				if (params.encoding !== ContentEncoding.Base64 && this._textResourceAccess?.writeText) {
+					if (await this._textResourceAccess.writeText(writeUri, params.data, { createOnly: params.createOnly })) {
+						const result: ResourceWriteResult = {};
+						return result as T;
+					}
+				}
 				if (params.createOnly) {
 					await this._fileService.createFile(writeUri, buf, { overwrite: false });
 				} else {

@@ -26,7 +26,7 @@ import { StateComponents, ROOT_STATE_URI, type RootState } from '../common/state
 import { revive } from '../../../base/common/marshalling.js';
 import { URI } from '../../../base/common/uri.js';
 import { IFileService } from '../../files/common/files.js';
-import { AGENT_HOST_CLIENT_RESOURCE_CHANNEL, AgentHostClientResourceChannel } from '../common/agentHostClientResourceChannel.js';
+import { AGENT_HOST_CLIENT_RESOURCE_CHANNEL, AgentHostClientResourceChannel, IAgentHostClientTextResourceAccess } from '../common/agentHostClientResourceChannel.js';
 import { DirectorRuntimeCredentialChannel, DirectorRuntimeCredentialChannelName, IDirectorRuntimeCredentialService, type DirectorRuntimeCredential, type DirectorRuntimeCredentialRequest } from '../common/directorRuntimeCredentials.js';
 import { TELEMETRY_CRASH_REPORTER_SETTING_ID, TELEMETRY_OLD_SETTING_ID, TELEMETRY_SETTING_ID } from '../../telemetry/common/telemetry.js';
 import { getTelemetryLevel } from '../../telemetry/common/telemetryUtils.js';
@@ -79,6 +79,7 @@ export class LocalAgentHostServiceClient extends Disposable implements IAgentHos
 	}
 
 	constructor(
+		private readonly _clientTextResourceAccess: IAgentHostClientTextResourceAccess | undefined,
 		@ILogService private readonly _logService: ILogService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IFileService private readonly _fileService: IFileService,
@@ -144,7 +145,7 @@ export class LocalAgentHostServiceClient extends Disposable implements IAgentHos
 		// Serve filesystem reverse-RPCs from the local file service. The
 		// agent host registers an authority on its
 		// AgentHostClientFileSystemProvider that calls back through this channel.
-		client.registerChannel(AGENT_HOST_CLIENT_RESOURCE_CHANNEL, new AgentHostClientResourceChannel(this._fileService, this._ahpLogger));
+		client.registerChannel(AGENT_HOST_CLIENT_RESOURCE_CHANNEL, new AgentHostClientResourceChannel(this._fileService, this._ahpLogger, this._clientTextResourceAccess));
 		client.registerChannel(DirectorRuntimeCredentialChannelName, new DirectorRuntimeCredentialChannel(
 			new LazyDirectorRuntimeCredentialService(this._instantiationService)
 		));

@@ -135,4 +135,28 @@ suite('localAhpJsonlLogging', () => {
 		assert.deepStrictEqual(entries[0].params, { uri, data: 'hello', encoding: ContentEncoding.Utf8, createOnly: true });
 		assert.deepStrictEqual(entries[1].result, {});
 	});
+
+	test('reverse resource channel prefers client text resource access', async () => {
+		const { fileService } = makeLogger();
+		const uri = URI.file('/dirty-client-buffer.txt');
+		const writes: string[] = [];
+		const channel = new AgentHostClientResourceChannel(fileService, undefined, {
+			async readText(resource) {
+				assert.strictEqual(resource.toString(), uri.toString());
+				return 'unsaved buffer';
+			},
+			async writeText(resource, content) {
+				assert.strictEqual(resource.toString(), uri.toString());
+				writes.push(content);
+				return true;
+			},
+		});
+
+		assert.deepStrictEqual(await channel.call(undefined, 'resourceRead', { uri: uri.toString() }), {
+			data: 'unsaved buffer',
+			encoding: ContentEncoding.Utf8,
+		});
+		assert.deepStrictEqual(await channel.call(undefined, 'resourceWrite', { uri: uri.toString(), data: 'new content', encoding: ContentEncoding.Utf8 }), {});
+		assert.deepStrictEqual(writes, ['new content']);
+	});
 });

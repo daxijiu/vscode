@@ -11,6 +11,8 @@ let buffer = '';
 let activeSessionId = 'fake-session-1';
 let pendingPromptId = undefined;
 let pendingPermissionRequestId = undefined;
+let pendingClientRequestId = undefined;
+let pendingClientRequestMethod = undefined;
 let cancelled = false;
 
 if ((mode.startsWith('dispose-marker') || mode === 'models-list-fail-second-initialize') && markerPath) {
@@ -79,6 +81,34 @@ function handleLine(line) {
 		return;
 	}
 
+	if (request.method === undefined && request.id === pendingClientRequestId) {
+		const id = pendingPromptId;
+		const method = pendingClientRequestMethod;
+		pendingClientRequestId = undefined;
+		pendingClientRequestMethod = undefined;
+		pendingPromptId = undefined;
+		if (id !== undefined) {
+			if (request.error) {
+				writeSessionUpdate(activeSessionId, {
+					sessionUpdate: 'agent_message_chunk',
+					content: { type: 'text', text: `client-error:${request.error.message || 'unknown'}` },
+				});
+			} else if (method === 'fs/read_text_file') {
+				writeSessionUpdate(activeSessionId, {
+					sessionUpdate: 'agent_message_chunk',
+					content: { type: 'text', text: `fs-read:${request.result?.content ?? ''}` },
+				});
+			} else {
+				writeSessionUpdate(activeSessionId, {
+					sessionUpdate: 'agent_message_chunk',
+					content: { type: 'text', text: 'fs-write:ok' },
+				});
+			}
+			writeResponse(id, { stopReason: 'end_turn' });
+		}
+		return;
+	}
+
 	if (request.method === 'initialize') {
 		switch (mode) {
 			case 'success':
@@ -99,6 +129,8 @@ function handleLine(line) {
 			case 'tool-call-failed':
 			case 'permission-request-denied':
 			case 'permission-pending-cancel':
+			case 'client-fs-read':
+			case 'client-fs-write':
 			case 'capabilities-echo':
 			case 'crash-during-prompt':
 			case 'models-list':
@@ -332,6 +364,27 @@ function handlePrompt(request) {
 			pendingPermissionRequestId = `permission-${request.id}`;
 			writePermissionRequest(pendingPermissionRequestId, sessionId);
 			break;
+		case 'client-fs-read':
+			pendingPromptId = request.id;
+			pendingClientRequestMethod = 'fs/read_text_file';
+			pendingClientRequestId = `client-fs-${request.id}`;
+			writeClientRequest(pendingClientRequestId, pendingClientRequestMethod, {
+				sessionId,
+				path: markerPath,
+				line: 2,
+				limit: 2,
+			});
+			break;
+		case 'client-fs-write':
+			pendingPromptId = request.id;
+			pendingClientRequestMethod = 'fs/write_text_file';
+			pendingClientRequestId = `client-fs-${request.id}`;
+			writeClientRequest(pendingClientRequestId, pendingClientRequestMethod, {
+				sessionId,
+				path: markerPath,
+				content: 'written through ACP client fs\n',
+			});
+			break;
 		case 'crash-during-prompt':
 			process.stderr.write('fatal crash token=abc123\n');
 			process.exit(5);
@@ -523,6 +576,15 @@ function writePermissionRequest(id, sessionId) {
 				{ optionId: 'reject-once', name: 'Reject Once', kind: 'reject_once' },
 			],
 		},
+	})}\n`);
+}
+
+function writeClientRequest(id, method, params) {
+	process.stdout.write(`${JSON.stringify({
+		jsonrpc: '2.0',
+		id,
+		method,
+		params,
 	})}\n`);
 }
 

@@ -13,6 +13,8 @@ export const enum AcpMethod {
 	SessionCancel = 'session/cancel',
 	SessionUpdate = 'session/update',
 	SessionRequestPermission = 'session/request_permission',
+	FsReadTextFile = 'fs/read_text_file',
+	FsWriteTextFile = 'fs/write_text_file',
 }
 
 export type AcpJsonRpcId = number | string;
@@ -199,6 +201,23 @@ export type AcpRequestPermissionOutcome =
 
 export interface AcpRequestPermissionResult extends AcpJsonObject {
 	readonly outcome: AcpRequestPermissionOutcome;
+}
+
+export interface AcpReadTextFileParams extends AcpJsonObject {
+	readonly sessionId: string;
+	readonly path: string;
+	readonly line?: number;
+	readonly limit?: number;
+}
+
+export interface AcpReadTextFileResult extends AcpJsonObject {
+	readonly content: string;
+}
+
+export interface AcpWriteTextFileParams extends AcpJsonObject {
+	readonly sessionId: string;
+	readonly path: string;
+	readonly content: string;
 }
 
 export interface AcpSessionInfoUpdate extends AcpJsonObject {

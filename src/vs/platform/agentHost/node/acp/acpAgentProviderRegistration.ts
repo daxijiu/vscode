@@ -38,7 +38,7 @@ export async function registerAcpAgentsFromSnapshot(options: RegisterAcpAgentsFr
 		}
 		registeredProviderIds.add(providerId);
 
-		const agent = new AcpAgent(snapshotAgent);
+		const agent = new AcpAgent(snapshotAgent, { fileService: options.fileService });
 		try {
 			options.agentService.registerProvider(agent);
 			options.disposables?.add(agent);

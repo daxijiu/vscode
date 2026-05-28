@@ -251,6 +251,12 @@ Takeaway: ACP tool calls are agent-owned execution reports. Client filesystem an
 - `src/vs/platform/agentHost/test/node/acp/**/*.test.ts`
 - `src/vs/workbench/contrib/agentProviders/test/**/*.test.ts`
 
+## Implementation Status
+
+- **9.1A completed**: ACP agent-owned `tool_call` / `tool_call_update` reports now render through native AgentHost tool-call response parts, keep useful status/content/location/raw summaries, and no longer depend on client fs/terminal capability gates. ACP permission requests surface the vendor-provided options and return the selected original `optionId`.
+- **9.1B completed**: VS Code now implements local `fs/read_text_file` and `fs/write_text_file` for trusted local ACP agents when the Files bridge is enabled and a local workspace/root is available. Reads prefer the active renderer text model through the existing reverse client resource channel, then fall back to file service reads; writes go through the renderer text file service when connected, then fall back to local file service writes under workspace containment. Line/limit slicing, local-only containment, and capability advertisement are covered by ACP focused tests.
+- **9.1C pending**: Local `terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, and `terminal/release` still need a dedicated ACP terminal bridge and AgentHost terminal UI wiring.
+
 ## Validation
 
 ```powershell
