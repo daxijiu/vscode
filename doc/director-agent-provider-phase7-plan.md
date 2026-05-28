@@ -1,10 +1,10 @@
 # Director Agent Provider Phase 7 Plan
 
-Updated: 2026-05-27
+Updated: 2026-05-28
 
 ## Status
 
-Completed locally on 2026-05-27.
+Completed locally on 2026-05-27. The required Phase 7 repair follow-up was implemented locally on 2026-05-28 and is pending manual acceptance.
 
 Phase 7 follows Phase 4's accepted AgentHost Director runtime. The goal is to polish the provider/model surfaces around it and to stop provider-runtime drift from the old Director implementation. Configured Director providers should show up predictably in model pickers, and the runtime semantics should be reusable by later non-Copilot harnesses.
 
@@ -16,6 +16,13 @@ Accepted Phase 7 slice:
 - Workbench registers a `director-code` `LanguageModelChatProvider` descriptor and projects Director-managed models from the Workbench registry/model resolver into the broader model picker without Copilot CAPI or GitHub Copilot auth.
 - Direct `director-code` requests route through AgentHost Director sessions so provider HTTP remains node-owned; Workbench does not import AgentHost node transports or run provider HTTP itself.
 - Provider Settings model metadata and Refresh Models behavior from Phase 3 remain intact.
+
+Accepted repair direction now implemented locally:
+
+- Multi-surface AgentHost tool confirmation uses native shared protocol state: any observing surface can approve or deny, while only the owning `toolClientId` executes the client tool.
+- Direct LM selection excludes session-targeted `agent-host-director` models and keeps broader VS Code model consumers on `director-code/...` identifiers.
+- `director-code` models no longer declare the generic auth gate that can trigger GitHub/Copilot sign-in; Director credentials still resolve only through Director-owned turn-time credential bridging.
+- Direct `director-code` requests preserve structured system/user/assistant/tool message shape through a marked AgentHost attachment consumed by the node-owned Director provider runtime.
 
 ## Goal
 
@@ -142,6 +149,7 @@ Acceptance:
 
 ## Deferred
 
+- Manual acceptance for the implemented multi-surface tool confirmation and `director-code` LanguageModelChatProvider repair is tracked in [director-agent-provider-phase7-repair-plan.md](./director-agent-provider-phase7-repair-plan.md). This acceptance is required before treating Phase 7 as finally accepted.
 - Additional OAuth providers and real OpenAI Codex browser/device flow remain Phase 8.
 - Claude-like SDK de-CAPI remains Phase 6.
 - Durable session restore remains Phase 9.

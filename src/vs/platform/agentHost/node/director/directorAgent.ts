@@ -126,6 +126,9 @@ export class DirectorAgent extends Disposable implements IAgent {
 		const sessionId = AgentSession.id(sessionUri);
 		const existing = this._sessions.get(sessionId)?.session;
 		if (existing) {
+			if (config.activeClient) {
+				existing.setClientTools(config.activeClient.clientId, config.activeClient.tools);
+			}
 			return {
 				session: existing.sessionUri,
 				workingDirectory: existing.workingDirectory,
@@ -145,6 +148,9 @@ export class DirectorAgent extends Disposable implements IAgent {
 			this._credentialService,
 			this._logService,
 		));
+		if (config.activeClient) {
+			session.setClientTools(config.activeClient.clientId, config.activeClient.tools);
+		}
 
 		const metadata = session.createMetadata();
 		return {

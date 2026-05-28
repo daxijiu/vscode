@@ -48,6 +48,8 @@ import { createChangesets } from '../../copilotChatSessions/browser/copilotChatS
 // AgentHostSessionAdapter — shared adapter for local and remote sessions
 // ============================================================================
 
+export const CopilotBackgroundAgentEnabledSettingId = 'github.copilot.chat.backgroundAgent.enabled';
+
 /** Copilot CLI session type */
 export const CopilotCLISessionType: ISessionType = {
 	id: 'copilotcli',
@@ -934,7 +936,7 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 	abstract readonly icon: ThemeIcon;
 	abstract readonly browseActions: readonly ISessionWorkspaceBrowseAction[];
 
-	get sessionTypes(): readonly ISessionType[] { return this._sessionTypes; }
+	get sessionTypes(): readonly ISessionType[] { return this._visibleSessionTypes(this._sessionTypes); }
 	protected _sessionTypes: ISessionType[] = [];
 	private readonly _sessionTypesWithRequiredAuth = new Set<string>();
 
@@ -1029,6 +1031,13 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 		@ISessionsManagementService protected readonly _sessionsManagementService: ISessionsManagementService,
 	) {
 		super();
+
+		this._register(this._baseConfigurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(CopilotBackgroundAgentEnabledSettingId)) {
+				this._onDidChangeSessionTypes.fire();
+				void this._refreshSessions();
+			}
+		}));
 
 		const changesetUri = derived(reader => {
 			const active = this._sessionsManagementService.activeSession.read(reader);
@@ -1172,6 +1181,13 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 		}
 		this._sessionTypes = next;
 		this._onDidChangeSessionTypes.fire();
+	}
+
+	private _visibleSessionTypes(sessionTypes: readonly ISessionType[]): readonly ISessionType[] {
+		if (this._baseConfigurationService.getValue<boolean>(CopilotBackgroundAgentEnabledSettingId) === false) {
+			return sessionTypes.filter(sessionType => sessionType.id !== CopilotCLISessionType.id);
+		}
+		return sessionTypes;
 	}
 
 	/**

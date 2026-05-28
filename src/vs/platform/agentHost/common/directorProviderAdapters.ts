@@ -24,6 +24,8 @@ export interface DirectorNormalizedMessage {
 	readonly isError?: boolean;
 }
 
+export const DirectorDirectLanguageModelMessagesAttachmentMetaKey = 'director.directLanguageModelMessages';
+
 export interface DirectorOpenAIReasoningEcho {
 	readonly field: 'reasoning_content';
 	readonly includeEmpty?: boolean;

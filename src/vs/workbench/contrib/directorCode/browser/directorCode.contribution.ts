@@ -11,6 +11,7 @@ import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/editor.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
@@ -44,13 +45,14 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 
 Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(DirectorSettingsEditorInput.ID, DirectorSettingsEditorInputSerializer);
 
-class DirectorCodeContribution extends Disposable implements IWorkbenchContribution {
+export class DirectorCodeContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.directorCode';
 
 	constructor(
 		@IDirectorProviderSnapshotService snapshotService: IDirectorProviderSnapshotService,
 		@ILanguageModelsService languageModelsService: ILanguageModelsService,
 		@IInstantiationService instantiationService: IInstantiationService,
+		@ILogService logService: ILogService,
 	) {
 		super();
 		void snapshotService.writeSnapshot();
@@ -59,6 +61,9 @@ class DirectorCodeContribution extends Disposable implements IWorkbenchContribut
 		this._register(toDisposable(() => languageModelsService.deltaLanguageModelChatProviderDescriptors([], [descriptor])));
 		const provider = this._register(instantiationService.createInstance(DirectorLanguageModelProvider));
 		this._register(languageModelsService.registerLanguageModelProvider(DirectorLanguageModelVendor, provider));
+		void languageModelsService.selectLanguageModels({ vendor: DirectorLanguageModelVendor }).catch(err => {
+			logService.warn('[Director] Failed to resolve initial Director language models', err);
+		});
 	}
 }
 

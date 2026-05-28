@@ -46,7 +46,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../../pla
 import { IGitHubService } from '../../../github/browser/githubService.js';
 import { computePullRequestIcon, GitHubPullRequestState } from '../../../github/common/types.js';
 import { structuralEquals } from '../../../../../base/common/equals.js';
-import { CopilotCLISessionType } from '../../agentHost/browser/baseAgentHostSessionsProvider.js';
+import { CopilotBackgroundAgentEnabledSettingId, CopilotCLISessionType } from '../../agentHost/browser/baseAgentHostSessionsProvider.js';
 import { createChangesets } from './copilotChatSessionsChangesets.js';
 import { IUriIdentityService } from '../../../../../platform/uriIdentity/common/uriIdentity.js';
 
@@ -1363,7 +1363,11 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 	readonly icon = Codicon.copilot;
 
 	get sessionTypes(): readonly ISessionType[] {
-		const types: ISessionType[] = [CopilotCLISessionType, CopilotCloudSessionType];
+		const types: ISessionType[] = [];
+		if (this._backgroundAgentEnabled) {
+			types.push(CopilotCLISessionType);
+		}
+		types.push(CopilotCloudSessionType);
 		if (this._claudeEnabled) {
 			types.push(ClaudeCodeSessionType);
 		}
@@ -1401,6 +1405,7 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 	private readonly _onDidGroupMembershipChange = this._register(new Emitter<{ sessionId: string }>());
 
 	private readonly _multiChatEnabled: boolean;
+	private _backgroundAgentEnabled: boolean;
 	private _claudeEnabled: boolean;
 
 	readonly browseActions: readonly ISessionWorkspaceBrowseAction[];
@@ -1424,9 +1429,18 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 		super();
 
 		this._multiChatEnabled = this.configurationService.getValue<boolean>(COPILOT_MULTI_CHAT_SETTING) ?? true;
+		this._backgroundAgentEnabled = this.configurationService.getValue<boolean>(CopilotBackgroundAgentEnabledSettingId) !== false;
 		this._claudeEnabled = this.configurationService.getValue<boolean>(CLAUDE_CODE_ENABLED_SETTING);
 
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(CopilotBackgroundAgentEnabledSettingId)) {
+				const backgroundAgentEnabled = this.configurationService.getValue<boolean>(CopilotBackgroundAgentEnabledSettingId) !== false;
+				if (this._backgroundAgentEnabled !== backgroundAgentEnabled) {
+					this._backgroundAgentEnabled = backgroundAgentEnabled;
+					this._onDidChangeSessionTypes.fire();
+					this._refreshSessionCache();
+				}
+			}
 			if (e.affectsConfiguration(CLAUDE_CODE_ENABLED_SETTING)) {
 				const claudeEnabled = this.configurationService.getValue<boolean>(CLAUDE_CODE_ENABLED_SETTING);
 				if (this._claudeEnabled !== claudeEnabled) {
@@ -1459,7 +1473,10 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 		if (workspaceUri.scheme === GITHUB_REMOTE_FILE_SCHEME || workspaceUri.scheme === SessionType.CopilotCloud) {
 			return [CopilotCloudSessionType];
 		}
-		const types: ISessionType[] = [CopilotCLISessionType];
+		const types: ISessionType[] = [];
+		if (this._backgroundAgentEnabled) {
+			types.push(CopilotCLISessionType);
+		}
 		if (this._claudeEnabled) {
 			types.push(ClaudeCodeSessionType);
 		}
@@ -2418,6 +2435,10 @@ export class CopilotChatSessionsProvider extends Disposable implements ISessions
 			if (session.providerType !== AgentSessionProviders.Background
 				&& session.providerType !== AgentSessionProviders.Cloud
 				&& session.providerType !== AgentSessionProviders.Claude) {
+				continue;
+			}
+
+			if (session.providerType === AgentSessionProviders.Background && !this._backgroundAgentEnabled) {
 				continue;
 			}
 
