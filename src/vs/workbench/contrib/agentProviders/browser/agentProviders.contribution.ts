@@ -65,19 +65,19 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('externalAcpAgents.capabilities.tools.enabled', "Controls whether ACP tool-call capabilities may be advertised to external ACP runtimes. The default is disabled; Phase 6A still does not execute ACP tools."),
+			markdownDescription: localize('externalAcpAgents.capabilities.tools.enabled', "Controls whether VS Code client-provided ACP tool bridges may be advertised to external ACP runtimes. Vendor-reported ACP tool activity still renders in the AgentHost UI."),
 		},
 		[ExternalAcpAgentsFilesEnabledSetting]: {
 			type: 'boolean',
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('externalAcpAgents.capabilities.files.enabled', "Controls whether ACP file capabilities may be advertised to external ACP runtimes. The default is disabled and real file access remains deferred."),
+			markdownDescription: localize('externalAcpAgents.capabilities.files.enabled', "Controls whether VS Code advertises ACP fs/read_text_file and fs/write_text_file client methods. This does not disable file tools owned by a pre-authenticated ACP agent."),
 		},
 		[ExternalAcpAgentsTerminalEnabledSetting]: {
 			type: 'boolean',
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('externalAcpAgents.capabilities.terminal.enabled', "Controls whether ACP terminal capabilities may be advertised to external ACP runtimes. The default is disabled and terminal execution remains deferred."),
+			markdownDescription: localize('externalAcpAgents.capabilities.terminal.enabled', "Controls whether VS Code advertises ACP terminal/* client methods. This does not disable command tools owned by a pre-authenticated ACP agent."),
 		},
 	}
 });

@@ -48,13 +48,13 @@ export class AcpPermissionBridge extends Disposable {
 		}
 	}
 
-	respond(toolCallId: string, approved: boolean): boolean {
+	respond(toolCallId: string, approved: boolean, selectedOptionId?: string): boolean {
 		const pending = this.pending.get(toolCallId);
 		if (!pending) {
 			return false;
 		}
 		this.pending.delete(toolCallId);
-		pending.resolve(approved ? selectPermission(pending.params.options) : denyPermission(pending.params.options));
+		pending.resolve(selectPermission(pending.params.options, approved, selectedOptionId));
 		return true;
 	}
 
@@ -77,9 +77,12 @@ export function denyPermission(options: readonly AcpPermissionOption[] | undefin
 	return { outcome: { outcome: 'selected', optionId } };
 }
 
-function selectPermission(options: readonly AcpPermissionOption[] | undefined): AcpRequestPermissionResult {
-	const optionId = options?.find(option => option.kind === 'allow_once')?.optionId
-		?? options?.find(option => option.kind === 'allow_always')?.optionId
+function selectPermission(options: readonly AcpPermissionOption[] | undefined, approved: boolean, selectedOptionId?: string): AcpRequestPermissionResult {
+	const optionId = options?.find(option => option.optionId === selectedOptionId)?.optionId
+		?? (approved
+			? options?.find(option => option.kind === 'allow_once')?.optionId
+			?? options?.find(option => option.kind === 'allow_always')?.optionId
+			: options?.find(option => option.kind === 'reject_once' || option.kind === 'reject_always')?.optionId)
 		?? options?.[0]?.optionId;
 	if (!optionId) {
 		return cancelledPermission();
@@ -94,8 +97,18 @@ function cancelledPermission(): AcpRequestPermissionResult {
 export function redactPermissionParams(params: AcpRequestPermissionParams, requestId = 'acp-permission'): AcpRequestPermissionParams {
 	return {
 		sessionId: params.sessionId,
-		toolCall: params.toolCall ? redactPermissionToolCall(params.toolCall, requestId) : undefined,
+		toolCall: params.toolCall ? redactPermissionToolCall(params.toolCall, requestId) : defaultPermissionToolCall(requestId),
 		options: params.options?.map((option, index) => redactPermissionOption(option, index)) ?? [],
+	};
+}
+
+function defaultPermissionToolCall(requestId: string): NonNullable<AcpRequestPermissionParams['toolCall']> {
+	return {
+		sessionUpdate: 'tool_call',
+		toolCallId: requestId,
+		title: 'ACP Tool',
+		kind: 'other',
+		status: 'pending',
 	};
 }
 
@@ -111,8 +124,8 @@ function redactPermissionToolCall(toolCall: NonNullable<AcpRequestPermissionPara
 
 function redactPermissionOption(option: AcpPermissionOption, index: number): AcpPermissionOption {
 	return {
-		optionId: `acp-permission-option-${index + 1}`,
-		name: permissionOptionName(option.kind),
+		optionId: option.optionId || `acp-permission-option-${index + 1}`,
+		name: option.name || permissionOptionName(option.kind),
 		kind: permissionOptionKind(option.kind),
 	};
 }

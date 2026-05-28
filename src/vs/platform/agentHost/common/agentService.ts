@@ -621,7 +621,7 @@ export interface IAgent {
 	changeAgent?(session: URI, agent: AgentSelection | undefined): Promise<void>;
 
 	/** Respond to a pending permission request from the SDK. */
-	respondToPermissionRequest(requestId: string, approved: boolean): void;
+	respondToPermissionRequest(requestId: string, approved: boolean, selectedOptionId?: string): void;
 
 	/** Respond to a pending user input request from the SDK's ask_user tool. */
 	respondToUserInputRequest(requestId: string, response: SessionInputResponseKind, answers?: Record<string, SessionInputAnswer>): void;

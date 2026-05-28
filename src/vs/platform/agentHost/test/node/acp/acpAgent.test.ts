@@ -589,7 +589,7 @@ suite('AcpAgent', () => {
 		assert.strictEqual(turn.responseParts[0].kind === ResponsePartKind.Markdown ? turn.responseParts[0].content : '', 'Finished');
 	});
 
-	test('tool_call lifecycle updates render AgentHost tool actions without executing or leaking content', async () => {
+	test('tool_call lifecycle updates render AgentHost tool actions and reported content', async () => {
 		const agent = disposables.add(new AcpAgent(fakeAgent('tool-call-lifecycle')));
 		const actions: string[] = [];
 		disposables.add(agent.onDidSessionProgress(signal => {
@@ -613,12 +613,14 @@ suite('AcpAgent', () => {
 				toolCallId: toolPart.toolCall.toolCallId,
 				success: toolPart.toolCall.status === ToolCallStatus.Completed ? toolPart.toolCall.success : undefined,
 				contentType: toolPart.toolCall.status === ToolCallStatus.Completed ? toolPart.toolCall.content?.[0]?.type : undefined,
-				contentLeaksSecret: JSON.stringify(toolPart).includes('abc123') || JSON.stringify(toolPart).includes('secret-file-content'),
+				contentText: toolPart.toolCall.status === ToolCallStatus.Completed ? toolPart.toolCall.content?.[0]?.type === ToolResultContentType.Text ? toolPart.toolCall.content[0].text : undefined : undefined,
+				toolInput: toolPart.toolCall.status === ToolCallStatus.Completed ? toolPart.toolCall.toolInput : undefined,
 			} : undefined,
 		}, {
 			actions: [
 				ActionType.SessionToolCallStart,
 				ActionType.SessionToolCallReady,
+				ActionType.SessionToolCallContentChanged,
 				ActionType.SessionToolCallDelta,
 				ActionType.SessionToolCallComplete,
 				ActionType.SessionTurnComplete,
@@ -626,17 +628,18 @@ suite('AcpAgent', () => {
 			state: TurnState.Complete,
 			tool: {
 				status: ToolCallStatus.Completed,
-				toolName: 'acp.tool',
-				displayName: 'ACP Tool',
+				toolName: 'acp.read',
+				displayName: 'Read file',
 				toolCallId: 'acp-tool-1',
 				success: true,
 				contentType: ToolResultContentType.Text,
-				contentLeaksSecret: false,
+				contentText: 'terminal output token=abc123',
+				toolInput: 'Locations\n- /secret/file.txt',
 			},
 		});
 	});
 
-	test('redacts malicious tool_call title, kind, and id from action payloads', async () => {
+	test('maps malicious tool_call id and kind while preserving user-facing report content', async () => {
 		const agent = disposables.add(new AcpAgent(fakeAgent('tool-call-malicious-metadata')));
 		const actions: unknown[] = [];
 		disposables.add(agent.onDidSessionProgress(signal => {
@@ -655,18 +658,17 @@ suite('AcpAgent', () => {
 		assert.deepStrictEqual({
 			hasToolStart: actions.some(action => hasActionType(action, ActionType.SessionToolCallStart)),
 			hasOpaqueId: payload.includes('acp-tool-1'),
-			leaksMetadata: payload.includes('sk-abc123')
-				|| payload.includes('SECRET_FILE_CONTENT')
-				|| payload.includes('ghp_secret')
-				|| payload.includes('terminal output token=abc123'),
+			leaksRawToolCallId: payload.includes('call-token-sk-abc123'),
+			hasReportedContent: payload.includes('terminal output token=abc123'),
 		}, {
 			hasToolStart: true,
 			hasOpaqueId: true,
-			leaksMetadata: false,
+			leaksRawToolCallId: false,
+			hasReportedContent: true,
 		});
 	});
 
-	test('failed tool_call lifecycle completes as a failed redacted tool result', async () => {
+	test('failed tool_call lifecycle completes as a failed reported tool result', async () => {
 		const agent = disposables.add(new AcpAgent(fakeAgent('tool-call-failed')));
 		const created = await agent.createSession({ workingDirectory: URI.file(process.cwd()) });
 
@@ -679,15 +681,44 @@ suite('AcpAgent', () => {
 			tool: toolPart.kind === ResponsePartKind.ToolCall && toolPart.toolCall.status === ToolCallStatus.Completed ? {
 				success: toolPart.toolCall.success,
 				error: toolPart.toolCall.error?.message,
-				leaksTerminalOutput: JSON.stringify(toolPart).includes('terminal secret output'),
+				hasRawOutputSummary: JSON.stringify(toolPart).includes('terminal secret output'),
 			} : undefined,
 		}, {
 			state: TurnState.Complete,
 			tool: {
 				success: false,
 				error: 'ACP tool failed or was rejected.',
-				leaksTerminalOutput: false,
+				hasRawOutputSummary: true,
 			},
+		});
+	});
+
+	test('permission request renders options and returns selected ACP option id', async () => {
+		const agent = disposables.add(new AcpAgent(fakeAgent('permission-request-denied')));
+		const signals: unknown[] = [];
+		disposables.add(agent.onDidSessionProgress(signal => {
+			signals.push(signal);
+			if (signal.kind === 'pending_confirmation') {
+				agent.respondToPermissionRequest(signal.state.toolCallId, false, 'reject-once');
+			}
+		}));
+		const created = await agent.createSession({ workingDirectory: URI.file(process.cwd()) });
+
+		await agent.sendMessage(created.session, 'Need permission', undefined, 'turn-1');
+		const turn = (await agent.getSessionMessages(created.session))[0];
+		const pending = signals.find((signal): signal is { readonly kind: 'pending_confirmation'; readonly state: { readonly options?: readonly { readonly id: string; readonly label: string }[] } } => {
+			return typeof signal === 'object' && signal !== null && (signal as { readonly kind?: unknown }).kind === 'pending_confirmation';
+		});
+
+		assert.deepStrictEqual({
+			options: pending?.state.options,
+			response: turn.responseParts[1]?.kind === ResponsePartKind.Markdown ? turn.responseParts[1].content : undefined,
+		}, {
+			options: [
+				{ id: 'allow-once', label: 'Allow Once', kind: 'approve', group: 1 },
+				{ id: 'reject-once', label: 'Reject Once', kind: 'deny', group: 2 },
+			],
+			response: 'permission:reject-once',
 		});
 	});
 });

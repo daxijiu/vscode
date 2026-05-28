@@ -17,6 +17,7 @@ import { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../.
 import { CustomizationRef, MessageAttachment, ModelSelection, PendingMessage, ProtectedResourceMetadata, SessionInputAnswer, SessionInputResponseKind, ToolCallResult, ToolDefinition, Turn } from '../../common/state/protocol/state.js';
 import { AcpAgentSession, toAcpUserMessage } from './acpAgentSession.js';
 import { acpModelsToAgentModels, AcpNegotiatedCapabilities, EmptyAcpNegotiatedCapabilities, EmptyAcpSessionConfigSchema, resolveAcpSessionConfigValues } from './acpCapabilities.js';
+import { AcpPermissionBridge } from './acpPermissionBridge.js';
 import { AcpProcess } from './acpProcess.js';
 import { resolveAcpLocalCwd } from './acpLocalCwd.js';
 
@@ -79,9 +80,11 @@ export class AcpAgent extends Disposable implements IAgent {
 		const sessionKey = sessionUri.toString();
 		const localCwd = resolveAcpLocalCwd(this.agent, config.workingDirectory);
 
+		const permissionBridge = new AcpPermissionBridge({ autoDeny: false });
 		const process = new AcpProcess({
 			agent: this.agent,
 			workspaceCwd: localCwd.processCwd,
+			permissionBridge,
 		});
 		let store: DisposableStore | undefined;
 		try {
@@ -178,9 +181,9 @@ export class AcpAgent extends Disposable implements IAgent {
 		throw new Error(localize('acpAgent.changeModelUnsupported', "External ACP agent model selection is not available until ACP model capability support is implemented."));
 	}
 
-	respondToPermissionRequest(requestId: string, approved: boolean): void {
+	respondToPermissionRequest(requestId: string, approved: boolean, selectedOptionId?: string): void {
 		for (const entry of this._sessions.values()) {
-			if (entry.session.respondToPermissionRequest(requestId, approved)) {
+			if (entry.session.respondToPermissionRequest(requestId, approved, selectedOptionId)) {
 				return;
 			}
 		}

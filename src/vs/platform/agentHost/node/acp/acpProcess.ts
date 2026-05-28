@@ -109,6 +109,10 @@ export class AcpProcess extends Disposable {
 		return this.connection.value!.onDidNotification;
 	}
 
+	get onDidRequestPermission(): Event<AcpRequestPermissionParams> {
+		return this.permissionBridge.onDidRequestPermission;
+	}
+
 	async newSession(cwd: string): Promise<AcpNewSessionResult> {
 		this.start();
 		const params: AcpNewSessionParams = {
@@ -138,8 +142,8 @@ export class AcpProcess extends Disposable {
 		await this.connection.value!.notify(AcpMethod.SessionCancel, params);
 	}
 
-	respondToPermissionRequest(requestId: string, approved: boolean): boolean {
-		return this.permissionBridge.respond(requestId, approved);
+	respondToPermissionRequest(requestId: string, approved: boolean, selectedOptionId?: string): boolean {
+		return this.permissionBridge.respond(requestId, approved, selectedOptionId);
 	}
 
 	kill(): void {

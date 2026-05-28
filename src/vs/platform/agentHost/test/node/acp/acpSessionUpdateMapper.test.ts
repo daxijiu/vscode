@@ -28,41 +28,73 @@ suite('acpSessionUpdateMapper', () => {
 				tool: {
 					phase: 'start',
 					toolCallId: 'acp-tool',
-					toolName: 'acp.tool',
-					displayName: 'ACP Tool',
-					invocationMessage: 'ACP tool started. Side effects are not executed by VS Code in Phase 6A.',
+					toolName: 'acp.other',
+					displayName: 'Read',
+					invocationMessage: 'Read started.',
+					metadata: {
+						toolKind: 'other',
+						acp: {
+							kind: 'other',
+							status: 'pending',
+							title: 'Read',
+						},
+					},
 				},
 			},
 			{ kind: 'unsupported', message: 'This ACP agent produced unsupported non-text content. Only text output is enabled in this milestone.' },
 		]);
 	});
 
-	test('redacts agent-controlled tool metadata before AgentHost action mapping', () => {
+	test('maps agent-owned tool report details without requiring client tool capabilities', () => {
 		const mapped = mapAcpSessionUpdate({
-			sessionUpdate: 'tool_call',
-			toolCallId: 'call-token-sk-abc123',
-			title: 'Read .env SECRET_FILE_CONTENT',
-			kind: 'terminal output token=ghp_secret',
-			status: 'pending',
+			sessionUpdate: 'tool_call_update',
+			toolCallId: 'call-1',
+			title: 'Edit config',
+			kind: 'edit',
+			status: 'completed',
+			rawInput: { path: '/repo/config.json', token: 'abc123' },
+			content: [
+				{ type: 'content', content: { type: 'text', text: 'Updated config' } },
+				{ type: 'diff', path: '/repo/config.json', oldText: '{"debug":false}', newText: '{"debug":true}' },
+				{ type: 'terminal', terminalId: 'term-1' },
+			],
+			locations: [{ path: '/repo/config.json', line: 2 }],
 		}, { mapToolCallId: () => 'acp-tool-1' });
 
 		assert.deepStrictEqual({
 			mapped,
-			leaksMetadata: JSON.stringify(mapped).includes('sk-abc123')
-				|| JSON.stringify(mapped).includes('SECRET_FILE_CONTENT')
-				|| JSON.stringify(mapped).includes('ghp_secret'),
+			hasPhase6Placeholder: JSON.stringify(mapped).includes('Phase 6A'),
 		}, {
 			mapped: {
 				kind: 'tool',
 				tool: {
-					phase: 'start',
+					phase: 'complete',
 					toolCallId: 'acp-tool-1',
-					toolName: 'acp.tool',
-					displayName: 'ACP Tool',
-					invocationMessage: 'ACP tool started. Side effects are not executed by VS Code in Phase 6A.',
+					toolName: 'acp.edit',
+					displayName: 'Edit config',
+					invocationMessage: 'Edit config completed.',
+					toolInput: 'Raw input\n{\n  "path": "/repo/config.json",\n  "token": "[redacted]"\n}\n\nLocations\n- /repo/config.json:2',
+					content: [
+						{ type: 'text', text: 'Updated config' },
+						{ type: 'text', text: 'Diff: /repo/config.json\n--- old\n{"debug":false}\n+++ new\n{"debug":true}' },
+						{ type: 'text', text: 'Terminal: term-1' },
+						{ type: 'text', text: 'Locations\n- /repo/config.json:2' },
+					],
+					progress: 'Updated config',
+					metadata: {
+						toolKind: 'edit',
+						acp: {
+							kind: 'edit',
+							status: 'completed',
+							title: 'Edit config',
+							rawInputPreview: '{\n  "path": "/repo/config.json",\n  "token": "[redacted]"\n}',
+							locations: [{ path: '/repo/config.json', line: 2 }],
+							terminalIds: ['term-1'],
+						},
+					},
 				},
 			},
-			leaksMetadata: false,
+			hasPhase6Placeholder: false,
 		});
 	});
 });

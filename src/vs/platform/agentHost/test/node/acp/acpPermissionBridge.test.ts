@@ -11,7 +11,7 @@ import { AcpRequestPermissionParams } from '../../../node/acp/acpProtocol.js';
 suite('acpPermissionBridge', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('redacts permission tool and option metadata before exposing pending params', async () => {
+	test('exposes permission options and returns the selected ACP option id', async () => {
 		const bridge = disposables.add(new AcpPermissionBridge({ autoDeny: false }));
 		let exposed: AcpRequestPermissionParams | undefined;
 		disposables.add(bridge.onDidRequestPermission(params => {
@@ -22,10 +22,7 @@ suite('acpPermissionBridge', () => {
 
 		assert.deepStrictEqual({
 			exposed,
-			leaksMetadata: JSON.stringify(exposed).includes('sk-abc123')
-				|| JSON.stringify(exposed).includes('SECRET_FILE_CONTENT')
-				|| JSON.stringify(exposed).includes('ghp_secret')
-				|| JSON.stringify(exposed).includes('do not leak this file content'),
+			exposesToolContent: JSON.stringify(exposed).includes('do not leak this file content'),
 		}, {
 			exposed: {
 				sessionId: 'session-1',
@@ -37,26 +34,23 @@ suite('acpPermissionBridge', () => {
 					status: 'pending',
 				},
 				options: [
-					{ optionId: 'acp-permission-option-1', name: 'Allow Once', kind: 'allow_once' },
-					{ optionId: 'acp-permission-option-2', name: 'Reject Once', kind: 'reject_once' },
+					{ optionId: 'allow-sk-abc123', name: 'Allow SECRET_FILE_CONTENT', kind: 'allow_once' },
+					{ optionId: 'reject-ghp_secret', name: 'Reject SECRET_OPTION', kind: 'reject_once' },
 				],
 			},
-			leaksMetadata: false,
+			exposesToolContent: false,
 		});
 
-		assert.strictEqual(bridge.respond('acp-permission-1', false), true);
-		await pending;
+		assert.strictEqual(bridge.respond('acp-permission-1', false, 'reject-ghp_secret'), true);
+		assert.deepStrictEqual(await pending, { outcome: { outcome: 'selected', optionId: 'reject-ghp_secret' } });
 	});
 
-	test('redactPermissionParams never copies secret-like permission option ids or names', () => {
+	test('redactPermissionParams keeps tool details bounded while preserving selectable options', () => {
 		const redacted = redactPermissionParams(maliciousPermissionParams(), 'acp-permission-test');
 
 		assert.deepStrictEqual({
 			redacted,
-			leaksMetadata: JSON.stringify(redacted).includes('sk-abc123')
-				|| JSON.stringify(redacted).includes('SECRET_FILE_CONTENT')
-				|| JSON.stringify(redacted).includes('ghp_secret')
-				|| JSON.stringify(redacted).includes('do not leak this file content'),
+			exposesToolContent: JSON.stringify(redacted).includes('do not leak this file content'),
 		}, {
 			redacted: {
 				sessionId: 'session-1',
@@ -68,11 +62,11 @@ suite('acpPermissionBridge', () => {
 					status: 'pending',
 				},
 				options: [
-					{ optionId: 'acp-permission-option-1', name: 'Allow Once', kind: 'allow_once' },
-					{ optionId: 'acp-permission-option-2', name: 'Reject Once', kind: 'reject_once' },
+					{ optionId: 'allow-sk-abc123', name: 'Allow SECRET_FILE_CONTENT', kind: 'allow_once' },
+					{ optionId: 'reject-ghp_secret', name: 'Reject SECRET_OPTION', kind: 'reject_once' },
 				],
 			},
-			leaksMetadata: false,
+			exposesToolContent: false,
 		});
 	});
 });
@@ -90,7 +84,7 @@ function maliciousPermissionParams(): AcpRequestPermissionParams {
 		},
 		options: [
 			{ optionId: 'allow-sk-abc123', name: 'Allow SECRET_FILE_CONTENT', kind: 'allow_once' },
-			{ optionId: 'reject-ghp_secret', name: 'Reject do not leak this file content', kind: 'reject_once' },
+			{ optionId: 'reject-ghp_secret', name: 'Reject SECRET_OPTION', kind: 'reject_once' },
 		],
 	};
 }

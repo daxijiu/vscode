@@ -12,10 +12,10 @@ import { localize } from '../../../../nls.js';
 import { ExternalAcpAgentAuthMethodInfo, redactExternalAcpAgentStatusMessage } from '../../common/acpAgentConfig.js';
 import { AgentSignal, IAgentSessionMetadata, IAgentSessionProjectInfo } from '../../common/agentService.js';
 import { ActionType, SessionAction } from '../../common/state/sessionActions.js';
-import { MessageAttachment, ResponsePart, ResponsePartKind, ToolCallConfirmationReason, ToolCallStatus, ToolResultContentType, ToolCallResult, Turn, TurnState, UsageInfo } from '../../common/state/protocol/state.js';
+import { ConfirmationOptionKind, MessageAttachment, ResponsePart, ResponsePartKind, ToolCallConfirmationReason, ToolCallStatus, ToolResultContent, ToolResultContentType, ToolCallResult, Turn, TurnState, UsageInfo } from '../../common/state/protocol/state.js';
 import { AcpErrorCode, isAcpError } from './acpErrors.js';
 import { AcpProcess } from './acpProcess.js';
-import { AcpAuthMethod, AcpMethod, AcpPromptResult, AcpSessionNotificationParams, AcpStopReason } from './acpProtocol.js';
+import { AcpAuthMethod, AcpMethod, AcpPermissionOption, AcpPromptResult, AcpRequestPermissionParams, AcpSessionNotificationParams, AcpStopReason } from './acpProtocol.js';
 import { AcpMappedToolUpdate, mapAcpSessionUpdate } from './acpSessionUpdateMapper.js';
 
 export interface AcpAuthRecoveryContext {
@@ -69,6 +69,7 @@ export class AcpAgentSession extends Disposable {
 			}
 			this._handleSessionUpdate(notification.params as AcpSessionNotificationParams);
 		}));
+		this._register(this._process.onDidRequestPermission(params => this._handlePermissionRequest(params)));
 	}
 
 	createMetadata(): IAgentSessionMetadata {
@@ -119,8 +120,8 @@ export class AcpAgentSession extends Disposable {
 		this._cancel(inFlight);
 	}
 
-	respondToPermissionRequest(requestId: string, approved: boolean): boolean {
-		return this._process.respondToPermissionRequest(requestId, approved);
+	respondToPermissionRequest(requestId: string, approved: boolean, selectedOptionId?: string): boolean {
+		return this._process.respondToPermissionRequest(requestId, approved, selectedOptionId);
 	}
 
 	getTurns(): readonly Turn[] {
@@ -200,6 +201,44 @@ export class AcpAgentSession extends Disposable {
 			case 'ignored':
 				break;
 		}
+	}
+
+	private _handlePermissionRequest(params: AcpRequestPermissionParams): void {
+		const inFlight = this._inFlight;
+		if (!inFlight || inFlight.terminalEmitted || params.sessionId !== this.acpSessionId) {
+			return;
+		}
+		const mapped = params.toolCall
+			? mapAcpSessionUpdate(params.toolCall, { mapToolCallId: toolCallId => toolCallId })
+			: undefined;
+		const tool = mapped?.kind === 'tool'
+			? mapped.tool
+			: {
+				phase: 'start' as const,
+				toolCallId: this._mapToolCallId(inFlight, 'acp-permission'),
+				toolName: 'acp.other',
+				displayName: localize('acpAgent.permissionToolDisplayName', "ACP Tool"),
+				invocationMessage: localize('acpAgent.permissionToolInvocation', "ACP tool requested permission."),
+			};
+		if (!inFlight.startedToolCallIds.has(tool.toolCallId)) {
+			this._emitToolStart(inFlight, tool);
+		}
+		const options = toConfirmationOptions(params.options);
+		this._onDidSessionProgress.fire({
+			kind: 'pending_confirmation',
+			session: this.sessionUri,
+			state: {
+				status: ToolCallStatus.PendingConfirmation,
+				toolCallId: tool.toolCallId,
+				toolName: tool.toolName,
+				displayName: tool.displayName,
+				invocationMessage: tool.invocationMessage,
+				...(tool.toolInput ? { toolInput: tool.toolInput } : {}),
+				confirmationTitle: localize('acpAgent.permissionConfirmationTitle', "Allow ACP Tool?"),
+				...(options.length ? { options } : {}),
+				...(tool.metadata ? { _meta: tool.metadata } : {}),
+			},
+		});
 	}
 
 	private _applyPromptResult(inFlight: AcpInFlightTurn, result: AcpPromptResult): void {
@@ -340,6 +379,9 @@ export class AcpAgentSession extends Disposable {
 		}
 		if (tool.phase === 'update') {
 			this._emitToolReady(inFlight, tool);
+			if (tool.content?.length) {
+				this._emitToolContentChanged(inFlight, tool);
+			}
 			if (tool.progress) {
 				this._emitToolDelta(inFlight, tool);
 			}
@@ -371,6 +413,7 @@ export class AcpAgentSession extends Disposable {
 				toolName: tool.toolName,
 				displayName: tool.displayName,
 				invocationMessage: tool.invocationMessage,
+				...(tool.metadata ? { _meta: tool.metadata } : {}),
 			},
 		} satisfies ResponsePart;
 		inFlight.responseParts.push(part);
@@ -380,6 +423,7 @@ export class AcpAgentSession extends Disposable {
 			toolCallId: tool.toolCallId,
 			toolName: tool.toolName,
 			displayName: tool.displayName,
+			...(tool.metadata ? { _meta: tool.metadata } : {}),
 		});
 	}
 
@@ -394,8 +438,9 @@ export class AcpAgentSession extends Disposable {
 			turnId: inFlight.turnId,
 			toolCallId: tool.toolCallId,
 			invocationMessage: tool.invocationMessage,
-			toolInput: localize('acpAgent.toolInputRedacted', "ACP tool input is unsupported and redacted in Phase 6A."),
+			...(tool.toolInput ? { toolInput: tool.toolInput } : {}),
 			confirmed: ToolCallConfirmationReason.NotNeeded,
+			...(tool.metadata ? { _meta: tool.metadata } : {}),
 		});
 	}
 
@@ -404,8 +449,23 @@ export class AcpAgentSession extends Disposable {
 			type: ActionType.SessionToolCallDelta,
 			turnId: inFlight.turnId,
 			toolCallId: tool.toolCallId,
-			content: '',
+			content: tool.progress ?? '',
 			invocationMessage: tool.progress,
+			...(tool.metadata ? { _meta: tool.metadata } : {}),
+		});
+	}
+
+	private _emitToolContentChanged(inFlight: AcpInFlightTurn, tool: AcpMappedToolUpdate): void {
+		if (!tool.content?.length) {
+			return;
+		}
+		this._updateToolPartContent(inFlight, tool, tool.content);
+		this._emitAction({
+			type: ActionType.SessionToolCallContentChanged,
+			turnId: inFlight.turnId,
+			toolCallId: tool.toolCallId,
+			content: [...tool.content],
+			...(tool.metadata ? { _meta: tool.metadata } : {}),
 		});
 	}
 
@@ -418,17 +478,23 @@ export class AcpAgentSession extends Disposable {
 			content: [{
 				type: ToolResultContentType.Text,
 				text: success
-					? localize('acpAgent.toolResultRedactedComplete', "ACP tool output was redacted. Phase 6A does not execute tools or record file, terminal, or diff content.")
-					: localize('acpAgent.toolResultRedactedFailed', "ACP tool failure details were redacted. Phase 6A does not execute tools or record file, terminal, or diff content."),
+					? localize('acpAgent.toolResultNoOutputComplete', "ACP tool completed without reported output.")
+					: localize('acpAgent.toolResultNoOutputFailed', "ACP tool failed without reported output."),
 			}],
 			...(!success ? { error: { message: localize('acpAgent.toolResultError', "ACP tool failed or was rejected.") } } : {}),
 		};
-		this._updateToolPartCompleted(inFlight, tool, result);
+		const content = tool.content?.length ? [...tool.content] : result.content;
+		const finalResult: ToolCallResult = {
+			...result,
+			...(content ? { content } : {}),
+		};
+		this._updateToolPartCompleted(inFlight, tool, finalResult);
 		this._emitAction({
 			type: ActionType.SessionToolCallComplete,
 			turnId: inFlight.turnId,
 			toolCallId: tool.toolCallId,
-			result,
+			result: finalResult,
+			...(tool.metadata ? { _meta: tool.metadata } : {}),
 		});
 	}
 
@@ -448,8 +514,20 @@ export class AcpAgentSession extends Disposable {
 			...part.toolCall,
 			status: ToolCallStatus.Running,
 			invocationMessage: tool.invocationMessage,
-			toolInput: localize('acpAgent.toolInputRedacted', "ACP tool input is unsupported and redacted in Phase 6A."),
+			...(tool.toolInput ? { toolInput: tool.toolInput } : {}),
 			confirmed: ToolCallConfirmationReason.NotNeeded,
+			...(tool.metadata ? { _meta: tool.metadata } : {}),
+		};
+	}
+
+	private _updateToolPartContent(inFlight: AcpInFlightTurn, tool: AcpMappedToolUpdate, content: readonly ToolResultContent[]): void {
+		const part = inFlight.responseParts.find(part => part.kind === ResponsePartKind.ToolCall && part.toolCall.toolCallId === tool.toolCallId);
+		if (part?.kind !== ResponsePartKind.ToolCall || part.toolCall.status !== ToolCallStatus.Running) {
+			return;
+		}
+		part.toolCall = {
+			...part.toolCall,
+			content: [...content],
 		};
 	}
 
@@ -462,8 +540,9 @@ export class AcpAgentSession extends Disposable {
 			...part.toolCall,
 			status: ToolCallStatus.Completed,
 			invocationMessage: tool.invocationMessage,
-			toolInput: localize('acpAgent.toolInputRedacted', "ACP tool input is unsupported and redacted in Phase 6A."),
+			...(tool.toolInput ? { toolInput: tool.toolInput } : {}),
 			confirmed: ToolCallConfirmationReason.NotNeeded,
+			...(tool.metadata ? { _meta: tool.metadata } : {}),
 			success: result.success,
 			pastTenseMessage: result.pastTenseMessage,
 			...(result.content !== undefined ? { content: result.content } : {}),
@@ -603,6 +682,27 @@ function getErrorAuthMethods(err: unknown): readonly ExternalAcpAgentAuthMethodI
 			...(typeof method.id === 'string' ? { id: method.id } : {}),
 			...(typeof method.label === 'string' ? { label: method.label } : {}),
 		}));
+}
+
+function toConfirmationOptions(options: readonly AcpPermissionOption[] | undefined) {
+	return (options ?? []).map(option => ({
+		id: option.optionId,
+		label: option.name,
+		kind: permissionOptionKind(option.kind),
+		group: permissionOptionKind(option.kind) === ConfirmationOptionKind.Approve ? 1 : 2,
+	})).filter(option => option.id && option.label).slice(0, 8);
+}
+
+function permissionOptionKind(kind: string): ConfirmationOptionKind {
+	switch (kind) {
+		case 'allow_once':
+		case 'allow_always':
+			return ConfirmationOptionKind.Approve;
+		case 'reject_once':
+		case 'reject_always':
+		default:
+			return ConfirmationOptionKind.Deny;
+	}
 }
 
 function toAuthMethodLabel(method: AcpAuthMethod | ExternalAcpAgentAuthMethodInfo): string | undefined {
