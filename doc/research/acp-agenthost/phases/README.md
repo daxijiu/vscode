@@ -18,6 +18,7 @@ These documents split the ACP AgentHost roadmap into standalone phase plans. The
 - [Phase 7 - Registry Browse And Managed Enablement](./phase-7-registry-browse-and-managed-enablement.md)
 - [Phase 8 - Models, Modes, Config, Restore](./phase-8-models-modes-config-restore.md)
 - [Phase 9 - Hardening And Policy](./phase-9-hardening-and-policy.md)
+- [Phase 9.1 - Agent-Owned Tool Reporting And VS Code UI Parity](./phase-9-1-agent-owned-tool-reporting-rendering-parity.md)
 
 ## First Milestone
 
@@ -44,3 +45,4 @@ Review refinements now captured in the phase docs:
 - Phase 7A first ships browse/manual-config-only, with no automatic install and no enabled managed-install distribution type; Phase 7B managed install is deferred design.
 - Phase 8 keeps restore as a goal, but splits it into feasibility audit and vendor-gated rollout before broad UI exposure; delete/archive is VS Code-local only by default.
 - Phase 9 validates policy, local diagnostics with ACP telemetry disabled, and a first-release matrix limited to local desktop plus local pre-installed/pre-authenticated ACP CLI; remote targets are follow-up work.
+- Phase 9.1 corrects the Phase 6A wording and aligns with `vscode-acp` / Zed: vendor ACP agents keep their own native tool/file/terminal behavior, AgentHost renders their reported tool activity, and local VS Code `fs/*` / `terminal/*` client bridges are implemented as native UI/service adapters rather than as a separate ACP webview.

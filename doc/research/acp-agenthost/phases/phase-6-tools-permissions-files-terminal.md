@@ -94,12 +94,20 @@ This is the highest-risk runtime phase.
 - ACP `tool_call` and `tool_call_update` session updates are mapped to AgentHost tool lifecycle actions. The Phase 6A mapper shows start/progress/complete/fail states with redacted unsupported markers and does not execute tools, read/write files, open terminals, or wait for tool results.
 - Fake ACP fixtures and focused tests cover disabled initialize capabilities, default permission denial, pending permission cancellation, tool lifecycle action ordering, unknown-request method-not-found behavior, and redaction of file/terminal/prompt-like tool content.
 
+## Phase 9.1 Correction
+
+The Phase 6A wording above was too broad. It correctly deferred VS Code client-provided `fs/*`, `terminal/*`, and tool-result bridge execution, but it should not imply that vendor ACP agents lose their own native execution ability when surfaced through VS Code.
+
+For trusted local ACP agents, agent-owned tool execution reported through ACP `tool_call` / `tool_call_update` is first-release behavior. VS Code should render the agent's file/search/execute/diff/terminal progress in AgentHost UI instead of replacing it with generic unsupported/redacted placeholders. The separate VS Code-managed client capabilities remain staged behind explicit implementation and policy.
+
+Plan: [Phase 9.1 - Agent-Owned Tool Reporting And VS Code UI Parity](./phase-9-1-agent-owned-tool-reporting-rendering-parity.md).
+
 Still deferred beyond Phase 6A:
 
-- Real filesystem read bridge with workspace containment.
-- File write/edit/changeset execution and approval.
-- Terminal create/output/wait/kill and terminal-auth.
-- MCP bridge and real tool invocation/result plumbing.
+- VS Code client-provided filesystem read bridge with workspace containment until Phase 9.1B lands.
+- VS Code client-provided file write/edit/changeset execution and approval until Phase 9.1B lands.
+- VS Code client-provided terminal create/output/wait/kill and terminal-auth until Phase 9.1C lands.
+- MCP bridge and VS Code-managed non-ACP tool invocation/result plumbing.
 - Dynamic live capability mutation without reconnect/re-initialize.
 
 ## Validation

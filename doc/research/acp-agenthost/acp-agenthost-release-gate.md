@@ -24,9 +24,9 @@ Remote targets are non-blocking follow-up work. The host must fail clearly inste
 | `externalAcpAgents.execution.enabled` | `true` | When false, External ACP Agents are not written into the AgentHost snapshot, not registered, not tested, and not spawned. |
 | `externalAcpAgents.registryBrowse.enabled` | `true` | Controls only the local browse catalog. It does not fetch from the network. |
 | `externalAcpAgents.managedInstall.enabled` | `false` | Reserved copy/schema for the deferred install path. No managed install code path is enabled. |
-| `externalAcpAgents.capabilities.tools.enabled` | `false` | ACP tool capabilities are not advertised by default. Phase 6A still does not execute tools. |
-| `externalAcpAgents.capabilities.files.enabled` | `false` | ACP file capabilities are not advertised by default. Real file access remains deferred. |
-| `externalAcpAgents.capabilities.terminal.enabled` | `false` | ACP terminal capabilities are not advertised by default. Real terminal execution remains deferred. |
+| `externalAcpAgents.capabilities.tools.enabled` | `false` | Reserved for VS Code client-provided tool bridges. Vendor-reported ACP `tool_call` updates should still render for trusted local agents. |
+| `externalAcpAgents.capabilities.files.enabled` | `false` | Controls whether VS Code advertises ACP `fs/*` client methods. It does not disable the vendor agent's own file tools. |
+| `externalAcpAgents.capabilities.terminal.enabled` | `false` | Controls whether VS Code advertises ACP `terminal/*` client methods. It does not disable the vendor agent's own command execution. |
 
 These are settings-level gates for this fork. Enterprise policy metadata remains future work unless the repository adopts a clear policy contribution pattern for this surface.
 
@@ -61,7 +61,8 @@ Diagnostics must not record prompts, tool arguments, file contents, terminal out
 - Windows command resolution covers absolute paths, relative paths, PATH/PATHEXT, `.exe`, `.cmd`, `.bat`, safe spaces in paths/args, metacharacter rejection for batch shims, missing command, and redacted summaries.
 - Execution disabled gate prevents snapshot registration, Test Connection, createSession, and runtime spawn.
 - Managed install remains disabled and no package manager/download/extract path exists.
-- File, terminal, and tools capability settings default false.
+- Client-provided file, terminal, and tool bridge settings default false.
+- Vendor-reported ACP tool calls for trusted local agents render with useful native AgentHost progress/results instead of unsupported placeholders.
 - Crash during active prompt emits one terminal error, redacts sensitive data, and does not keep the turn active.
 - Diagnostics match the allowlist and do not retain raw stderr text.
 - Remote/local placement matrix is documented.

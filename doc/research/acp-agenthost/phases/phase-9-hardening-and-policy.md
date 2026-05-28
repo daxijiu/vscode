@@ -172,6 +172,8 @@ Manual validation:
 - Enterprise policy metadata beyond settings-level gates.
 - Vendor-side delete/archive.
 - Managed install, package manager execution, downloads, or extraction.
-- Real filesystem, terminal, or tool execution.
+- VS Code client-provided filesystem, terminal, or tool execution bridges.
 - Remote AgentHost/runtime placement for SSH, WSL, dev containers, Codespaces, or remote server.
 - Director Provider Backend, Copilot CAPI, or credential bridge integration.
+
+Follow-up correction: [Phase 9.1 - Agent-Owned Tool Reporting And VS Code UI Parity](./phase-9-1-agent-owned-tool-reporting-rendering-parity.md) separates vendor agent-owned native tool reporting from VS Code client-provided execution bridges. Agent-owned tool/file/terminal activity should be rendered in the first-release AgentHost UI for trusted local ACP agents, while local `fs/*` and `terminal/*` client bridges should be implemented as native VS Code service adapters.
