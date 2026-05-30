@@ -52,7 +52,7 @@ import { ChatQuestionCarouselData } from '../../../common/model/chatProgressType
 import { ChatToolInvocation } from '../../../common/model/chatProgressTypes/chatToolInvocation.js';
 import { getChatSessionType } from '../../../common/model/chatUri.js';
 import { IChatAgentData, IChatAgentImplementation, IChatAgentRequest, IChatAgentResult, IChatAgentService } from '../../../common/participants/chatAgents.js';
-import { ILanguageModelToolsService, IToolData, IToolInvocation, IToolResult, ToolInvocationPresentation } from '../../../common/tools/languageModelToolsService.js';
+import { ILanguageModelToolsService, isToolResultInputOutputDetails, isToolResultOutputDetails, IToolData, IToolInvocation, IToolResult, stringifyPromptTsxPart, ToolInvocationPresentation } from '../../../common/tools/languageModelToolsService.js';
 import { IChatWidgetService } from '../../chat.js';
 import { getAgentHostIcon } from '../agentSessions.js';
 import { IAgentHostActiveClientService } from './agentHostActiveClientService.js';
@@ -424,7 +424,11 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 		this._clientToolsObs = derived(reader => {
 			const allowlist = agentHostClientToolReferenceNamesForProvider(this._config.provider, allowlistObs.read(reader));
 			const allTools = allToolsObs.read(reader);
-			return allTools.filter(t => t.toolReferenceName !== undefined && allowlist.has(t.toolReferenceName));
+			const allowedTools = allTools.filter(t => {
+				const name = agentHostClientToolNameForProvider(this._config.provider, t);
+				return name !== undefined && allowlist.has(name);
+			});
+			return agentHostClientToolsForProvider(this._config.provider, allowedTools);
 		});
 
 		// When the client tools set changes, dispatch
@@ -1615,7 +1619,7 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 			adopted.didExecuteTool(undefined);
 		}
 
-		const toolData = this._toolsService.getToolByName(toolName);
+		const toolData = this._resolveClientToolData(toolName);
 		if (!toolData) {
 			this._logService.warn(`[AgentHost] Client tool call for unknown tool: ${toolName}`);
 			this._dispatchAction(opts.backendSession, {
@@ -1796,6 +1800,14 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 				err => handleSettled(undefined, err),
 			);
 		}));
+	}
+
+	private _resolveClientToolData(toolName: string): IToolData | undefined {
+		const advertisedTool = this._clientToolsObs.get().find(tool => agentHostClientToolNameForProvider(this._config.provider, tool) === toolName);
+		if (advertisedTool || this._config.provider === DirectorAgentProviderId) {
+			return advertisedTool;
+		}
+		return this._toolsService.getToolByName(toolName);
 	}
 
 	private _setupInputRequest(
@@ -2713,10 +2725,7 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 	}
 
 	private _clientToolDefinitions(tools: readonly IToolData[]): ToolDefinition[] {
-		const definitions = tools.map(toolDataToDefinition);
-		return this._config.provider === DirectorAgentProviderId
-			? [...normalizeDirectorClientToolDefinitions(definitions)]
-			: definitions;
+		return agentHostClientToolDefinitionsForProvider(this._config.provider, tools);
 	}
 
 	private _convertVariablesToAttachments(request: IChatAgentRequest): MessageAttachment[] {
@@ -2982,6 +2991,9 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 // Client-provided tool helpers
 // =============================================================================
 
+const DirectorFetchClientToolName = 'fetch';
+const InternalFetchWebPageToolId = 'vscode_fetchWebPage_internal';
+
 export function agentHostClientToolReferenceNamesForProvider(provider: AgentProvider, configuredNames: readonly string[]): Set<string> {
 	const names = new Set(configuredNames);
 	if (provider === DirectorAgentProviderId) {
@@ -2990,6 +3002,59 @@ export function agentHostClientToolReferenceNamesForProvider(provider: AgentProv
 		}
 	}
 	return names;
+}
+
+export function agentHostClientToolNameForProvider(provider: AgentProvider, tool: IToolData): string | undefined {
+	if (provider === DirectorAgentProviderId && tool.id === InternalFetchWebPageToolId) {
+		return DirectorFetchClientToolName;
+	}
+	return tool.toolReferenceName;
+}
+
+export function agentHostClientToolDefinitionForProvider(provider: AgentProvider, tool: IToolData): ToolDefinition {
+	const definition = toolDataToDefinition(tool);
+	const name = agentHostClientToolNameForProvider(provider, tool);
+	return name ? { ...definition, name } : definition;
+}
+
+export function agentHostClientToolDefinitionsForProvider(provider: AgentProvider, tools: readonly IToolData[]): ToolDefinition[] {
+	const definitions = tools.map(tool => agentHostClientToolDefinitionForProvider(provider, tool));
+	return provider === DirectorAgentProviderId
+		? [...normalizeDirectorClientToolDefinitions(definitions)]
+		: definitions;
+}
+
+export function agentHostClientToolsForProvider(provider: AgentProvider, tools: readonly IToolData[]): readonly IToolData[] {
+	if (provider !== DirectorAgentProviderId) {
+		return tools;
+	}
+
+	const preferredByName = new Map<string, IToolData>();
+	for (const tool of tools) {
+		const name = agentHostClientToolNameForProvider(provider, tool);
+		if (!name) {
+			continue;
+		}
+		const existing = preferredByName.get(name);
+		if (!existing || directorClientToolPreference(tool) < directorClientToolPreference(existing)) {
+			preferredByName.set(name, tool);
+		}
+	}
+
+	return tools.filter(tool => {
+		const name = agentHostClientToolNameForProvider(provider, tool);
+		return !name || preferredByName.get(name) === tool;
+	});
+}
+
+function directorClientToolPreference(tool: IToolData): number {
+	if (tool.id.startsWith('director_')) {
+		return 0;
+	}
+	if (tool.id.startsWith('copilot_')) {
+		return 2;
+	}
+	return 1;
 }
 
 /**
@@ -3012,6 +3077,8 @@ export function toolResultToProtocol(result: IToolResult, toolName: string): {
 	for (const part of result.content) {
 		if (part.kind === 'text') {
 			content.push({ type: ToolResultContentType.Text, text: part.value });
+		} else if (part.kind === 'promptTsx') {
+			content.push({ type: ToolResultContentType.Text, text: stringifyPromptTsxPart(part) });
 		} else if (part.kind === 'data') {
 			content.push({
 				type: ToolResultContentType.EmbeddedResource,
@@ -3019,6 +3086,9 @@ export function toolResultToProtocol(result: IToolResult, toolName: string): {
 				contentType: part.value.mimeType,
 			});
 		}
+	}
+	if (content.length === 0 && result.toolResultDetails) {
+		content.push(...toolResultDetailsToProtocolContent(result.toolResultDetails));
 	}
 
 	return {
@@ -3029,4 +3099,42 @@ export function toolResultToProtocol(result: IToolResult, toolName: string): {
 			? { message: typeof result.toolResultError === 'string' ? result.toolResultError : `${toolName} encountered an error` }
 			: undefined,
 	};
+}
+
+function toolResultDetailsToProtocolContent(resultDetails: NonNullable<IToolResult['toolResultDetails']>): ({ type: ToolResultContentType.Text; text: string } | { type: ToolResultContentType.EmbeddedResource; data: string; contentType: string })[] {
+	if (Array.isArray(resultDetails)) {
+		const text = resultDetails.map(part => {
+			if (URI.isUri(part)) {
+				return part.toString();
+			}
+			if (isLocation(part)) {
+				return part.uri.toString();
+			}
+			return String(part);
+		}).join('\n');
+		return text ? [{ type: ToolResultContentType.Text, text }] : [];
+	}
+	if (isToolResultInputOutputDetails(resultDetails)) {
+		return resultDetails.output.map(part => {
+			if (part.type === 'ref') {
+				return { type: ToolResultContentType.Text, text: part.uri.toString() };
+			}
+			if (part.isText) {
+				return { type: ToolResultContentType.Text, text: part.value };
+			}
+			return {
+				type: ToolResultContentType.EmbeddedResource,
+				data: part.value,
+				contentType: part.mimeType ?? 'application/octet-stream',
+			};
+		});
+	}
+	if (isToolResultOutputDetails(resultDetails)) {
+		return [{
+			type: ToolResultContentType.EmbeddedResource,
+			data: encodeBase64(resultDetails.output.value),
+			contentType: resultDetails.output.mimeType,
+		}];
+	}
+	return [];
 }

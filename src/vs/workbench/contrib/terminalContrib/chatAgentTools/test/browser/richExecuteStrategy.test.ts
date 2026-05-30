@@ -23,7 +23,7 @@ suite('RichExecuteStrategy', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('passes separate command line metadata when running a wrapped command', async () => {
-		const onCommandFinishedEmitter = new Emitter<{ getOutput(): string; exitCode: number }>();
+		const onCommandFinishedEmitter = new Emitter<{ id?: string; getOutput(): string; exitCode: number }>();
 		let actualCommandLine: string | undefined;
 		let actualCommandId: string | undefined;
 		let actualCommandLineForMetadata: string | undefined;
@@ -53,7 +53,7 @@ suite('RichExecuteStrategy', () => {
 				actualCommandLine = commandLine;
 				actualCommandId = commandId;
 				actualCommandLineForMetadata = commandLineForMetadata;
-				queueMicrotask(() => onCommandFinishedEmitter.fire({ getOutput: () => 'output', exitCode: 0 }));
+				queueMicrotask(() => onCommandFinishedEmitter.fire({ id: 'tool-command-id', getOutput: () => 'output', exitCode: 0 }));
 			},
 		} as unknown as ITerminalInstance;
 		const commandDetection = {
@@ -72,6 +72,54 @@ suite('RichExecuteStrategy', () => {
 		strictEqual(actualCommandLine, 'sandbox:echo hello');
 		strictEqual(actualCommandId, 'tool-command-id');
 		strictEqual(actualCommandLineForMetadata, 'echo hello');
+	});
+
+	test('ignores stale command completion events when a command id is provided', async () => {
+		const onCommandFinishedEmitter = new Emitter<{ id?: string; getOutput(): string; exitCode: number }>();
+
+		const marker = {
+			line: 0,
+			dispose: () => { },
+			onDispose: Event.None,
+		};
+		const xterm = {
+			raw: {
+				registerMarker: () => marker,
+				buffer: {
+					active: {},
+					alternate: {},
+					onBufferChange: () => toDisposable(() => { }),
+				},
+				getContentsAsText: () => 'marker output',
+			}
+		};
+		const instance = {
+			xtermReadyPromise: Promise.resolve(xterm),
+			onData: Event.None,
+			onDisposed: Event.None,
+			onExit: Event.None,
+			runCommand: () => {
+				queueMicrotask(() => {
+					onCommandFinishedEmitter.fire({ id: 'stale-command', getOutput: () => 'PS E:\\repo> ^C', exitCode: 130 });
+					onCommandFinishedEmitter.fire({ id: 'tool-command-id', getOutput: () => 'actual output', exitCode: 0 });
+				});
+			},
+		} as unknown as ITerminalInstance;
+		const commandDetection = {
+			onCommandFinished: onCommandFinishedEmitter.event,
+		} as unknown as ICommandDetectionCapability;
+		const strategy = store.add(new RichExecuteStrategy(
+			instance,
+			commandDetection,
+			false,
+			new TestConfigurationService(),
+			createLogService(),
+		));
+
+		const result = await strategy.execute('echo hello', CancellationToken.None, 'tool-command-id');
+
+		strictEqual(result.output, 'actual output');
+		strictEqual(result.exitCode, 0);
 	});
 
 	test('completes when terminal process exits without shell integration sequences', async () => {

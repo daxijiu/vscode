@@ -5,18 +5,14 @@
 
 import assert from 'assert';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
-import { Emitter, Event } from '../../../../../base/common/event.js';
-import type { IReference } from '../../../../../base/common/lifecycle.js';
-import { URI } from '../../../../../base/common/uri.js';
-import { mock } from '../../../../../base/test/common/mock.js';
+import { Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IAgentHostService, type IAgentCreateSessionConfig } from '../../../../../platform/agentHost/common/agentService.js';
-import { ActionType, type ActionEnvelope, type INotification, type SessionAction, type TerminalAction, type IRootConfigChangedAction } from '../../../../../platform/agentHost/common/state/sessionActions.js';
-import type { IAgentSubscription } from '../../../../../platform/agentHost/common/state/agentSubscription.js';
-import { ResponsePartKind, StateComponents, type ComponentToState, type SessionState } from '../../../../../platform/agentHost/common/state/sessionState.js';
 import type { DirectorProviderAuthState, DirectorProviderSnapshotModel } from '../../../../../platform/agentHost/common/directorProviderSnapshot.js';
+import type { DirectorRuntimeCredential, DirectorRuntimeCredentialRequest, IDirectorRuntimeCredentialService } from '../../../../../platform/agentHost/common/directorRuntimeCredentials.js';
+import { syncDirectorLanguageModelConfigurationGroup } from '../../browser/directorLanguageModel/directorLanguageModelGroupSync.js';
 import { DirectorLanguageModelProvider } from '../../browser/directorLanguageModel/directorLanguageModelProvider.js';
-import { ChatMessageRole, getTextResponseFromStream } from '../../../chat/common/languageModels.js';
+import { ChatMessageRole, type IChatResponsePart } from '../../../chat/common/languageModels.js';
+import type { ConfigureLanguageModelsOptions, ILanguageModelsConfigurationService, ILanguageModelsProviderGroup } from '../../../chat/common/languageModelsConfiguration.js';
 import { IDirectorApiKeyService, IDirectorModelResolverService, IDirectorOAuthService, IDirectorProviderRegistryService, type DirectorProviderRegistryState, type DirectorStoredProviderInstance } from '../../common/provider/directorProviderServices.js';
 
 suite('DirectorLanguageModelProvider', () => {
@@ -30,7 +26,7 @@ suite('DirectorLanguageModelProvider', () => {
 			new TestModelResolverService([model]),
 			new TestApiKeyService(),
 			new TestOAuthService(),
-			new TestAgentHostService(),
+			new TestRuntimeCredentialService(),
 		));
 
 		const infos = await languageModelProvider.provideLanguageModelChatInfo({ silent: true }, CancellationToken.None);
@@ -44,6 +40,7 @@ suite('DirectorLanguageModelProvider', () => {
 			family: info.metadata.family,
 			maxInputTokens: info.metadata.maxInputTokens,
 			maxOutputTokens: info.metadata.maxOutputTokens,
+			auth: info.metadata.auth,
 			capabilities: info.metadata.capabilities,
 		})), [{
 			identifier: 'director-code/deepseek/deepseek%3Adeepseek-chat',
@@ -54,42 +51,133 @@ suite('DirectorLanguageModelProvider', () => {
 			family: 'deepseek',
 			maxInputTokens: 64000,
 			maxOutputTokens: 8192,
+			auth: undefined,
 			capabilities: { vision: false, toolCalling: true, agentMode: true },
 		}]);
 	});
 
-	test('routes direct requests through AgentHost Director sessions', async () => {
+	test('sends direct BYOK requests with tools and returns tool use parts', async () => {
 		const provider = createProvider();
 		const model = createModel(provider.id);
-		const agentHost = new TestAgentHostService();
+		const credentialService = new TestRuntimeCredentialService();
+		const requests: Array<{ readonly input: RequestInfo | URL; readonly init?: RequestInit; readonly body: Record<string, unknown>; readonly headers: Headers }> = [];
+		const fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> = async (input, init) => {
+			requests.push({
+				input,
+				init,
+				body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+				headers: new Headers(init?.headers as HeadersInit),
+			});
+			return new Response(JSON.stringify({
+				choices: [{
+					message: {
+						content: '',
+						tool_calls: [{
+							id: 'call_1',
+							type: 'function',
+							function: {
+								name: 'grep_search',
+								arguments: JSON.stringify({ pattern: 'xiaoxiao', include_pattern: '*.md', path: 'e:\\DAD' }),
+							},
+						}],
+					},
+				}],
+				usage: { prompt_tokens: 10, completion_tokens: 2 },
+			}), { status: 200, headers: { 'content-type': 'application/json' } });
+		};
 		const languageModelProvider = disposables.add(new DirectorLanguageModelProvider(
 			new TestRegistryService([provider], { defaultProviderId: provider.id, defaultModelId: model.id }),
 			new TestModelResolverService([model]),
 			new TestApiKeyService(),
 			new TestOAuthService(),
-			agentHost,
+			credentialService,
+			fetch,
 		));
 
 		const response = await languageModelProvider.sendChatRequest(
 			'director-code/deepseek/deepseek%3Adeepseek-chat',
 			[{ role: ChatMessageRole.User, content: [{ type: 'text', value: 'hello' }] }],
 			undefined,
-			{},
+			{
+				tools: [{
+					name: 'grep_search',
+					description: 'Search text in files',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							pattern: { type: 'string' },
+							path: { type: 'string' },
+						},
+					},
+				}],
+			},
 			CancellationToken.None,
 		);
-		const text = await getTextResponseFromStream(response);
+		const parts: IChatResponsePart[] = [];
+		for await (const part of response.stream) {
+			if (Array.isArray(part)) {
+				parts.push(...part);
+			} else {
+				parts.push(part);
+			}
+		}
+		const usage = await response.result;
 
 		assert.deepStrictEqual({
-			text,
-			createSessionConfigs: agentHost.createSessionConfigs,
-			turnMessages: agentHost.turnMessages,
-			disposedSessions: agentHost.disposedSessions.map(session => session.toString()),
+			requestUrl: requests[0].input,
+			authorization: requests[0].headers.get('authorization'),
+			toolName: ((requests[0].body.tools as Array<{ function: { name: string } }>)[0]).function.name,
+			toolChoice: requests[0].body.tool_choice,
+			messages: requests[0].body.messages,
+			credentialRequests: credentialService.requests,
+			parts,
+			usage,
 		}, {
-			text: 'provider direct hello',
-			createSessionConfigs: [{ provider: 'director', model: { id: 'deepseek:deepseek-chat' } }],
-			turnMessages: ['User:\nhello'],
-			disposedSessions: ['director://direct-test'],
+			requestUrl: 'https://api.deepseek.com/v1/chat/completions',
+			authorization: 'Bearer sk-test',
+			toolName: 'grep_search',
+			toolChoice: 'auto',
+			messages: [{ role: 'user', content: 'hello' }],
+			credentialRequests: [{ providerInstanceId: 'deepseek', authKind: 'api-key', authStateKind: 'ready' }],
+			parts: [{
+				type: 'tool_use',
+				name: 'grep_search',
+				toolCallId: 'call_1',
+				parameters: { pattern: 'xiaoxiao', include_pattern: '*.md', path: 'e:\\DAD' },
+			}],
+			usage: { input_tokens: 10, output_tokens: 2 },
 		});
+	});
+
+	test('syncs a non-secret Director language model provider group for BYOK setup detection', async () => {
+		const provider = createProvider();
+		const registry = new TestRegistryService([provider], { defaultProviderId: provider.id, defaultModelId: provider.defaultModelId });
+		const languageModelsConfiguration = new TestLanguageModelsConfigurationService();
+
+		await syncDirectorLanguageModelConfigurationGroup(registry, languageModelsConfiguration);
+
+		assert.deepStrictEqual(languageModelsConfiguration.groups, [{
+			vendor: 'director-code',
+			name: 'Director Code',
+			directorManaged: true,
+		}]);
+	});
+
+	test('removes only the managed Director language model provider group when no provider is enabled', async () => {
+		const disabledProvider = { ...createProvider(), enabled: false };
+		const registry = new TestRegistryService([disabledProvider], { defaultProviderId: disabledProvider.id, defaultModelId: disabledProvider.defaultModelId });
+		const languageModelsConfiguration = new TestLanguageModelsConfigurationService([
+			{ vendor: 'director-code', name: 'Director Code', directorManaged: true },
+			{ vendor: 'director-code', name: 'Custom Director Group' },
+			{ vendor: 'openai', name: 'OpenAI' },
+		]);
+
+		await syncDirectorLanguageModelConfigurationGroup(registry, languageModelsConfiguration);
+
+		assert.deepStrictEqual(languageModelsConfiguration.groups, [
+			{ vendor: 'director-code', name: 'Custom Director Group' },
+			{ vendor: 'openai', name: 'OpenAI' },
+		]);
 	});
 });
 
@@ -172,6 +260,36 @@ class TestModelResolverService implements IDirectorModelResolverService {
 	}
 }
 
+class TestLanguageModelsConfigurationService implements ILanguageModelsConfigurationService {
+	declare readonly _serviceBrand: undefined;
+	readonly configurationFile = undefined as unknown as never;
+	readonly onDidChangeLanguageModelGroups = Event.None;
+
+	constructor(public groups: ILanguageModelsProviderGroup[] = []) { }
+
+	getLanguageModelsProviderGroups(): readonly ILanguageModelsProviderGroup[] {
+		return this.groups;
+	}
+
+	addLanguageModelsProviderGroup(languageModelsProviderGroup: ILanguageModelsProviderGroup): Promise<ILanguageModelsProviderGroup> {
+		this.groups.push(languageModelsProviderGroup);
+		return Promise.resolve(languageModelsProviderGroup);
+	}
+
+	updateLanguageModelsProviderGroup(_from: ILanguageModelsProviderGroup, _to: ILanguageModelsProviderGroup): Promise<ILanguageModelsProviderGroup> {
+		throw new Error('Not implemented in test');
+	}
+
+	removeLanguageModelsProviderGroup(languageModelGroup: ILanguageModelsProviderGroup): Promise<void> {
+		this.groups = this.groups.filter(group => group !== languageModelGroup);
+		return Promise.resolve();
+	}
+
+	configureLanguageModels(_options?: ConfigureLanguageModelsOptions): Promise<void> {
+		throw new Error('Not implemented in test');
+	}
+}
+
 class TestApiKeyService implements IDirectorApiKeyService {
 	declare readonly _serviceBrand: undefined;
 	readonly onDidChangeAuth = Event.None;
@@ -193,59 +311,14 @@ class TestOAuthService implements IDirectorOAuthService {
 	getAuthState(): Promise<DirectorProviderAuthState> { return Promise.resolve({ kind: 'signedOut' }); }
 }
 
-class TestAgentHostService extends mock<IAgentHostService>() {
+class TestRuntimeCredentialService implements IDirectorRuntimeCredentialService {
 	declare readonly _serviceBrand: undefined;
-	override readonly clientId = 'test-client';
-	private readonly onDidActionEmitter = new Emitter<ActionEnvelope>();
-	override readonly onDidAction = this.onDidActionEmitter.event;
-	override readonly onDidNotification: Event<INotification> = Event.None;
-	override readonly onAgentHostExit = Event.None;
-	override readonly onAgentHostStart = Event.None;
-	readonly createSessionConfigs: IAgentCreateSessionConfig[] = [];
-	readonly turnMessages: string[] = [];
-	readonly disposedSessions: URI[] = [];
-	private readonly session = URI.parse('director://direct-test');
+	readonly requests: DirectorRuntimeCredentialRequest[] = [];
 
-	override createSession(config?: IAgentCreateSessionConfig): Promise<URI> {
-		this.createSessionConfigs.push(config ?? {});
-		return Promise.resolve(this.session);
-	}
+	constructor(private readonly credential: DirectorRuntimeCredential = { kind: 'api-key', value: 'sk-test' }) { }
 
-	override getSubscription<T extends StateComponents>(): IReference<IAgentSubscription<ComponentToState[T]>> {
-		return {
-			object: {
-				value: {} as SessionState,
-				verifiedValue: undefined,
-				onDidChange: Event.None,
-				onWillApplyAction: Event.None,
-				onDidApplyAction: Event.None,
-			},
-			dispose: () => { },
-		} as IReference<IAgentSubscription<ComponentToState[T]>>;
-	}
-
-	override dispatch(channel: string, action: SessionAction | TerminalAction | IRootConfigChangedAction): void {
-		if (action.type !== ActionType.SessionTurnStarted) {
-			return;
-		}
-		this.turnMessages.push(action.userMessage.text);
-		const turnId = action.turnId;
-		queueMicrotask(() => {
-			this.fireAction(channel, {
-				type: ActionType.SessionResponsePart,
-				turnId,
-				part: { kind: ResponsePartKind.Markdown, id: 'markdown-1', content: 'provider direct hello' },
-			});
-			this.fireAction(channel, { type: ActionType.SessionTurnComplete, turnId });
-		});
-	}
-
-	override disposeSession(session: URI): Promise<void> {
-		this.disposedSessions.push(session);
-		return Promise.resolve();
-	}
-
-	private fireAction(channel: string, action: SessionAction): void {
-		this.onDidActionEmitter.fire({ channel, action, serverSeq: 1, origin: undefined });
+	resolveCredential(request: DirectorRuntimeCredentialRequest): Promise<DirectorRuntimeCredential> {
+		this.requests.push(request);
+		return Promise.resolve(this.credential);
 	}
 }

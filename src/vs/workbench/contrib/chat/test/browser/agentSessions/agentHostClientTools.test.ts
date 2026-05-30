@@ -31,7 +31,7 @@ import { ChatToolInvocation } from '../../../common/model/chatProgressTypes/chat
 import { IProductService } from '../../../../../../platform/product/common/productService.js';
 import { TestInstantiationService } from '../../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
-import { AgentHostSessionHandler, agentHostClientToolReferenceNamesForProvider, toolDataToDefinition, toolResultToProtocol } from '../../../browser/agentSessions/agentHost/agentHostSessionHandler.js';
+import { AgentHostSessionHandler, agentHostClientToolDefinitionsForProvider, agentHostClientToolReferenceNamesForProvider, agentHostClientToolsForProvider, toolDataToDefinition, toolResultToProtocol } from '../../../browser/agentSessions/agentHost/agentHostSessionHandler.js';
 import { AgentHostActiveClientService, IAgentHostActiveClientService } from '../../../browser/agentSessions/agentHost/agentHostActiveClientService.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { TestFileService } from '../../../../../test/common/workbenchTestServices.js';
@@ -59,6 +59,7 @@ import { IPromptsService } from '../../../common/promptSyntax/service/promptsSer
 suite('AgentHostClientTools', () => {
 
 	const disposables = new DisposableStore();
+	const InternalFetchWebPageToolId = 'vscode_fetchWebPage_internal';
 
 	teardown(() => disposables.clear());
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -205,6 +206,39 @@ suite('AgentHostClientTools', () => {
 			assert.ok(embeddedData.length > 0);
 			assert.notStrictEqual(embeddedData, 'hello binary'); // should be base64, not raw text
 			assert.deepStrictEqual(proto.content![2], { type: ToolResultContentType.Text, text: 'world' });
+		});
+
+		test('converts promptTsx content parts to text', () => {
+			const result: IToolResult = {
+				content: [
+					{
+						kind: 'promptTsx',
+						value: {
+							node: {
+								type: 1,
+								ctor: 2,
+								children: [{ type: 2, text: 'prompt text', lineBreakBefore: undefined }],
+							},
+						},
+					},
+				],
+			};
+
+			const proto = toolResultToProtocol(result, 'tool');
+			assert.deepStrictEqual(proto.content, [{ type: ToolResultContentType.Text, text: 'prompt text' }]);
+		});
+
+		test('falls back to text toolResultDetails when model content is empty', () => {
+			const result: IToolResult = {
+				content: [],
+				toolResultDetails: {
+					input: '{}',
+					output: [{ type: 'embed', isText: true, value: 'details output' }],
+				},
+			};
+
+			const proto = toolResultToProtocol(result, 'tool');
+			assert.deepStrictEqual(proto.content, [{ type: ToolResultContentType.Text, text: 'details output' }]);
 		});
 
 		test('converts data parts to EmbeddedResource with base64 encoding', () => {
@@ -387,7 +421,7 @@ suite('AgentHostClientTools', () => {
 		function createHandlerWithMocks(
 			disposables: DisposableStore,
 			tools: IToolData[],
-			configOverrides?: { clientTools?: string[] },
+			configOverrides?: { clientTools?: string[]; provider?: 'copilot' | typeof DirectorAgentProviderId },
 		) {
 			const instantiationService = disposables.add(new TestInstantiationService());
 			const connection = new MockAgentHostConnection();
@@ -477,9 +511,9 @@ suite('AgentHostClientTools', () => {
 			instantiationService.stub(IAgentHostActiveClientService, activeClientService);
 
 			const handler = disposables.add(instantiationService.createInstance(AgentHostSessionHandler, {
-				provider: 'copilot' as const,
-				agentId: 'agent-host-copilot',
-				sessionType: 'agent-host-copilot',
+				provider: configOverrides?.provider ?? 'copilot',
+				agentId: configOverrides?.provider === DirectorAgentProviderId ? 'director' : 'agent-host-copilot',
+				sessionType: configOverrides?.provider === DirectorAgentProviderId ? 'director' : 'agent-host-copilot',
 				fullName: 'Test',
 				description: 'Test',
 				connection,
@@ -513,6 +547,39 @@ suite('AgentHostClientTools', () => {
 			displayName: 'Read File',
 			modelDescription: 'Reads a file',
 			source: ToolDataSource.Internal,
+		};
+
+		const testCopilotReadFileTool: IToolData = {
+			id: 'copilot_readFile',
+			toolReferenceName: 'readFile',
+			displayName: 'Read File',
+			modelDescription: 'Copilot read file',
+			source: ToolDataSource.Internal,
+		};
+
+		const testDirectorReadFileTool: IToolData = {
+			id: 'director_read_file',
+			toolReferenceName: 'readFile',
+			displayName: 'Read File',
+			modelDescription: 'Director read file',
+			source: ToolDataSource.Internal,
+		};
+
+		const testInternalFetchTool: IToolData = {
+			id: InternalFetchWebPageToolId,
+			displayName: 'Fetch Web Page',
+			modelDescription: 'Core fetch web page',
+			source: ToolDataSource.Internal,
+			inputSchema: { type: 'object', properties: { urls: { type: 'array', items: { type: 'string' } } }, required: ['urls'] },
+		};
+
+		const testCopilotFetchTool: IToolData = {
+			id: 'copilot_fetchWebPage',
+			toolReferenceName: 'fetch',
+			displayName: 'Fetch Web Page',
+			modelDescription: 'Copilot fetch web page',
+			source: ToolDataSource.Internal,
+			inputSchema: { type: 'object', properties: { urls: { type: 'array', items: { type: 'string' } }, query: { type: 'string' } }, required: ['urls', 'query'] },
 		};
 
 		test('maps allowlisted tool data to protocol definitions', async () => {
@@ -559,6 +626,146 @@ suite('AgentHostClientTools', () => {
 			assert.strictEqual(directorDefaultNames.includes('githubRepo'), true);
 			assert.strictEqual(directorDefaultNames.includes('openBrowserPage'), true);
 			assert.strictEqual(directorDefaultNames.includes('getTerminalOutput'), true);
+		});
+
+		test('prefers Director-owned tools over same-name Copilot tools for Director sessions', () => {
+			const directorTools = agentHostClientToolsForProvider(DirectorAgentProviderId, [testCopilotReadFileTool, testDirectorReadFileTool]);
+			assert.deepStrictEqual(directorTools.map(tool => tool.id), ['director_read_file']);
+
+			const copilotTools = agentHostClientToolsForProvider('copilot', [testCopilotReadFileTool, testDirectorReadFileTool]);
+			assert.deepStrictEqual(copilotTools.map(tool => tool.id), ['copilot_readFile', 'director_read_file']);
+		});
+
+		test('prefers internal fetch over Copilot fetch for Director sessions', () => {
+			const directorTools = agentHostClientToolsForProvider(DirectorAgentProviderId, [testCopilotFetchTool, testInternalFetchTool]);
+			assert.deepStrictEqual(directorTools.map(tool => tool.id), [InternalFetchWebPageToolId]);
+
+			const copilotTools = agentHostClientToolsForProvider('copilot', [testCopilotFetchTool, testInternalFetchTool]);
+			assert.deepStrictEqual(copilotTools.map(tool => tool.id), ['copilot_fetchWebPage', InternalFetchWebPageToolId]);
+		});
+
+		test('advertises Director internal fetch as fetch', () => {
+			const directorDefinitions = agentHostClientToolDefinitionsForProvider(DirectorAgentProviderId, [testInternalFetchTool]);
+			assert.strictEqual(directorDefinitions.length, 1);
+			assert.strictEqual(directorDefinitions[0].name, 'fetch');
+			assert.deepStrictEqual(directorDefinitions[0].inputSchema?.required, ['urls']);
+			assert.ok(directorDefinitions[0].inputSchema?.properties?.query);
+
+			const copilotDefinitions = agentHostClientToolDefinitionsForProvider('copilot', [testInternalFetchTool]);
+			assert.strictEqual(copilotDefinitions[0].name, InternalFetchWebPageToolId);
+		});
+
+		test('invokes the Director-owned tool when Copilot registers the same reference name first', async () => {
+			const { handler, connection, toolsService } = createHandlerWithMocks(
+				disposables,
+				[testCopilotReadFileTool, testDirectorReadFileTool],
+				{ provider: DirectorAgentProviderId },
+			);
+			const sessionResource = URI.parse('director:/session-1');
+			const backendSession = AgentSession.uri(DirectorAgentProviderId, 'session-1').toString();
+
+			connection.applySessionAction(URI.parse(backendSession), {
+				type: ActionType.SessionTurnStarted,
+				turnId: 'turn-1',
+				userMessage: { text: 'read file' },
+			} as SessionAction);
+			connection.applySessionAction(URI.parse(backendSession), {
+				type: ActionType.SessionToolCallStart,
+				turnId: 'turn-1',
+				toolCallId: 'tool-call-1',
+				toolName: 'readFile',
+				displayName: 'Read File',
+				toolClientId: connection.clientId,
+			} as SessionAction);
+			connection.applySessionAction(URI.parse(backendSession), {
+				type: ActionType.SessionToolCallReady,
+				turnId: 'turn-1',
+				toolCallId: 'tool-call-1',
+				invocationMessage: 'Read File',
+				toolInput: '{"filePath":"README.md"}',
+				confirmed: ToolCallConfirmationReason.NotNeeded,
+			} as SessionAction);
+
+			await handler.provideChatSessionContent(sessionResource, CancellationToken.None);
+			await timeout(0);
+			await timeout(0);
+
+			assert.deepStrictEqual(toolsService.invokedToolCalls.map(call => call.toolId), ['director_read_file']);
+		});
+
+		test('invokes internal fetch when Director model calls fetch', async () => {
+			const { handler, connection, toolsService } = createHandlerWithMocks(
+				disposables,
+				[testCopilotFetchTool, testInternalFetchTool],
+				{ provider: DirectorAgentProviderId },
+			);
+			const sessionResource = URI.parse('director:/session-1');
+			const backendSession = AgentSession.uri(DirectorAgentProviderId, 'session-1').toString();
+
+			connection.applySessionAction(URI.parse(backendSession), {
+				type: ActionType.SessionTurnStarted,
+				turnId: 'turn-1',
+				userMessage: { text: 'fetch page' },
+			} as SessionAction);
+			connection.applySessionAction(URI.parse(backendSession), {
+				type: ActionType.SessionToolCallStart,
+				turnId: 'turn-1',
+				toolCallId: 'tool-call-1',
+				toolName: 'fetch',
+				displayName: 'Fetch Web Page',
+				toolClientId: connection.clientId,
+			} as SessionAction);
+			connection.applySessionAction(URI.parse(backendSession), {
+				type: ActionType.SessionToolCallReady,
+				turnId: 'turn-1',
+				toolCallId: 'tool-call-1',
+				invocationMessage: 'Fetch Web Page',
+				toolInput: '{"urls":["https://example.com"],"query":"Example Domain"}',
+				confirmed: ToolCallConfirmationReason.NotNeeded,
+			} as SessionAction);
+
+			await handler.provideChatSessionContent(sessionResource, CancellationToken.None);
+			await timeout(0);
+			await timeout(0);
+
+			assert.deepStrictEqual(toolsService.invokedToolCalls.map(call => call.toolId), [InternalFetchWebPageToolId]);
+		});
+
+		test('keeps non-Director fetch invocation on the advertised Copilot tool', async () => {
+			const { handler, connection, toolsService } = createHandlerWithMocks(
+				disposables,
+				[testCopilotFetchTool, testInternalFetchTool],
+			);
+			const sessionResource = URI.parse('copilot:/session-1');
+			const backendSession = AgentSession.uri('copilot', 'session-1').toString();
+
+			connection.applySessionAction(URI.parse(backendSession), {
+				type: ActionType.SessionTurnStarted,
+				turnId: 'turn-1',
+				userMessage: { text: 'fetch page' },
+			} as SessionAction);
+			connection.applySessionAction(URI.parse(backendSession), {
+				type: ActionType.SessionToolCallStart,
+				turnId: 'turn-1',
+				toolCallId: 'tool-call-1',
+				toolName: 'fetch',
+				displayName: 'Fetch Web Page',
+				toolClientId: connection.clientId,
+			} as SessionAction);
+			connection.applySessionAction(URI.parse(backendSession), {
+				type: ActionType.SessionToolCallReady,
+				turnId: 'turn-1',
+				toolCallId: 'tool-call-1',
+				invocationMessage: 'Fetch Web Page',
+				toolInput: '{"urls":["https://example.com"],"query":"Example Domain"}',
+				confirmed: ToolCallConfirmationReason.NotNeeded,
+			} as SessionAction);
+
+			await handler.provideChatSessionContent(sessionResource, CancellationToken.None);
+			await timeout(0);
+			await timeout(0);
+
+			assert.deepStrictEqual(toolsService.invokedToolCalls.map(call => call.toolId), ['copilot_fetchWebPage']);
 		});
 
 		test('dispatches activeClientToolsChanged when config changes', () => {

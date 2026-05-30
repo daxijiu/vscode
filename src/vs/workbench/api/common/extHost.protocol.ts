@@ -1428,7 +1428,7 @@ export interface MainThreadLanguageModelsShape extends IDisposable {
 	$tryStartChatRequest(extension: ExtensionIdentifier, modelIdentifier: string, requestId: number, messages: SerializableObjectWithBuffers<IChatMessage[]>, options: {}, token: CancellationToken): Promise<void>;
 	$reportResponsePart(requestId: number, chunk: SerializableObjectWithBuffers<IChatResponsePart | IChatResponsePart[]>): Promise<void>;
 	$reportResponseDone(requestId: number, error: SerializedError | undefined): Promise<void>;
-	$selectChatModels(selector: ILanguageModelChatSelector): Promise<string[]>;
+	$selectChatModels(selector: ILanguageModelChatSelector): Promise<ILanguageModelChatMetadataAndIdentifier[]>;
 	$countTokens(modelId: string, value: string | IChatMessage, token: CancellationToken): Promise<number>;
 	$fileIsIgnored(uri: UriComponents, token: CancellationToken): Promise<boolean>;
 	$registerFileIgnoreProvider(handle: number): void;

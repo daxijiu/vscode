@@ -4,11 +4,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
+import { getErrorMessage } from '../../../../../base/common/errors.js';
 import { getMediaMime } from '../../../../../base/common/mime.js';
 import { Schemas } from '../../../../../base/common/network.js';
 import { extUriBiasedIgnorePathCase, relativePath } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
-import { IFileService, IFileStat } from '../../../../../platform/files/common/files.js';
+import { IFileContent, IFileService, IFileStat } from '../../../../../platform/files/common/files.js';
 import { IMarker, IMarkerService, MarkerSeverity } from '../../../../../platform/markers/common/markers.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { ISCMRepository, ISCMResource, ISCMService } from '../../../scm/common/scm.js';
@@ -216,7 +217,22 @@ export class DirectorReadFileTool implements IToolImpl {
 			return textResult(resolved.message);
 		}
 
-		const content = await this.fileService.readFile(resolved.uri, undefined, token);
+		let stat: IFileStat;
+		try {
+			stat = await this.fileService.resolve(resolved.uri, { resolveMetadata: true });
+		} catch (error) {
+			return textResult(`Cannot read ${resolved.relativePath}: ${getErrorMessage(error)}`);
+		}
+		if (stat.isDirectory) {
+			return textResult(`${resolved.relativePath} is a directory. Use listDirectory for directories and readFile for text files.`);
+		}
+
+		let content: IFileContent;
+		try {
+			content = await this.fileService.readFile(resolved.uri, undefined, token);
+		} catch (error) {
+			return textResult(`Cannot read ${resolved.relativePath}: ${getErrorMessage(error)}`);
+		}
 		const detected = detectEncodingFromBuffer({ buffer: content.value, bytesRead: content.value.byteLength });
 		if (detected.seemsBinary) {
 			return textResult(`Cannot read ${resolved.relativePath}: binary files are not returned by readFile.`);

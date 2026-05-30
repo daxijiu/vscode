@@ -60,7 +60,23 @@ const DIRECTOR_TOOL_POLICY: readonly DirectorToolPolicyEntry[] = [
 		description: 'Run a generic non-terminal subagent for research, context gathering, or delegation. Do not use runSubagent for terminal commands, builds, tests, package installs, shell execution, or command output collection; use execution_subagent for those execution tasks.',
 	}),
 
-	entry('fetch', 'read', READ_CONTEXT_MODES),
+	entry('fetch', 'read', READ_CONTEXT_MODES, {
+		inputSchema: {
+			type: 'object',
+			properties: {
+				urls: {
+					type: 'array',
+					items: { type: 'string' },
+					description: 'Array of HTTP(S) or file URLs to fetch. This retrieves content from explicit URLs; it does not perform web search.',
+				},
+				query: {
+					type: 'string',
+					description: 'Optional caller intent text used to focus the fetched content. This does not perform web search.',
+				},
+			},
+			required: ['urls'],
+		},
+	}),
 	entry('usages', 'read', READ_CONTEXT_MODES),
 	entry('readFile', 'read', READ_CONTEXT_MODES),
 	entry('listDirectory', 'read', READ_CONTEXT_MODES),

@@ -119,8 +119,8 @@ export class RichExecuteStrategy extends Disposable implements ITerminalExecuteS
 			// underlying xterm `IMarker` reference from `commandStartMarker`,
 			// so marker identity is a reliable stable comparison.
 			const staleMarker = this._commandDetection.executingCommandObject?.marker;
-			const onCommandFinishedFiltered = staleMarker
-				? Event.filter(this._commandDetection.onCommandFinished, e => e.marker !== staleMarker, store)
+			const onCommandFinishedFiltered = (staleMarker || commandId)
+				? Event.filter(this._commandDetection.onCommandFinished, e => (!staleMarker || e.marker !== staleMarker) && (!commandId || e.id === commandId), store)
 				: this._commandDetection.onCommandFinished;
 
 			// Subscribe to terminal lifecycle events BEFORE any awaits so that we

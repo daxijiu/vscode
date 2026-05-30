@@ -16,7 +16,7 @@ import { ExtensionIdentifier } from '../../../platform/extensions/common/extensi
 import { ILogService } from '../../../platform/log/common/log.js';
 import { resizeImage } from '../../contrib/chat/browser/chatImageUtils.js';
 import { ILanguageModelIgnoredFilesService } from '../../contrib/chat/common/ignoredFiles.js';
-import { IChatMessage, IChatResponsePart, ILanguageModelChatResponse, ILanguageModelChatSelector, ILanguageModelsService } from '../../contrib/chat/common/languageModels.js';
+import { IChatMessage, IChatResponsePart, ILanguageModelChatMetadataAndIdentifier, ILanguageModelChatResponse, ILanguageModelChatSelector, ILanguageModelsService } from '../../contrib/chat/common/languageModels.js';
 import { IAuthenticationAccessService } from '../../services/authentication/browser/authenticationAccessService.js';
 import { AuthenticationSession, AuthenticationSessionsChangeEvent, IAuthenticationProvider, IAuthenticationService, INTERNAL_AUTH_PROVIDER_PREFIX } from '../../services/authentication/common/authentication.js';
 import { IExtHostContext, extHostNamedCustomer } from '../../services/extensions/common/extHostCustomers.js';
@@ -141,8 +141,12 @@ export class MainThreadLanguageModels implements MainThreadLanguageModelsShape {
 		this._providerRegistrations.deleteAndDispose(vendor);
 	}
 
-	$selectChatModels(selector: ILanguageModelChatSelector): Promise<string[]> {
-		return this._chatProviderService.selectLanguageModels(selector);
+	async $selectChatModels(selector: ILanguageModelChatSelector): Promise<ILanguageModelChatMetadataAndIdentifier[]> {
+		const modelIdentifiers = await this._chatProviderService.selectLanguageModels(selector);
+		return modelIdentifiers.flatMap(identifier => {
+			const metadata = this._chatProviderService.lookupLanguageModel(identifier);
+			return metadata ? [{ identifier, metadata }] : [];
+		});
 	}
 
 	async $tryStartChatRequest(extension: ExtensionIdentifier, modelIdentifier: string, requestId: number, messages: SerializableObjectWithBuffers<IChatMessage[]>, options: {}, token: CancellationToken): Promise<void> {

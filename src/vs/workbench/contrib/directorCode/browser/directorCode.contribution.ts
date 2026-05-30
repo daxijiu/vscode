@@ -11,14 +11,17 @@ import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/editor.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../common/editor.js';
 import { ILanguageModelsService } from '../../chat/common/languageModels.js';
+import { ILanguageModelsConfigurationService } from '../../chat/common/languageModelsConfiguration.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { IDirectorRuntimeCredentialService } from '../../../../platform/agentHost/common/directorRuntimeCredentials.js';
 import { DirectorApiKeyService, DirectorModelResolverService, DirectorOAuthService, DirectorProviderConnectionTestService, DirectorProviderRegistryService, DirectorProviderSnapshotService, DirectorRuntimeCredentialService, IDirectorApiKeyService, IDirectorModelResolverService, IDirectorOAuthService, IDirectorProviderConnectionTestService, IDirectorProviderRegistryService, IDirectorProviderSnapshotService } from '../common/provider/directorProviderServices.js';
+import { syncDirectorLanguageModelConfigurationGroup } from './directorLanguageModel/directorLanguageModelGroupSync.js';
 import { createDirectorLanguageModelProviderDescriptor, DirectorLanguageModelProvider, DirectorLanguageModelVendor } from './directorLanguageModel/directorLanguageModelProvider.js';
 import { DirectorSettingsEditor } from './providerSettings/directorSettingsEditor.js';
 import { DirectorSettingsEditorInput, DirectorSettingsEditorInputSerializer } from './providerSettings/directorSettingsEditorInput.js';
@@ -49,15 +52,25 @@ class DirectorCodeContribution extends Disposable implements IWorkbenchContribut
 
 	constructor(
 		@IDirectorProviderSnapshotService snapshotService: IDirectorProviderSnapshotService,
+		@IDirectorProviderRegistryService registryService: IDirectorProviderRegistryService,
 		@ILanguageModelsService languageModelsService: ILanguageModelsService,
+		@ILanguageModelsConfigurationService languageModelsConfigurationService: ILanguageModelsConfigurationService,
 		@IInstantiationService instantiationService: IInstantiationService,
+		@ILogService logService: ILogService,
 	) {
 		super();
 		void snapshotService.writeSnapshot();
+		const syncLanguageModelGroup = () => {
+			syncDirectorLanguageModelConfigurationGroup(registryService, languageModelsConfigurationService).catch(err => {
+				logService.warn(`[DirectorCode] Failed to sync language model provider group: ${err instanceof Error ? err.message : String(err)}`);
+			});
+		};
+		syncLanguageModelGroup();
+		this._register(registryService.onDidChangeProviders(syncLanguageModelGroup));
 		const descriptor = createDirectorLanguageModelProviderDescriptor();
 		languageModelsService.deltaLanguageModelChatProviderDescriptors([descriptor], []);
 		this._register(toDisposable(() => languageModelsService.deltaLanguageModelChatProviderDescriptors([], [descriptor])));
-		const provider = this._register(instantiationService.createInstance(DirectorLanguageModelProvider));
+		const provider = this._register(instantiationService.createInstance(new SyncDescriptor(DirectorLanguageModelProvider)) as DirectorLanguageModelProvider);
 		this._register(languageModelsService.registerLanguageModelProvider(DirectorLanguageModelVendor, provider));
 	}
 }

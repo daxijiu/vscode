@@ -365,7 +365,11 @@ suite('directorProviderServices', () => {
 				requestedUrl,
 				requestedAuth,
 				models: models.map(model => ({ id: model.id, providerModelId: model.providerModelId })),
-				snapshotModels: snapshot.models.map(model => model.providerModelId),
+				snapshotModels: snapshot.models.map(model => ({
+					providerModelId: model.providerModelId,
+					maxContextWindow: model.maxContextWindow,
+					maxOutputTokens: model.maxOutputTokens,
+				})),
 				registryLeaksKey: registryText.includes('sk-director-secret'),
 				snapshotLeaksKey: snapshotText.includes('sk-director-secret'),
 			}, {
@@ -375,7 +379,10 @@ suite('directorProviderServices', () => {
 					{ id: 'deepseek:deepseek-chat', providerModelId: 'deepseek-chat' },
 					{ id: 'deepseek:deepseek-reasoner', providerModelId: 'deepseek-reasoner' },
 				],
-				snapshotModels: ['deepseek-chat', 'deepseek-reasoner'],
+				snapshotModels: [
+					{ providerModelId: 'deepseek-chat', maxContextWindow: 128000, maxOutputTokens: 8192 },
+					{ providerModelId: 'deepseek-reasoner', maxContextWindow: 128000, maxOutputTokens: 8192 },
+				],
 				registryLeaksKey: false,
 				snapshotLeaksKey: false,
 			});

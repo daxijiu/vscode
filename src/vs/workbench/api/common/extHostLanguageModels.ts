@@ -457,10 +457,11 @@ export class ExtHostLanguageModels implements ExtHostLanguageModelsShape {
 
 		// this triggers extension activation
 		const models = await this._proxy.$selectChatModels({ ...selector, extension: extension.identifier });
+		this._acceptMainThreadLanguageModels(models);
 
 		const result: vscode.LanguageModelChat[] = [];
 
-		const modelPromises = models.map(identifier => this.getLanguageModelByIdentifier(extension, identifier));
+		const modelPromises = models.map(model => this.getLanguageModelByIdentifier(extension, model.identifier));
 		const modelResults = await Promise.all(modelPromises);
 		for (const model of modelResults) {
 			if (model) {
@@ -469,6 +470,17 @@ export class ExtHostLanguageModels implements ExtHostLanguageModelsShape {
 		}
 
 		return result;
+	}
+
+	private _acceptMainThreadLanguageModels(models: readonly ILanguageModelChatMetadataAndIdentifier[]): void {
+		for (const model of models) {
+			const existing = this._localModels.get(model.identifier);
+			this._localModels.set(model.identifier, {
+				group: existing?.group,
+				metadata: model.metadata,
+				info: existing?.info ?? toLanguageModelChatInformation(model.metadata),
+			});
+		}
 	}
 
 	private async _sendChatRequest(extension: IExtensionDescription, languageModelId: string, messages: vscode.LanguageModelChatMessage2[], options: vscode.LanguageModelChatRequestOptions, token: CancellationToken) {
@@ -734,4 +746,35 @@ export class ExtHostLanguageModels implements ExtHostLanguageModelsShape {
 			}
 		});
 	}
+}
+
+function toLanguageModelChatInformation(metadata: ILanguageModelChatMetadata): vscode.LanguageModelChatInformation {
+	return {
+		id: metadata.id,
+		name: metadata.name,
+		family: metadata.family,
+		version: metadata.version,
+		tooltip: metadata.tooltip,
+		detail: metadata.detail,
+		multiplierNumeric: metadata.multiplierNumeric,
+		pricing: metadata.pricing,
+		inputCost: metadata.inputCost,
+		outputCost: metadata.outputCost,
+		cacheCost: metadata.cacheCost,
+		longContextInputCost: metadata.longContextInputCost,
+		longContextOutputCost: metadata.longContextOutputCost,
+		longContextCacheCost: metadata.longContextCacheCost,
+		priceCategory: metadata.priceCategory,
+		maxInputTokens: metadata.maxInputTokens,
+		maxOutputTokens: metadata.maxOutputTokens,
+		isUserSelectable: metadata.isUserSelectable,
+		statusIcon: metadata.statusIcon,
+		targetChatSessionType: metadata.targetChatSessionType,
+		configurationSchema: metadata.configurationSchema,
+		capabilities: {
+			imageInput: metadata.capabilities?.vision,
+			toolCalling: metadata.capabilities?.toolCalling,
+			editTools: metadata.capabilities?.editTools ? [...metadata.capabilities.editTools] : undefined,
+		},
+	};
 }

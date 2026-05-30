@@ -325,6 +325,7 @@ export class DirectorModelResolverService implements IDirectorModelResolverServi
 		const models = provider.models?.length ? provider.models : getDefaultModels(provider.apiType);
 		return models.filter(model => model.hidden !== true).map(model => {
 			const providerModelId = model.providerModelId ?? getProviderModelId(provider.id, model.id);
+			const limits = getDefaultModelLimits(provider.apiType, providerModelId);
 			return {
 				providerInstanceId: provider.id,
 				id: makeDirectorProviderModelKey(provider.id, providerModelId),
@@ -332,8 +333,8 @@ export class DirectorModelResolverService implements IDirectorModelResolverServi
 				name: model.name ?? providerModelId,
 				family: model.family ?? provider.kind,
 				version: model.version,
-				maxContextWindow: model.maxContextWindow,
-				maxOutputTokens: model.maxOutputTokens,
+				maxContextWindow: model.maxContextWindow ?? limits.maxContextWindow,
+				maxOutputTokens: model.maxOutputTokens ?? limits.maxOutputTokens,
 				supportsVision: model.supportsVision ?? false,
 				capabilities: model.capabilities ?? defaultCapabilities(provider.apiType),
 				apiType: provider.apiType,
@@ -768,6 +769,38 @@ function defaultCapabilities(apiType: DirectorProviderApiType): DirectorProvider
 		vision: false,
 		agentMode: true,
 	};
+}
+
+function getDefaultModelLimits(apiType: DirectorProviderApiType, modelId: string): { readonly maxContextWindow: number; readonly maxOutputTokens: number } {
+	const normalized = modelId.toLowerCase();
+	if (apiType === 'gemini-generative' || normalized.includes('gemini')) {
+		return { maxContextWindow: 1_000_000, maxOutputTokens: 65_536 };
+	}
+	if (apiType === 'openai-codex') {
+		return { maxContextWindow: 272_000, maxOutputTokens: 64_000 };
+	}
+	if (normalized.includes('claude')) {
+		return { maxContextWindow: 200_000, maxOutputTokens: 8_192 };
+	}
+	if (normalized.includes('deepseek')) {
+		return { maxContextWindow: 128_000, maxOutputTokens: 8_192 };
+	}
+	if (normalized.includes('gpt-3.5')) {
+		return { maxContextWindow: 16_385, maxOutputTokens: 4_096 };
+	}
+	if (normalized.includes('o1') || normalized.includes('o3') || normalized.includes('o4')) {
+		return { maxContextWindow: 200_000, maxOutputTokens: 100_000 };
+	}
+	if (normalized.includes('gpt-4') || normalized.includes('gpt-5') || normalized.includes('chatgpt-')) {
+		return { maxContextWindow: 128_000, maxOutputTokens: 16_384 };
+	}
+	if (apiType === 'anthropic-messages') {
+		return { maxContextWindow: 200_000, maxOutputTokens: 8_192 };
+	}
+	if (apiType === 'openai-completions') {
+		return { maxContextWindow: 128_000, maxOutputTokens: 8_192 };
+	}
+	return { maxContextWindow: 8_192, maxOutputTokens: 1_024 };
 }
 
 interface DirectorModelRefreshCredential {
