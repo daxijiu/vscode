@@ -32,6 +32,7 @@ import { IProductService } from '../../../../../../platform/product/common/produ
 import { TestInstantiationService } from '../../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 import { AgentHostSessionHandler, agentHostClientToolReferenceNamesForProvider, toolDataToDefinition, toolResultToProtocol } from '../../../browser/agentSessions/agentHost/agentHostSessionHandler.js';
+import { AgentHostActiveClientService, IAgentHostActiveClientService } from '../../../browser/agentSessions/agentHost/agentHostActiveClientService.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { TestFileService } from '../../../../../test/common/workbenchTestServices.js';
 import { ILabelService } from '../../../../../../platform/label/common/label.js';
@@ -49,6 +50,7 @@ import { IAgentPluginService } from '../../../common/plugins/agentPluginService.
 import { IOutputService } from '../../../../../services/output/common/output.js';
 import { IDefaultAccountService } from '../../../../../../platform/defaultAccount/common/defaultAccount.js';
 import { IAuthenticationService } from '../../../../../services/authentication/common/authentication.js';
+import { IPromptsService } from '../../../common/promptSyntax/service/promptsService.js';
 
 // =============================================================================
 // Unit tests for toolDataToDefinition and toolResultToProtocol
@@ -440,6 +442,16 @@ suite('AgentHostClientTools', () => {
 			instantiationService.stub(IAgentPluginService, {
 				plugins: observableValue('plugins', []),
 			});
+			instantiationService.stub(IPromptsService, new class extends mock<IPromptsService>() {
+				override readonly onDidChangeCustomAgents = Event.None;
+				override readonly onDidChangeSlashCommands = Event.None;
+				override readonly onDidChangeSkills = Event.None;
+				override readonly onDidChangeInstructions = Event.None;
+
+				override async listPromptFilesForStorage() {
+					return [];
+				}
+			}());
 			instantiationService.stub(ITerminalChatService, {
 				onDidContinueInBackground: Event.None,
 				registerTerminalInstanceWithToolSession: () => { },
@@ -458,6 +470,11 @@ suite('AgentHostClientTools', () => {
 				isNewSession: () => false,
 			});
 			instantiationService.stub(ILanguageModelToolsService, toolsService);
+
+			// Use the real active-client service so the handler's tools autorun
+			// observes the mocked ILanguageModelToolsService + allowlist setting.
+			const activeClientService = disposables.add(instantiationService.createInstance(AgentHostActiveClientService));
+			instantiationService.stub(IAgentHostActiveClientService, activeClientService);
 
 			const handler = disposables.add(instantiationService.createInstance(AgentHostSessionHandler, {
 				provider: 'copilot' as const,
