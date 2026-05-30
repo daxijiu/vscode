@@ -11,9 +11,8 @@ import { Disposable, DisposableStore } from '../../../../../base/common/lifecycl
 import type { URI } from '../../../../../base/common/uri.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { DirectorAgentProviderId } from '../../../../../platform/agentHost/common/directorProviderBackend.js';
-import { DirectorDirectLanguageModelMessagesAttachmentMetaKey, type DirectorNormalizedMessage, type DirectorNormalizedToolCall } from '../../../../../platform/agentHost/common/directorProviderAdapters.js';
 import { ActionType, type ActionEnvelope } from '../../../../../platform/agentHost/common/state/sessionActions.js';
-import { MessageAttachmentKind, ResponsePartKind, StateComponents, type MessageAttachment, type SessionState } from '../../../../../platform/agentHost/common/state/sessionState.js';
+import { ResponsePartKind, StateComponents, type SessionState } from '../../../../../platform/agentHost/common/state/sessionState.js';
 import { IAgentHostService } from '../../../../../platform/agentHost/common/agentService.js';
 import { ExtensionIdentifier } from '../../../../../platform/extensions/common/extensions.js';
 import { ChatAgentLocation } from '../../../chat/common/constants.js';
@@ -69,6 +68,9 @@ export class DirectorLanguageModelProvider extends Disposable implements ILangua
 						isDefaultForLocation: state.defaultModelId === model.id ? { [ChatAgentLocation.Chat]: true } : {},
 						isUserSelectable: true,
 						detail: provider.displayName,
+						auth: {
+							providerLabel: provider.displayName,
+						},
 						capabilities: {
 							vision: model.capabilities?.vision ?? model.supportsVision,
 							toolCalling: model.capabilities?.toolCalling ?? false,
@@ -83,7 +85,6 @@ export class DirectorLanguageModelProvider extends Disposable implements ILangua
 
 	async sendChatRequest(modelId: string, messages: IChatMessage[], _from: ExtensionIdentifier | undefined, _options: ILanguageModelChatRequestOptions, token: CancellationToken): Promise<ILanguageModelChatResponse> {
 		const selection = parseDirectorLanguageModelIdentifier(modelId);
-		const normalizedMessages = toDirectorNormalizedMessages(messages);
 		const stream = new AsyncIterableSource<IChatResponsePart>(() => {
 			if (!result.isSettled) {
 				cancel();
@@ -126,8 +127,7 @@ export class DirectorLanguageModelProvider extends Disposable implements ILangua
 					type: ActionType.SessionTurnStarted,
 					turnId,
 					userMessage: {
-						text: 'Direct language model request',
-						attachments: [toDirectLanguageModelMessagesAttachment(normalizedMessages)],
+						text: serializeChatMessages(messages),
 					},
 				});
 				await result.p;
@@ -150,7 +150,7 @@ export class DirectorLanguageModelProvider extends Disposable implements ILangua
 	}
 
 	async provideTokenCount(_modelId: string, message: string | IChatMessage, _token: CancellationToken): Promise<number> {
-		const text = typeof message === 'string' ? message : normalizedMessagesToTokenText(toDirectorNormalizedMessages([message]));
+		const text = typeof message === 'string' ? message : serializeChatMessages([message]);
 		return Math.ceil(text.length / 4);
 	}
 }
@@ -235,97 +235,40 @@ function matchesProviderGroup(provider: DirectorStoredProviderInstance, configur
 	return configuredProviderId === undefined || configuredProviderId === provider.id;
 }
 
-function toDirectorNormalizedMessages(messages: readonly IChatMessage[]): readonly DirectorNormalizedMessage[] {
-	const normalized: DirectorNormalizedMessage[] = [];
-	for (const message of messages) {
-		const content: string[] = [];
-		const thinking: string[] = [];
-		const toolCalls: DirectorNormalizedToolCall[] = [];
-		for (const part of message.content) {
-			switch (part.type) {
-				case 'text':
-					if (part.value) {
-						content.push(part.value);
-					}
-					break;
-				case 'thinking':
-					thinking.push(Array.isArray(part.value) ? part.value.join('') : part.value);
-					break;
-				case 'tool_use':
-					toolCalls.push({
-						id: part.toolCallId,
-						name: part.name,
-						input: stableStringify(part.parameters),
-					});
-					break;
-				case 'tool_result':
-					normalized.push({
-						role: 'tool',
-						content: stringifyChatToolResult(part.value),
-						toolCallId: part.toolCallId,
-						isError: part.isError,
-					});
-					break;
-				case 'image_url':
-					content.push(`[Image: ${part.value.mimeType}]`);
-					break;
-				case 'data':
-					content.push(`[Data: ${part.mimeType}, ${Math.max(1, Math.round(part.data.byteLength / 1024))}KB]`);
-					break;
-			}
-		}
-		if (content.length || thinking.length || toolCalls.length) {
-			normalized.push({
-				role: roleToDirectorMessageRole(message.role),
-				content: content.join('\n'),
-				...(thinking.length ? { thinking: thinking.join('') } : {}),
-				...(toolCalls.length ? { toolCalls } : {}),
-			});
-		}
-	}
-	return normalized;
+function serializeChatMessages(messages: readonly IChatMessage[]): string {
+	return messages.map(message => {
+		const role = roleLabel(message.role);
+		const content = message.content.map(serializeChatMessagePart).filter(Boolean).join('\n');
+		return `${role}:\n${content}`;
+	}).join('\n\n');
 }
 
-function roleToDirectorMessageRole(role: ChatMessageRole): DirectorNormalizedMessage['role'] {
+function roleLabel(role: ChatMessageRole): string {
 	switch (role) {
 		case ChatMessageRole.System:
-			return 'system';
+			return 'System';
 		case ChatMessageRole.User:
-			return 'user';
+			return 'User';
 		case ChatMessageRole.Assistant:
-			return 'assistant';
+			return 'Assistant';
 	}
 }
 
-function stringifyChatToolResult(parts: Extract<IChatMessagePart, { type: 'tool_result' }>['value']): string {
-	return parts.map(part => {
-		switch (part.type) {
-			case 'text':
-				return part.value;
-			case 'prompt_tsx':
-				return stableStringify(part.value);
-			case 'data':
-				return `[Data: ${part.mimeType}, ${Math.max(1, Math.round(part.data.byteLength / 1024))}KB]`;
-		}
-	}).filter(Boolean).join('\n');
-}
-
-function normalizedMessagesToTokenText(messages: readonly DirectorNormalizedMessage[]): string {
-	return messages.map(message => [
-		message.role,
-		message.content,
-		message.thinking ?? '',
-		...(message.toolCalls ?? []).map(toolCall => `${toolCall.name} ${toolCall.input}`),
-	].filter(Boolean).join('\n')).join('\n\n');
-}
-
-function toDirectLanguageModelMessagesAttachment(messages: readonly DirectorNormalizedMessage[]): MessageAttachment {
-	return {
-		type: MessageAttachmentKind.Simple,
-		label: 'Director direct language model messages',
-		modelRepresentation: JSON.stringify(messages),
-		_meta: { [DirectorDirectLanguageModelMessagesAttachmentMetaKey]: true },
-	};
+function serializeChatMessagePart(part: IChatMessagePart): string {
+	switch (part.type) {
+		case 'text':
+			return part.value;
+		case 'thinking':
+			return Array.isArray(part.value) ? part.value.join('') : part.value;
+		case 'tool_result':
+			return part.value.map(value => value.type === 'text' ? value.value : `[${value.type}]`).join('\n');
+		case 'tool_use':
+			return `[tool_use ${part.name} ${stableStringify(part.parameters)}]`;
+		case 'image_url':
+			return `[image ${part.value.mimeType}]`;
+		case 'data':
+			return `[data ${part.mimeType}]`;
+	}
 }
 
 function stableStringify(value: unknown): string {

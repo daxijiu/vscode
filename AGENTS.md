@@ -167,11 +167,12 @@ Accepted Phase 4 implementation:
 - Multi-turn history is normalized into provider messages with an in-memory trim guard; provider retry is side-effect-safe and does not replay calls after a tool side effect has run.
 - Deferred beyond Phase 4 / later tool-parity slices: old Director reviewable edit tools, real old Director Plan Mode presentation, durable compaction/session restore, local/custom runtime adapters, public OpenAI Responses support separate from OpenAI Codex, Claude SDK de-CAPI, and additional OAuth hardening. `execution_subagent` remains policy-listed and will surface when its AgentHost client-tool implementation is registered.
 
-Accepted Phase 7 implementation:
+Current Phase 7 baseline:
 
 - AgentHost Director model projection now carries provider display name, API type, model family/version, context/output token limits, capabilities, and missing-auth status without writing secrets into model metadata.
 - Provider HTTP/SSE runtime execution and response parsing live under `src/vs/platform/agentHost/node/director/providers/**`; common code keeps DTOs and pure helpers only.
 - `DirectorAgentEngineAdapter` consumes the shared node provider runtime while preserving provider-backed turns, DeepSeek/OpenAI-compatible `reasoning_content` fallback, provider-native tool calls, usage reporting, retry classification, and no retry after side-effecting tools.
 - Workbench registers a `director-code` `LanguageModelChatProvider` surface that projects Director-managed models from the Workbench registry/model resolver into broader VS Code model pickers without Copilot CAPI or GitHub Copilot auth.
-- Direct `director-code` requests route through AgentHost Director sessions for the narrow Phase 7 bridge, so provider HTTP remains node-owned and credentials still resolve only through the turn-time credential bridge.
+- Upstream VS Code `20ed2bc21d4 Fix offline BYOK state management (#318187)` is the source of truth for the configured-BYOK/no-GitHub-sign-in gate; do not add Director-specific Chat Setup or Copilot login bypasses.
+- The rejected 2026-05-28 repair experiments were rolled back: no eager `selectLanguageModels` startup workaround, no global `targetChatSessionType` selector filter, no `director-code` auth-metadata bypass, and no private direct-LM structured-message attachment side channel. Direct `director-code` requests still use the narrow Phase 7 AgentHost-session bridge and are not accepted for tool-heavy generic chat yet.
 - Provider Settings / Refresh Models remain Workbench-owned and secret-redacted.

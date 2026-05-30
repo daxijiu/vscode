@@ -117,39 +117,6 @@ suite('LanguageModels', function () {
 		assert.deepStrictEqual(result1[1], 'test-id-12');
 	});
 
-	test('selectLanguageModels excludes session-targeted models from direct LM requests', async function () {
-		languageModels.deltaLanguageModelChatProviderDescriptors([
-			{ vendor: 'session-vendor', displayName: 'Session Vendor', configuration: undefined, managementCommand: undefined, when: undefined }
-		], []);
-		store.add(languageModels.registerLanguageModelProvider('session-vendor', {
-			onDidChange: Event.None,
-			provideLanguageModelChatInfo: async () => [{
-				identifier: 'session-vendor/session-model',
-				metadata: {
-					extension: nullExtensionDescription.identifier,
-					name: 'Session Model',
-					vendor: 'session-vendor',
-					family: 'session-family',
-					version: '1.0',
-					id: 'session-model',
-					maxInputTokens: 100,
-					maxOutputTokens: 100,
-					isDefaultForLocation: {},
-					targetChatSessionType: 'agent-host-director',
-				} satisfies ILanguageModelChatMetadata,
-			}],
-			sendChatRequest: async () => {
-				throw new Error();
-			},
-			provideTokenCount: async () => {
-				throw new Error();
-			}
-		}));
-
-		assert.deepStrictEqual(await languageModels.selectLanguageModels({ vendor: 'session-vendor' }), []);
-		assert.deepStrictEqual(await languageModels.selectLanguageModels({}), ['test-id-1', 'test-id-12']);
-	});
-
 	test('selector with id works properly', async function () {
 		const result1 = await languageModels.selectLanguageModels({ id: 'test-id-1' });
 		assert.deepStrictEqual(result1.length, 1);

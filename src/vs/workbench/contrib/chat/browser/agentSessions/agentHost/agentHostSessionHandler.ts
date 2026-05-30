@@ -138,15 +138,6 @@ function confirmedReasonToProtocol(reason: ConfirmedReason | undefined): ToolCal
 	}
 }
 
-function protocolConfirmedToChat(reason: ToolCallConfirmationReason | undefined): ConfirmedReason {
-	switch (reason) {
-		case ToolCallConfirmationReason.NotNeeded:
-			return { type: ToolConfirmKind.ConfirmationNotNeeded };
-		default:
-			return { type: ToolConfirmKind.UserAction };
-	}
-}
-
 /**
  * Converts carousel answers (IChatQuestionAnswers) to protocol
  * SessionInputAnswer records, handling text, single-select,
@@ -1228,12 +1219,8 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 		turnId: string,
 		cancellationToken: CancellationToken,
 		protocolOptions?: ConfirmationOption[],
-		shouldDispatch?: () => boolean,
 	): void {
 		IChatToolInvocation.awaitConfirmation(invocation, cancellationToken).then(reason => {
-			if (shouldDispatch && !shouldDispatch()) {
-				return;
-			}
 			// When the user picked a custom button, resolve the matching
 			// protocol option so we can forward `selectedOptionId` and
 			// derive approve/deny from the option's kind.
@@ -1550,10 +1537,8 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 		// `toolCallStateToInvocation` already created the invocation in
 		// `WaitingForConfirmation`. Without this explicit call, no listener
 		// would observe the user's confirmation answer.
-		let confirmationSettledFromProtocol = false;
-		const shouldDispatchConfirmation = () => !confirmationSettledFromProtocol;
 		if (initial.status === ToolCallStatus.PendingConfirmation && !IChatToolInvocation.isComplete(invocation)) {
-			this._awaitToolConfirmation(invocation, toolCallId, opts.backendSession, opts.turnId, opts.cancellationToken, initial.options, shouldDispatchConfirmation);
+			this._awaitToolConfirmation(invocation, toolCallId, opts.backendSession, opts.turnId, opts.cancellationToken, initial.options);
 		}
 		tryObserveSubagent(initial);
 
@@ -1580,20 +1565,12 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 				invocation.didExecuteTool(undefined);
 				const confirmInvocation = toolCallStateToInvocation(tc, subAgentInvocationId, opts.backendSession, this._config.connectionAuthority);
 				opts.sink([confirmInvocation]);
-				confirmationSettledFromProtocol = false;
-				this._awaitToolConfirmation(confirmInvocation, toolCallId, opts.backendSession, opts.turnId, opts.cancellationToken, tc.options, shouldDispatchConfirmation);
+				this._awaitToolConfirmation(confirmInvocation, toolCallId, opts.backendSession, opts.turnId, opts.cancellationToken, tc.options);
 				invocation = confirmInvocation;
 			} else if (status === ToolCallStatus.Running || status === ToolCallStatus.PendingResultConfirmation) {
-				if (invocation.state.read(undefined).type === IChatToolInvocation.StateKind.WaitingForConfirmation) {
-					confirmationSettledFromProtocol = true;
-					IChatToolInvocation.confirmWith(invocation, protocolConfirmedToChat(tc.confirmed));
-				}
 				invocation.invocationMessage = stringOrMarkdownToString(tc.invocationMessage, this._config.connectionAuthority);
 				this._reviveTerminalIfNeeded(invocation, tc, opts.backendSession);
 				updateRunningToolSpecificData(invocation, tc, this._config.connectionAuthority);
-			} else if (status === ToolCallStatus.Cancelled && invocation.state.read(undefined).type === IChatToolInvocation.StateKind.WaitingForConfirmation) {
-				confirmationSettledFromProtocol = true;
-				IChatToolInvocation.confirmWith(invocation, { type: ToolConfirmKind.Skipped });
 			}
 
 			if ((status === ToolCallStatus.Completed || status === ToolCallStatus.Cancelled) && !IChatToolInvocation.isComplete(invocation)) {
@@ -1695,9 +1672,6 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 		store.add(autorun(reader => {
 			const state = invocation.state.read(reader);
 			if (confirmationDispatched) {
-				if (approvedDispatched && state.type === IChatToolInvocation.StateKind.WaitingForConfirmation) {
-					IChatToolInvocation.confirmWith(invocation, { type: ToolConfirmKind.ConfirmationNotNeeded });
-				}
 				return;
 			}
 			if (state.type === IChatToolInvocation.StateKind.Executing) {
@@ -1761,28 +1735,15 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 		// `cts.token.isCancellationRequested`.
 		store.add(autorun(reader => {
 			const tc = part$.read(reader).toolCall;
-			if (tc.status === ToolCallStatus.Running && !approvedDispatched) {
-				confirmationDispatched = true;
-				approvedDispatched = true;
-				if (invocation.state.read(undefined).type === IChatToolInvocation.StateKind.WaitingForConfirmation) {
-					IChatToolInvocation.confirmWith(invocation, protocolConfirmedToChat(tc.confirmed));
-				}
-			}
 			if (tc.status === ToolCallStatus.Cancelled) {
 				if (cts.token.isCancellationRequested) {
 					return;
 				}
-				confirmationDispatched = true;
 				cts.cancel();
 				if (!invoked) {
 					// No `invokeTool` is listening to the CTS — transition
 					// the invocation to `Cancelled` ourselves.
-					const state = invocation.state.read(undefined);
-					if (state.type === IChatToolInvocation.StateKind.Streaming) {
-						invocation.cancelFromStreaming(ToolConfirmKind.Skipped);
-					} else if (state.type === IChatToolInvocation.StateKind.WaitingForConfirmation) {
-						IChatToolInvocation.confirmWith(invocation, { type: ToolConfirmKind.Skipped });
-					}
+					invocation.cancelFromStreaming(ToolConfirmKind.Skipped);
 				}
 				return;
 			}

@@ -1,17 +1,22 @@
 # Director Agent Provider Phase 7 Repair Plan
 
-Updated: 2026-05-28
+Updated: 2026-05-30
 
 ## Status
 
-Implemented locally on 2026-05-28. Manual acceptance is still required before treating this repair as accepted.
+Manual acceptance rejected the 2026-05-28 local repair attempt. The branch is being reset to a narrower baseline:
+
+- adopt upstream VS Code `20ed2bc21d4 Fix offline BYOK state management (#318187)`;
+- roll back local Chat Setup / Copilot-session visibility / multi-surface tool-confirmation experiments from `46ab6211a4b`;
+- roll back the `director-code` auth-metadata bypass, global `targetChatSessionType` selector filter, and private direct-LM structured-message attachment side channel;
+- treat direct `director-code` tool passthrough as still unresolved.
 
 This plan records the corrected direction after manual acceptance found two regressions:
 
 - Agent Window and IDE editor do not behave like native VS Code/Copilot when the same AgentHost session needs tool input or confirmation.
 - Director-managed models are visible in some model picker surfaces, but using them through the Copilot/default chat participant can still fall into GitHub Copilot sign-in or an unsupported AgentHost model path.
 
-The current implementation follows this corrected plan: `toolClientId` is execution ownership only, `director-code` is the direct VS Code language model provider surface, and direct model requests preserve structured messages through the AgentHost bridge.
+The next repair should start from upstream BYOK behavior instead of local sign-in bypasses. `toolClientId` and multi-surface confirmation semantics remain important, but they must be fixed as a separate AgentHost protocol/UI task with native evidence and manual acceptance.
 
 ## Corrected Principles
 
@@ -56,7 +61,7 @@ Native evidence:
 
 ### Multi-surface tool calls
 
-Problematic direction in the current dirty diff:
+Rejected 2026-05-28 direction:
 
 - `src/vs/workbench/contrib/chat/browser/agentSessions/agentHost/agentHostSessionHandler.ts` suppresses confirmation handling for tool calls whose `toolClientId` belongs to another client.
 - `src/vs/platform/agentHost/node/director/directorAgentSession.ts` can fail in-flight tool calls when the active client changes, even though the original tool owner may still be connected and able to complete the call.
@@ -69,21 +74,23 @@ Observed impact:
 
 ### Director model provider through Copilot/default chat
 
-Problematic direction in the current dirty diff and current projection:
+Remaining Director model-provider issues:
 
 - `agent-host-director:*` models are AgentHost session-targeted models and should not be used as direct `LanguageModelChatProvider` request targets. Their provider currently throws for direct requests.
-- `director-code` models are the correct direct LM provider surface, but `metadata.auth` can trigger VS Code's cross-extension LM auth gate when Copilot uses the model.
+- `director-code` models are the correct direct LM provider surface, but their auth metadata and cross-extension access behavior need to be validated against upstream BYOK behavior before making another local change.
 - Some logs show model identifiers like `agent-host-director:deepseek:deepseek-v4-flash`; the ext host LM resolver expects slash-based identifiers such as `vendor/model` and cannot extract a vendor from this shape.
 - `DirectorLanguageModelProvider.sendChatRequest` currently serializes structured chat messages into one prompt string before bridging into an AgentHost Director session. That loses standard LM provider message structure and should be replaced or tightly documented as a temporary bridge.
 
 Observed impact:
 
-- Selecting a Director-related model through Copilot/default chat can still ask for GitHub sign-in.
-- Some Director-related models are visible but not actually usable through the normal LM request path.
+- Upstream BYOK state management should handle the GitHub sign-in gate for configured non-Copilot model groups.
+- Direct `director-code` requests still do not pass VS Code LM tools through to the Director provider runtime, so tool-capable chats can degrade into literal tool-call text.
 
 ## Repair Scope
 
 ### 7.R1 - Restore native multi-surface tool confirmation semantics
+
+Status: reverted from the 2026-05-28 repair commit. Re-plan and re-implement separately; do not mix with BYOK/model-provider login repair.
 
 Scope:
 
@@ -119,6 +126,8 @@ Acceptance:
 
 ### 7.R2 - Separate AgentHost session models from Director direct LM provider models
 
+Status: reverted from the 2026-05-28 repair commit. Re-plan with upstream picker/selection semantics before changing global `LanguageModelsService` behavior again.
+
 Scope:
 
 - Keep `agent-host-director` models targeted to Director AgentHost sessions only.
@@ -150,13 +159,14 @@ Acceptance:
 
 ### 7.R3 - Make `director-code` safe for Copilot/default chat without GitHub auth
 
+Status: reset. Upstream VS Code now owns the offline BYOK state transition. The local startup-time eager model resolution workaround and local `metadata.auth` bypass were reverted.
+
 Scope:
 
-- Remove or narrow `metadata.auth` on `director-code` models so Copilot's use of the model does not trigger the generic LM auth fake-provider flow.
+- Validate whether `metadata.auth` on `director-code` models is compatible with upstream BYOK state management before removing or narrowing it.
 - Keep Director provider credentials behind the existing Director-owned Secret Storage and runtime credential bridge.
 - Do not introduce `ICopilotApiService`, `GITHUB_COPILOT_PROTECTED_RESOURCE`, Copilot token manager, or Copilot CAPI into Director provider code.
-- Ensure `director-code` model discovery is eager enough for Copilot's "token or BYOK model" activation path to detect a non-Copilot model.
-- Keep `chat.offlineByok` and `github.copilot.clientByokEnabled` semantics aligned with upstream VS Code behavior; do not hard-code a Director-specific Copilot login bypass.
+- Keep `chat.offlineByok` and `github.copilot.clientByokEnabled` semantics aligned with upstream VS Code behavior; do not hard-code a Director-specific Copilot login bypass or eagerly resolve models just to satisfy chat setup.
 
 Target files:
 
@@ -167,7 +177,7 @@ Target files:
 
 Implementation notes:
 
-- `director-code` model metadata no longer sets the generic LM `auth` gate that can trigger cross-extension/GitHub sign-in behavior.
+- Upstream `$onChatModelsChange` / `HasByokModelsContribution` behavior handles BYOK readiness without Director-specific startup model resolution.
 - Director credentials remain behind Director Secret Storage and the turn-time AgentHost runtime credential bridge.
 - No Director-owned code imports Copilot CAPI or GitHub Copilot auth.
 
@@ -179,6 +189,8 @@ Acceptance:
 - Registry, snapshot, model metadata, and logs remain secret-free.
 
 ### 7.R4 - Preserve standard LM message shape for direct `director-code` requests
+
+Status: reverted from the 2026-05-28 repair commit. The private attachment side channel is removed; structured message and tool forwarding need a fresh, deliberate design.
 
 Scope:
 
@@ -219,7 +231,7 @@ npm run test-browser-no-install -- --browser chromium --run src/vs/workbench/con
 git diff --check
 ```
 
-Validated locally on 2026-05-28:
+Rejected validation from 2026-05-28 is kept here only as historical context. It is not acceptance evidence for the reset baseline:
 
 ```powershell
 npm run compile-check-ts-native
@@ -236,12 +248,10 @@ git diff --check
 
 Manual acceptance:
 
-- Open the same Director AgentHost session in Agent Window and IDE editor.
-- Trigger a client tool that needs confirmation or input.
-- Confirm from either surface and verify the other surface updates immediately.
-- Trigger a no-confirmation client tool and verify only one execution/result appears.
+- With Copilot signed out, verify the chat setup screen does not require GitHub sign-in solely because a configured Director BYOK provider exists.
 - In generic Copilot/default chat, select a `director-code` model while GitHub Copilot is signed out.
-- Send a simple prompt and verify it routes through Director provider credentials, not GitHub Copilot auth.
+- Send a simple non-tool prompt and verify it routes through Director provider credentials, not GitHub Copilot auth.
+- Trigger a tool-capable prompt and verify whether VS Code LM tool definitions are forwarded; this is expected to remain a gap until the next repair slice.
 - Inspect provider registry/snapshot/logs and confirm no API key or OAuth token is present.
 
 ## Non-goals

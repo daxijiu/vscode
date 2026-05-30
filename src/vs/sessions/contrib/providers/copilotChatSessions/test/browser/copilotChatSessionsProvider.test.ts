@@ -32,12 +32,12 @@ import { IGitService } from '../../../../../../workbench/contrib/git/common/gitS
 import { ISessionChangeEvent } from '../../../../../services/sessions/common/sessionsProvider.js';
 import { GITHUB_REMOTE_FILE_SCHEME, SessionStatus } from '../../../../../services/sessions/common/session.js';
 import { ChatConfiguration, ChatPermissionLevel } from '../../../../../../workbench/contrib/chat/common/constants.js';
-import { CLAUDE_CODE_ENABLED_SETTING, CopilotChatSessionsProvider, COPILOT_PROVIDER_ID, ClaudeCodeSessionType, CopilotCloudSessionType, ICopilotChatSession } from '../../browser/copilotChatSessionsProvider.js';
+import { CLAUDE_CODE_ENABLED_SETTING, CopilotChatSessionsProvider, COPILOT_PROVIDER_ID, ClaudeCodeSessionType, ICopilotChatSession } from '../../browser/copilotChatSessionsProvider.js';
 import { ILogService, NullLogService } from '../../../../../../platform/log/common/log.js';
 import { ILabelService } from '../../../../../../platform/label/common/label.js';
 import { IUriIdentityService } from '../../../../../../platform/uriIdentity/common/uriIdentity.js';
 import { extUri } from '../../../../../../base/common/resources.js';
-import { CopilotBackgroundAgentEnabledSettingId, CopilotCLISessionType } from '../../../agentHost/browser/baseAgentHostSessionsProvider.js';
+import { CopilotCLISessionType } from '../../../agentHost/browser/baseAgentHostSessionsProvider.js';
 
 // ---- Helpers ----------------------------------------------------------------
 
@@ -113,7 +113,7 @@ class MockAgentSessionsModel {
 function createProvider(
 	disposables: DisposableStore,
 	model: MockAgentSessionsModel,
-	opts?: { multiChatEnabled?: boolean; claudeEnabled?: boolean; backgroundAgentEnabled?: boolean },
+	opts?: { multiChatEnabled?: boolean; claudeEnabled?: boolean },
 ): CopilotChatSessionsProvider {
 	return createProviderWithConfig(disposables, model, opts).provider;
 }
@@ -121,13 +121,12 @@ function createProvider(
 function createProviderWithConfig(
 	disposables: DisposableStore,
 	model: MockAgentSessionsModel,
-	opts?: { multiChatEnabled?: boolean; claudeEnabled?: boolean; backgroundAgentEnabled?: boolean },
+	opts?: { multiChatEnabled?: boolean; claudeEnabled?: boolean },
 ): { provider: CopilotChatSessionsProvider; configService: TestConfigurationService } {
 	const instantiationService = disposables.add(new TestInstantiationService());
 
 	const configService = new TestConfigurationService();
 	configService.setUserConfiguration('sessions.github.copilot.multiChatSessions', opts?.multiChatEnabled ?? true);
-	configService.setUserConfiguration(CopilotBackgroundAgentEnabledSettingId, opts?.backgroundAgentEnabled ?? true);
 	configService.setUserConfiguration(CLAUDE_CODE_ENABLED_SETTING, opts?.claudeEnabled ?? true);
 
 	instantiationService.stub(IConfigurationService, configService);
@@ -295,36 +294,6 @@ suite('CopilotChatSessionsProvider', () => {
 		assert.ok(!provider.sessionTypes.some(t => t.id === ClaudeCodeSessionType.id));
 	});
 
-	test('sessionTypes excludes Copilot CLI when background agent setting is disabled', () => {
-		const provider = createProvider(disposables, model, { backgroundAgentEnabled: false });
-		assert.deepStrictEqual(provider.sessionTypes.map(t => t.id), [
-			CopilotCloudSessionType.id,
-			ClaudeCodeSessionType.id,
-		]);
-		assert.deepStrictEqual(provider.getSessionTypes(URI.file('/test/project')).map(t => t.id), [
-			ClaudeCodeSessionType.id,
-		]);
-	});
-
-	test('onDidChangeSessionTypes fires when background agent setting changes', () => {
-		const { provider, configService } = createProviderWithConfig(disposables, model);
-		assert.ok(provider.sessionTypes.some(t => t.id === CopilotCLISessionType.id));
-
-		let fired = false;
-		disposables.add(provider.onDidChangeSessionTypes(() => { fired = true; }));
-
-		configService.setUserConfiguration(CopilotBackgroundAgentEnabledSettingId, false);
-		configService.onDidChangeConfigurationEmitter.fire({
-			source: ConfigurationTarget.USER,
-			affectedKeys: new Set([CopilotBackgroundAgentEnabledSettingId]),
-			change: { keys: [CopilotBackgroundAgentEnabledSettingId], overrides: [] },
-			affectsConfiguration: (key: string) => key === CopilotBackgroundAgentEnabledSettingId,
-		});
-
-		assert.ok(fired, 'onDidChangeSessionTypes should have fired');
-		assert.ok(!provider.sessionTypes.some(t => t.id === CopilotCLISessionType.id));
-	});
-
 	test('onDidChangeSessionTypes fires when claude setting changes', () => {
 		const { provider, configService } = createProviderWithConfig(disposables, model);
 		assert.strictEqual(provider.sessionTypes.length, 3);
@@ -425,16 +394,6 @@ suite('CopilotChatSessionsProvider', () => {
 		const sessions = provider.getSessions();
 
 		assert.strictEqual(sessions.length, 1);
-	});
-
-	test('getSessions excludes background sessions when background agent setting is disabled', () => {
-		const bgResource = URI.from({ scheme: AgentSessionProviders.Background, path: '/bg-session' });
-		model.addSession(createMockAgentSession(bgResource));
-
-		const provider = createProvider(disposables, model, { backgroundAgentEnabled: false });
-		const sessions = provider.getSessions();
-
-		assert.strictEqual(sessions.length, 0);
 	});
 
 	test('getSessions includes Claude agent sessions when enabled', () => {

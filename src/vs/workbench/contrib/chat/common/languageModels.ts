@@ -1057,8 +1057,7 @@ export class LanguageModelsService implements ILanguageModelsService {
 			if ((selector.vendor === undefined || model.vendor === selector.vendor)
 				&& (selector.family === undefined || model.family === selector.family)
 				&& (selector.version === undefined || model.version === selector.version)
-				&& (selector.id === undefined || model.id === selector.id)
-				&& !model.targetChatSessionType) {
+				&& (selector.id === undefined || model.id === selector.id)) {
 				result.push(internalModelIdentifier);
 			}
 		}

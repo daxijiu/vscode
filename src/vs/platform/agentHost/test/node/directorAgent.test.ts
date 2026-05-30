@@ -14,14 +14,12 @@ import { ServiceCollection } from '../../../instantiation/common/serviceCollecti
 import { InstantiationService } from '../../../instantiation/common/instantiationService.js';
 import { ILogService, NullLogService } from '../../../log/common/log.js';
 import { ISchema, SchemaDefinition, SchemaValue } from '../../common/agentHostSchema.js';
-import { DirectorDirectLanguageModelMessagesAttachmentMetaKey } from '../../common/directorProviderAdapters.js';
 import { IDirectorProviderBackendHub } from '../../common/directorProviderBackend.js';
 import { DirectorRuntimeCredential, DirectorRuntimeCredentialRequest, IDirectorRuntimeCredentialService } from '../../common/directorRuntimeCredentials.js';
 import { AgentSession, AgentSignal } from '../../common/agentService.js';
 import { SessionConfigKey } from '../../common/sessionConfigKeys.js';
 import { ActionType } from '../../common/state/sessionActions.js';
-import type { ToolDefinition } from '../../common/state/protocol/state.js';
-import { MessageAttachmentKind, ResponsePartKind, ToolCallStatus, ToolResultContentType, TurnState } from '../../common/state/sessionState.js';
+import { ResponsePartKind, ToolCallStatus, ToolResultContentType, TurnState } from '../../common/state/sessionState.js';
 import { IAgentConfigurationService } from '../../node/agentConfigurationService.js';
 import { DirectorAgent } from '../../node/director/directorAgent.js';
 import { DirectorProviderBackendHub, DirectorProviderBackendHubFixtures } from '../../node/director/directorProviderBackendHub.js';
@@ -238,49 +236,6 @@ suite('DirectorAgent', () => {
 		});
 	});
 
-	test('preserves direct language model message structure through the AgentHost bridge', async () => {
-		const requests: unknown[] = [];
-		const server = disposables.add(await createSequenceJsonServer([{
-			body: {
-				choices: [{ message: { content: 'direct bridge hello' } }],
-			},
-		}], requests));
-		const agent = createAgent(createOpenAIFixtures(server.url), { kind: 'api-key', value: 'sk-test' });
-		const created = await agent.createSession();
-
-		await agent.sendMessage(created.session, 'ignored prompt', [{
-			type: MessageAttachmentKind.Simple,
-			label: 'Director direct language model messages',
-			modelRepresentation: JSON.stringify([
-				{ role: 'system', content: 'direct system' },
-				{ role: 'user', content: 'direct user' },
-				{
-					role: 'assistant',
-					content: 'direct assistant',
-					toolCalls: [{ id: 'call-1', name: 'readFile', input: '{"path":"src/a.ts"}' }],
-				},
-				{ role: 'tool', content: 'file content', toolCallId: 'call-1', isError: false },
-			]),
-			_meta: { [DirectorDirectLanguageModelMessagesAttachmentMetaKey]: true },
-		}], 'turn-direct-lm');
-
-		const request = requests[0] as { readonly messages: readonly Record<string, unknown>[] };
-		assert.deepStrictEqual(request.messages, [
-			{ role: 'system', content: 'direct system' },
-			{ role: 'user', content: 'direct user' },
-			{
-				role: 'assistant',
-				content: 'direct assistant',
-				tool_calls: [{
-					id: 'call-1',
-					type: 'function',
-					function: { name: 'readFile', arguments: '{"path":"src/a.ts"}' },
-				}],
-			},
-			{ role: 'tool', tool_call_id: 'call-1', content: 'file content' },
-		]);
-	});
-
 	test('streams OpenAI-compatible deltas into a stable markdown part', async () => {
 		const server = disposables.add(await createSseServer([
 			'data: {"choices":[{"delta":{"content":"stream "}}]}\n\n',
@@ -472,121 +427,6 @@ suite('DirectorAgent', () => {
 				state: TurnState.Complete,
 				toolStatus: ToolCallStatus.Completed,
 				responseText: 'tool result observed',
-			}],
-		});
-	});
-
-	test('seeds client tools from createSession activeClient', async () => {
-		const requests: unknown[] = [];
-		const server = disposables.add(await createSequenceJsonServer([
-			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-active-client', type: 'function', function: { name: 'runTests', arguments: '{"query":"active"}' } }] } }] },
-			{ choices: [{ message: { content: 'active client result observed' } }] },
-		], requests));
-		const agent = createAgent(createOpenAIFixtures(server.url, { toolCalling: true }), { kind: 'api-key', value: 'sk-test' });
-		const created = await agent.createSession({
-			activeClient: {
-				clientId: 'client-active',
-				tools: [{
-					name: 'runTests',
-					title: 'Run Tests',
-					description: 'Returns a deterministic result',
-					inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
-				}],
-			},
-		});
-		const pendingToolClientIds: (string | undefined)[] = [];
-		disposables.add(agent.onDidSessionProgress(signal => {
-			if (signal.kind === 'pending_confirmation') {
-				pendingToolClientIds.push(signal.state.toolClientId);
-				agent.respondToPermissionRequest(signal.state.toolCallId, true);
-				agent.onClientToolCallComplete(created.session, signal.state.toolCallId, {
-					success: true,
-					pastTenseMessage: 'Ran Run Tests',
-					content: [{ type: ToolResultContentType.Text, text: 'active client tool result' }],
-				});
-			}
-		}));
-
-		await agent.sendMessage(created.session, 'use active client tool', undefined, 'turn-active-client');
-		const firstBody = requests[0] as { tools: Array<{ function: { name: string } }> };
-		const turns = await agent.getSessionMessages(created.session);
-
-		assert.deepStrictEqual({
-			toolNames: firstBody.tools.map(tool => tool.function.name),
-			pendingToolClientIds,
-			turns: turns.map(turn => ({
-				id: turn.id,
-				state: turn.state,
-				toolClientId: turn.responseParts.find(part => part.kind === ResponsePartKind.ToolCall)?.toolCall.toolClientId,
-				responseText: turn.responseParts
-					.filter(part => part.kind === ResponsePartKind.Markdown)
-					.map(part => part.content)
-					.join(''),
-			})),
-		}, {
-			toolNames: ['runTests'],
-			pendingToolClientIds: ['client-active'],
-			turns: [{
-				id: 'turn-active-client',
-				state: TurnState.Complete,
-				toolClientId: 'client-active',
-				responseText: 'active client result observed',
-			}],
-		});
-	});
-
-	test('executes delayed tool calls on the original per-turn client when another surface becomes active', async () => {
-		const requests: unknown[] = [];
-		const server = disposables.add(await createSequenceJsonServer([
-			{ delayMs: 25, body: { choices: [{ message: { content: '', tool_calls: [{ id: 'call-reclaimed-client', type: 'function', function: { name: 'runTests', arguments: '{"query":"reclaimed"}' } }] } }] } },
-			{ choices: [{ message: { content: 'reclaimed client result observed' } }] },
-		], requests));
-		const agent = createAgent(createOpenAIFixtures(server.url, { toolCalling: true }), { kind: 'api-key', value: 'sk-test' });
-		const created = await agent.createSession();
-		const tool: ToolDefinition = {
-			name: 'runTests',
-			title: 'Run Tests',
-			description: 'Returns a deterministic result',
-			inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
-		};
-		agent.setClientTools(created.session, 'client-editor', [tool]);
-		const pendingToolClientIds: (string | undefined)[] = [];
-		disposables.add(agent.onDidSessionProgress(signal => {
-			if (signal.kind === 'pending_confirmation') {
-				pendingToolClientIds.push(signal.state.toolClientId);
-				agent.respondToPermissionRequest(signal.state.toolCallId, true);
-				agent.onClientToolCallComplete(created.session, signal.state.toolCallId, {
-					success: true,
-					pastTenseMessage: 'Ran Run Tests',
-					content: [{ type: ToolResultContentType.Text, text: 'reclaimed client tool result' }],
-				});
-			}
-		}));
-
-		const send = agent.sendMessage(created.session, 'use tool after reclaim', undefined, 'turn-reclaimed-client');
-		await waitForRequestCount(requests, 1);
-		agent.setClientTools(created.session, 'client-agent-window', [tool]);
-		await send;
-		const turns = await agent.getSessionMessages(created.session);
-
-		assert.deepStrictEqual({
-			pendingToolClientIds,
-			turns: turns.map(turn => ({
-				id: turn.id,
-				state: turn.state,
-				toolClientId: turn.responseParts.find(part => part.kind === ResponsePartKind.ToolCall)?.toolCall.toolClientId,
-				responseText: turn.responseParts
-					.filter(part => part.kind === ResponsePartKind.Markdown)
-					.map(part => part.content)
-					.join(''),
-			})),
-		}, {
-			pendingToolClientIds: ['client-editor'],
-			turns: [{
-				id: 'turn-reclaimed-client',
-				state: TurnState.Complete,
-				toolClientId: 'client-editor',
-				responseText: 'reclaimed client result observed',
 			}],
 		});
 	});
@@ -1422,7 +1262,6 @@ async function createJsonServer(options: { readonly status: number; readonly bod
 type TestSequenceJsonResponse = {
 	readonly status: number;
 	readonly body: unknown;
-	readonly delayMs?: number;
 };
 
 async function createSequenceJsonServer(responses: readonly unknown[], requests: unknown[]): Promise<TestJsonServer> {
@@ -1439,11 +1278,9 @@ async function createSequenceJsonServer(responses: readonly unknown[], requests:
 		req.on('end', () => {
 			requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown);
 			const response = normalizeSequenceJsonResponse(responses[Math.min(index, responses.length - 1)]);
-			setTimeout(() => {
-				res.writeHead(response.status, { 'content-type': 'application/json' });
-				res.end(JSON.stringify(response.body));
-				index++;
-			}, response.delayMs ?? 0);
+			res.writeHead(response.status, { 'content-type': 'application/json' });
+			res.end(JSON.stringify(response.body));
+			index++;
 		});
 	}) as TestJsonServer;
 	await listen(server);
@@ -1451,26 +1288,13 @@ async function createSequenceJsonServer(responses: readonly unknown[], requests:
 }
 
 function normalizeSequenceJsonResponse(response: unknown): TestSequenceJsonResponse {
-	if (response && typeof response === 'object' && hasKey(response, { body: true })) {
-		const candidate = response as { readonly status?: unknown; readonly body?: unknown; readonly delayMs?: unknown };
+	if (response && typeof response === 'object' && hasKey(response, { status: true, body: true })) {
+		const candidate = response as { readonly status?: unknown; readonly body?: unknown };
 		if (typeof candidate.status === 'number') {
-			return { status: candidate.status, body: candidate.body, delayMs: typeof candidate.delayMs === 'number' ? candidate.delayMs : undefined };
-		}
-		if (typeof candidate.delayMs === 'number') {
-			return { status: 200, body: candidate.body, delayMs: candidate.delayMs };
+			return { status: candidate.status, body: candidate.body };
 		}
 	}
 	return { status: 200, body: response };
-}
-
-async function waitForRequestCount(requests: readonly unknown[], count: number): Promise<void> {
-	const started = Date.now();
-	while (requests.length < count) {
-		if (Date.now() - started > 1_000) {
-			throw new Error(`Timed out waiting for ${count} provider request(s).`);
-		}
-		await new Promise(resolve => setTimeout(resolve, 1));
-	}
 }
 
 async function createSseServer(chunks: readonly string[], path = '/chat/completions'): Promise<TestJsonServer> {

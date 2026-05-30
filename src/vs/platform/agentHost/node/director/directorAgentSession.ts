@@ -56,7 +56,6 @@ export class DirectorAgentSession extends Disposable {
 	private readonly _pendingToolResults = new PendingRequestRegistry<ToolCallResult>();
 	private _inFlight: IDirectorInFlightTurn | undefined;
 	private _clientTools: readonly ToolDefinition[] = [];
-	private readonly _clientToolsByClientId = new Map<string, readonly ToolDefinition[]>();
 	private _toolClientId: string | undefined;
 	private _modifiedAt: number;
 
@@ -210,16 +209,7 @@ export class DirectorAgentSession extends Disposable {
 	}
 
 	setClientTools(clientId: string | undefined, tools: readonly ToolDefinition[]): void {
-		const normalizedClientId = clientId || undefined;
-		if (normalizedClientId) {
-			if (tools.length) {
-				this._clientToolsByClientId.set(normalizedClientId, [...tools]);
-			} else {
-				this._clientToolsByClientId.delete(normalizedClientId);
-			}
-			this._failMissingOwnerToolCalls(normalizedClientId, tools);
-		}
-		this._toolClientId = normalizedClientId;
+		this._toolClientId = clientId || undefined;
 		this._clientTools = [...tools];
 	}
 
@@ -233,65 +223,26 @@ export class DirectorAgentSession extends Disposable {
 	}
 
 	failClientTools(clientId: string, message: string): void {
-		this._failClientToolCalls(clientId, message);
-	}
-
-	private _failMissingOwnerToolCalls(clientId: string, nextTools: readonly ToolDefinition[]): void {
 		const inFlight = this._inFlight;
-		if (!inFlight) {
-			return;
-		}
-		const nextToolNames = new Set(nextTools.map(tool => tool.name));
-		for (const part of inFlight.responseParts) {
-			if (part.kind !== ResponsePartKind.ToolCall || part.toolCall.toolClientId !== clientId) {
-				continue;
-			}
-			if (nextToolNames.has(part.toolCall.toolName) || !isPendingClientToolCall(part.toolCall)) {
-				continue;
-			}
-			this._completeClientToolCallWithFailure(
-				inFlight,
-				part.toolCall.toolCallId,
-				part.toolCall.toolName,
-				`Director tool '${part.toolCall.toolName}' is no longer available in AgentHost client ${clientId}.`,
-			);
-		}
-	}
-
-	private _failClientToolCalls(clientId: string, message: string): void {
-		const inFlight = this._inFlight;
-		if (!inFlight) {
+		if (!inFlight || inFlight.clientToolsSnapshot.clientId !== clientId) {
 			return;
 		}
 		for (const part of inFlight.responseParts) {
 			if (part.kind !== ResponsePartKind.ToolCall || part.toolCall.toolClientId !== clientId) {
 				continue;
 			}
-			if (!isPendingClientToolCall(part.toolCall)) {
+			if (part.toolCall.status !== ToolCallStatus.Streaming && part.toolCall.status !== ToolCallStatus.Running && part.toolCall.status !== ToolCallStatus.PendingConfirmation) {
 				continue;
 			}
-			this._completeClientToolCallWithFailure(inFlight, part.toolCall.toolCallId, part.toolCall.toolName, message);
+			const result = failedToolResult(message);
+			this._emitToolCallComplete(inFlight, {
+				id: part.toolCall.toolCallId,
+				name: part.toolCall.toolName,
+				input: toolCallInput(part.toolCall),
+			}, result);
+			this._pendingPermissions.respond(part.toolCall.toolCallId, true);
+			this._pendingToolResults.respond(part.toolCall.toolCallId, result);
 		}
-	}
-
-	private _completeClientToolCallWithFailure(inFlight: IDirectorInFlightTurn, toolCallId: string, toolName: string, message: string): void {
-		const result = failedToolResult(message);
-		const part = inFlight.responseParts.find(part => part.kind === ResponsePartKind.ToolCall && part.toolCall.toolCallId === toolCallId);
-		const input = part?.kind === ResponsePartKind.ToolCall ? toolCallInput(part.toolCall) : '';
-		if (part?.kind === ResponsePartKind.ToolCall && part.toolCall.status === ToolCallStatus.Streaming) {
-			this._emitToolCallReady(inFlight, {
-				id: toolCallId,
-				name: toolName,
-				input,
-			}, result.pastTenseMessage.toString(), ToolCallConfirmationReason.NotNeeded, part.toolCall.toolClientId);
-		}
-		this._emitToolCallComplete(inFlight, {
-			id: toolCallId,
-			name: toolName,
-			input,
-		}, result);
-		this._pendingPermissions.respond(toolCallId, true);
-		this._pendingToolResults.respond(toolCallId, result);
 	}
 
 	private _project(workingDirectory: URI): IAgentSessionProjectInfo {
@@ -571,18 +522,9 @@ export class DirectorAgentSession extends Disposable {
 		if (this._isTerminal(inFlight)) {
 			throw new CancellationError();
 		}
-		const ownerClientId = inFlight.clientToolsSnapshot.clientId;
 		const tool = inFlight.clientToolsSnapshot.tools.find(candidate => candidate.name === toolCall.name);
-		if (!tool || !ownerClientId || !inFlight.clientToolsSnapshot.toolNames.has(toolCall.name)) {
+		if (!tool || !inFlight.clientToolsSnapshot.clientId || !inFlight.clientToolsSnapshot.toolNames.has(toolCall.name)) {
 			const result = failedToolResult(`Director tool '${toolCall.name}' is not available in the active AgentHost client.`);
-			this._emitToolCallStart(inFlight, toolCall, undefined, undefined);
-			this._emitToolCallReady(inFlight, toolCall, result.pastTenseMessage.toString(), ToolCallConfirmationReason.NotNeeded, undefined);
-			this._emitToolCallComplete(inFlight, toolCall, result);
-			return stringifyDirectorToolResult(result);
-		}
-		const ownerTools = this._clientToolsByClientId.get(ownerClientId);
-		if (!ownerTools?.some(candidate => candidate.name === toolCall.name)) {
-			const result = failedToolResult(`Director tool '${toolCall.name}' is no longer available in AgentHost client ${ownerClientId}.`);
 			this._emitToolCallStart(inFlight, toolCall, tool, undefined);
 			this._emitToolCallReady(inFlight, toolCall, result.pastTenseMessage.toString(), ToolCallConfirmationReason.NotNeeded, undefined);
 			this._emitToolCallComplete(inFlight, toolCall, result);
@@ -592,13 +534,13 @@ export class DirectorAgentSession extends Disposable {
 		const validationError = validateDirectorToolCallInput(toolCall.name, toolCall.input);
 		if (validationError) {
 			const result = failedToolResult(validationError);
-			this._emitToolCallStart(inFlight, toolCall, tool, ownerClientId);
-			this._emitToolCallReady(inFlight, toolCall, result.pastTenseMessage.toString(), ToolCallConfirmationReason.NotNeeded, ownerClientId);
+			this._emitToolCallStart(inFlight, toolCall, tool, inFlight.clientToolsSnapshot.clientId);
+			this._emitToolCallReady(inFlight, toolCall, result.pastTenseMessage.toString(), ToolCallConfirmationReason.NotNeeded, inFlight.clientToolsSnapshot.clientId);
 			this._emitToolCallComplete(inFlight, toolCall, result);
 			return stringifyDirectorToolResult(result);
 		}
 
-		this._emitToolCallStart(inFlight, toolCall, tool, ownerClientId);
+		this._emitToolCallStart(inFlight, toolCall, tool, inFlight.clientToolsSnapshot.clientId);
 		const resultPromise = this._pendingToolResults.register(toolCall.id);
 		const approved = await this._pendingPermissions.registerAndFire(toolCall.id, () => {
 			const state: ToolCallPendingConfirmationState = {
@@ -606,7 +548,7 @@ export class DirectorAgentSession extends Disposable {
 				toolCallId: toolCall.id,
 				toolName: toolCall.name,
 				displayName: tool.title ?? tool.name,
-				toolClientId: ownerClientId,
+				toolClientId: inFlight.clientToolsSnapshot.clientId,
 				invocationMessage: localize('directorAgent.tool.invocation', "Run {0}", tool.title ?? tool.name),
 				toolInput: toolCall.input,
 				confirmationTitle: localize('directorAgent.tool.confirmationTitle', "Run Tool"),
@@ -798,8 +740,4 @@ function toolCallInput(toolCall: ToolCallState): string {
 
 function toolCallInvocationMessage(toolCall: ToolCallState, fallback: string) {
 	return toolCall.invocationMessage || fallback;
-}
-
-function isPendingClientToolCall(toolCall: ToolCallState): boolean {
-	return toolCall.status === ToolCallStatus.Streaming || toolCall.status === ToolCallStatus.Running || toolCall.status === ToolCallStatus.PendingConfirmation;
 }

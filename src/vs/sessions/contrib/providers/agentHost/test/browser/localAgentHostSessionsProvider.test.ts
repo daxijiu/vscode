@@ -18,7 +18,7 @@ import type { ResolveSessionConfigResult } from '../../../../../../platform/agen
 import { CustomizationStatus, SessionLifecycle, type AgentInfo, type ModelSelection, type RootState, type SessionConfigState, type SessionState } from '../../../../../../platform/agentHost/common/state/protocol/state.js';
 import { ChangesetStatus, SessionStatus as ProtocolSessionStatus, StateComponents, type ChangesetState } from '../../../../../../platform/agentHost/common/state/sessionState.js';
 import { ActionType, NotificationType, type ActionEnvelope, type IRootConfigChangedAction, type SessionAction, type TerminalAction, type INotification } from '../../../../../../platform/agentHost/common/state/sessionActions.js';
-import { ConfigurationTarget, IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
+import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IFileDialogService } from '../../../../../../platform/dialogs/common/dialogs.js';
 import { TestInstantiationService } from '../../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
@@ -29,7 +29,6 @@ import { ILanguageModelsService } from '../../../../../../workbench/contrib/chat
 import { ISessionChangeEvent } from '../../../../../services/sessions/common/sessionsProvider.js';
 import { SessionStatus } from '../../../../../services/sessions/common/session.js';
 import { IActiveSession, ISessionsManagementService } from '../../../../../services/sessions/common/sessionsManagement.js';
-import { CopilotBackgroundAgentEnabledSettingId } from '../../browser/baseAgentHostSessionsProvider.js';
 import { LocalAgentHostSessionsProvider } from '../../browser/localAgentHostSessionsProvider.js';
 import { ILabelService } from '../../../../../../platform/label/common/label.js';
 import { ILogService, NullLogService } from '../../../../../../platform/log/common/log.js';
@@ -363,46 +362,6 @@ suite('LocalAgentHostSessionsProvider', () => {
 			{ id: 'copilotcli', label: 'Copilot' },
 			{ id: 'openai', label: 'OpenAI' },
 		]);
-	});
-
-	test('hides AgentHost Copilot CLI session type when background agent setting is disabled', () => {
-		const config = new TestConfigurationService();
-		config.setUserConfiguration(CopilotBackgroundAgentEnabledSettingId, false);
-		agentHost.setAgents([
-			{ provider: 'copilotcli', displayName: 'Copilot', description: '', models: [] } as AgentInfo,
-			{ provider: 'director', displayName: 'Director', description: '', models: [] } as AgentInfo,
-		]);
-
-		const provider = createProvider(disposables, agentHost, undefined, { configurationService: config });
-
-		assert.deepStrictEqual(provider.sessionTypes.map(t => ({ id: t.id, label: t.label })), [
-			{ id: 'director', label: 'Director' },
-		]);
-	});
-
-	test('refreshes AgentHost session types when background agent setting changes', () => {
-		const config = new TestConfigurationService();
-		config.setUserConfiguration(CopilotBackgroundAgentEnabledSettingId, true);
-		agentHost.setAgents([
-			{ provider: 'copilotcli', displayName: 'Copilot', description: '', models: [] } as AgentInfo,
-			{ provider: 'director', displayName: 'Director', description: '', models: [] } as AgentInfo,
-		]);
-		const provider = createProvider(disposables, agentHost, undefined, { configurationService: config });
-		assert.deepStrictEqual(provider.sessionTypes.map(t => t.id), ['director', 'copilotcli']);
-
-		let changes = 0;
-		disposables.add(provider.onDidChangeSessionTypes!(() => changes++));
-
-		config.setUserConfiguration(CopilotBackgroundAgentEnabledSettingId, false);
-		config.onDidChangeConfigurationEmitter.fire({
-			source: ConfigurationTarget.USER,
-			affectedKeys: new Set([CopilotBackgroundAgentEnabledSettingId]),
-			change: { keys: [CopilotBackgroundAgentEnabledSettingId], overrides: [] },
-			affectsConfiguration: (key: string) => key === CopilotBackgroundAgentEnabledSettingId,
-		});
-
-		assert.strictEqual(changes, 1);
-		assert.deepStrictEqual(provider.sessionTypes.map(t => t.id), ['director']);
 	});
 
 	test('reports no session types before rootState hydrates', () => {

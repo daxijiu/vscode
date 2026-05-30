@@ -4,8 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { CancellationError } from '../../../../base/common/errors.js';
-import { MessageAttachmentKind, ResponsePartKind, ToolResultContentType, type MessageAttachment, type ToolCallResult, type ToolResultContent, type Turn, type UsageInfo } from '../../common/state/sessionState.js';
-import { DirectorDirectLanguageModelMessagesAttachmentMetaKey, type DirectorNormalizedMessage, type DirectorNormalizedToolCall, type DirectorNormalizedToolDefinition, type DirectorOpenAIReasoningEcho } from '../../common/directorProviderAdapters.js';
+import { ResponsePartKind, ToolResultContentType, type MessageAttachment, type ToolCallResult, type ToolResultContent, type Turn, type UsageInfo } from '../../common/state/sessionState.js';
+import type { DirectorNormalizedMessage, DirectorNormalizedToolCall, DirectorNormalizedToolDefinition, DirectorOpenAIReasoningEcho } from '../../common/directorProviderAdapters.js';
 import type { DirectorResolvedProviderBackend } from '../../common/directorProviderBackend.js';
 import type { DirectorCreateMessageParams, DirectorCreateMessageResponse, DirectorLLMProvider, DirectorProviderRuntimeAuth, DirectorRuntimeProviderApiType, DirectorTokenUsage } from '../../common/directorProviderRuntime.js';
 import type { DirectorRuntimeCredential, IDirectorRuntimeCredentialService } from '../../common/directorRuntimeCredentials.js';
@@ -184,11 +184,6 @@ export class DirectorAgentEngineAdapter {
 	}
 
 	private buildMessages(options: DirectorAgentEngineTurnOptions, tools: readonly DirectorNormalizedToolDefinition[]): readonly DirectorNormalizedMessage[] {
-		const directLanguageModelMessages = readDirectLanguageModelMessages(options.attachments);
-		if (directLanguageModelMessages) {
-			return directLanguageModelMessages;
-		}
-
 		const messages: DirectorNormalizedMessage[] = [{
 			role: 'system',
 			content: buildDirectorSystemPrompt(options.cwd, tools),
@@ -399,63 +394,6 @@ function summarizeAttachments(attachments: readonly MessageAttachment[] | undefi
 			return `- attachment ${index + 1}: ${attachment.type}${label}`;
 		}),
 	].join('\n');
-}
-
-function readDirectLanguageModelMessages(attachments: readonly MessageAttachment[] | undefined): readonly DirectorNormalizedMessage[] | undefined {
-	const attachment = attachments?.find(attachment =>
-		attachment.type === MessageAttachmentKind.Simple
-		&& attachment._meta?.[DirectorDirectLanguageModelMessagesAttachmentMetaKey] === true
-		&& typeof attachment.modelRepresentation === 'string');
-	if (!attachment || attachment.type !== MessageAttachmentKind.Simple || typeof attachment.modelRepresentation !== 'string') {
-		return undefined;
-	}
-	try {
-		const parsed = JSON.parse(attachment.modelRepresentation) as unknown;
-		return isDirectorNormalizedMessageArray(parsed) ? parsed : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function isDirectorNormalizedMessageArray(value: unknown): value is readonly DirectorNormalizedMessage[] {
-	return Array.isArray(value) && value.every(isDirectorNormalizedMessage);
-}
-
-function isDirectorNormalizedMessage(value: unknown): value is DirectorNormalizedMessage {
-	if (!isObject(value)) {
-		return false;
-	}
-	const role = value.role;
-	if (role !== 'system' && role !== 'user' && role !== 'assistant' && role !== 'tool') {
-		return false;
-	}
-	if (typeof value.content !== 'string') {
-		return false;
-	}
-	if (value.thinking !== undefined && typeof value.thinking !== 'string') {
-		return false;
-	}
-	if (value.toolCallId !== undefined && typeof value.toolCallId !== 'string') {
-		return false;
-	}
-	if (value.toolName !== undefined && typeof value.toolName !== 'string') {
-		return false;
-	}
-	if (value.isError !== undefined && typeof value.isError !== 'boolean') {
-		return false;
-	}
-	return value.toolCalls === undefined || (Array.isArray(value.toolCalls) && value.toolCalls.every(isDirectorNormalizedToolCall));
-}
-
-function isDirectorNormalizedToolCall(value: unknown): value is DirectorNormalizedToolCall {
-	return isObject(value)
-		&& typeof value.id === 'string'
-		&& typeof value.name === 'string'
-		&& typeof value.input === 'string';
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null;
 }
 
 function credentialToRuntimeAuth(credential: DirectorRuntimeCredential): DirectorProviderRuntimeAuth {

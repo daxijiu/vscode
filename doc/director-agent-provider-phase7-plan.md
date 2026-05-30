@@ -1,10 +1,10 @@
 # Director Agent Provider Phase 7 Plan
 
-Updated: 2026-05-28
+Updated: 2026-05-30
 
 ## Status
 
-Completed locally on 2026-05-27. The required Phase 7 repair follow-up was implemented locally on 2026-05-28 and is pending manual acceptance.
+Completed locally on 2026-05-27, then partially reset after manual acceptance rejected the 2026-05-28 repair attempt. The current baseline adopts upstream VS Code `20ed2bc21d4 Fix offline BYOK state management (#318187)` and rolls back local Chat Setup / Copilot-session visibility / multi-surface tool-confirmation experiments from `46ab6211a4b`.
 
 Phase 7 follows Phase 4's accepted AgentHost Director runtime. The goal is to polish the provider/model surfaces around it and to stop provider-runtime drift from the old Director implementation. Configured Director providers should show up predictably in model pickers, and the runtime semantics should be reusable by later non-Copilot harnesses.
 
@@ -17,12 +17,11 @@ Accepted Phase 7 slice:
 - Direct `director-code` requests route through AgentHost Director sessions so provider HTTP remains node-owned; Workbench does not import AgentHost node transports or run provider HTTP itself.
 - Provider Settings model metadata and Refresh Models behavior from Phase 3 remain intact.
 
-Accepted repair direction now implemented locally:
+Current corrected baseline:
 
-- Multi-surface AgentHost tool confirmation uses native shared protocol state: any observing surface can approve or deny, while only the owning `toolClientId` executes the client tool.
-- Direct LM selection excludes session-targeted `agent-host-director` models and keeps broader VS Code model consumers on `director-code/...` identifiers.
-- `director-code` models no longer declare the generic auth gate that can trigger GitHub/Copilot sign-in; Director credentials still resolve only through Director-owned turn-time credential bridging.
-- Direct `director-code` requests preserve structured system/user/assistant/tool message shape through a marked AgentHost attachment consumed by the node-owned Director provider runtime.
+- Upstream offline BYOK state management is the source of truth for avoiding unnecessary GitHub sign-in gates with configured non-Copilot/BYOK providers.
+- The rejected 2026-05-28 repair experiments were rolled back: startup eager `selectLanguageModels`, global `targetChatSessionType` selector filtering, `director-code` auth-metadata bypass, multi-surface tool-confirmation changes, Copilot-session visibility changes, and the private direct-LM structured-message attachment side channel.
+- Direct `director-code` requests remain on the original narrow Phase 7 AgentHost-session bridge. This path is useful for simple provider-backed requests but is not accepted for generic tool-heavy chat until VS Code LM tools and structured messages are handled through a deliberate design.
 
 ## Goal
 
@@ -149,7 +148,7 @@ Acceptance:
 
 ## Deferred
 
-- Manual acceptance for the implemented multi-surface tool confirmation and `director-code` LanguageModelChatProvider repair is tracked in [director-agent-provider-phase7-repair-plan.md](./director-agent-provider-phase7-repair-plan.md). This acceptance is required before treating Phase 7 as finally accepted.
+- The rejected 2026-05-28 repair was rolled back. Remaining direct `director-code` model selection/auth/tool passthrough gaps are tracked in [director-agent-provider-phase7-repair-plan.md](./director-agent-provider-phase7-repair-plan.md).
 - Additional OAuth providers and real OpenAI Codex browser/device flow remain Phase 8.
 - Claude-like SDK de-CAPI remains Phase 6.
 - Durable session restore remains Phase 9.
