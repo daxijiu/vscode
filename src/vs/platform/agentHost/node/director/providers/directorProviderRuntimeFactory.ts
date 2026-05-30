@@ -68,10 +68,12 @@ class DirectorFetchProvider implements DirectorLLMProvider {
 			baseURL: this.options.baseURL ?? defaultBaseURL(this.apiType),
 			modelId: params.model,
 			authHeader: authHeaderValue(this.options.auth),
+			authKind: this.options.auth.kind,
 			messages: params.messages,
 			tools: params.tools,
 			maxTokens: params.maxTokens,
 			stream,
+			thinking: params.thinking,
 			reasoningEcho: this.options.reasoningEcho,
 		});
 		const fetcher = this.options.fetch ?? ((input, init) => fetch(input, init));
@@ -185,6 +187,7 @@ function readAnthropicUsage(value: Record<string, unknown>): DirectorTokenUsage 
 	return {
 		input_tokens: numberField(usage, 'input_tokens') ?? 0,
 		output_tokens: numberField(usage, 'output_tokens') ?? 0,
+		cache_creation_input_tokens: numberField(usage, 'cache_creation_input_tokens'),
 		cache_read_input_tokens: numberField(usage, 'cache_read_input_tokens'),
 	};
 }
@@ -391,6 +394,7 @@ function readAnthropicStreamEvents(value: Record<string, unknown>): readonly Dir
 			usage: usage ? {
 				input_tokens: numberField(usage, 'input_tokens') ?? 0,
 				output_tokens: numberField(usage, 'output_tokens') ?? 0,
+				cache_creation_input_tokens: numberField(usage, 'cache_creation_input_tokens'),
 				cache_read_input_tokens: numberField(usage, 'cache_read_input_tokens'),
 			} : { input_tokens: 0, output_tokens: 0 },
 			stopReason: stringField(asRecord(value.delta), 'stop_reason') ?? 'end_turn',

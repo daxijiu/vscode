@@ -27,6 +27,7 @@ import { ClaudeAgent } from './claude/claudeAgent.js';
 import { ClaudeAgentSdkService, IClaudeAgentSdkService } from './claude/claudeAgentSdkService.js';
 import { ClaudeProxyService, IClaudeProxyService } from './claude/claudeProxyService.js';
 import { DirectorAgent } from './director/directorAgent.js';
+import { DirectorAnthropicEndpointService, IDirectorAnthropicEndpointService } from './director/directorAnthropicEndpointService.js';
 import { DirectorProviderBackendHub } from './director/directorProviderBackendHub.js';
 import { DirectorRuntimeCredentialService } from './director/directorRuntimeCredentialService.js';
 import { DirectorRuntimeCredentialChannelName, IDirectorRuntimeCredentialService } from '../common/directorRuntimeCredentials.js';
@@ -162,6 +163,8 @@ async function startAgentHost(): Promise<void> {
 		const directorProviderBackendHub = new DirectorProviderBackendHub({}, fileService, environmentService, logService);
 		diServices.set(IDirectorProviderBackendHub, directorProviderBackendHub);
 		diServices.set(IDirectorRuntimeCredentialService, directorRuntimeCredentialService);
+		const directorAnthropicEndpointService = disposables.add(new DirectorAnthropicEndpointService(logService, directorProviderBackendHub, directorRuntimeCredentialService));
+		diServices.set(IDirectorAnthropicEndpointService, directorAnthropicEndpointService);
 		const agentHostOTelService = disposables.add(instantiationService.createInstance(AgentHostOTelService));
 		diServices.set(IAgentHostOTelService, agentHostOTelService);
 		agentService = new AgentService(logService, fileService, sessionDataService, productService, gitService, checkpointService, rootConfigResource, telemetryService, fileMonitorService);

@@ -258,7 +258,11 @@ Phase 4:
 
 Phase 5:
 
-- Build provider-backed Anthropic-compatible local endpoint.
+- Completed locally on 2026-05-30: built `DirectorAnthropicEndpointService`, a Director-owned local Anthropic-compatible endpoint under `src/vs/platform/agentHost/node/director`.
+- The endpoint is backed by `IDirectorProviderBackendHub`, resolves credentials only through `IDirectorRuntimeCredentialService`, exposes nonce/session-bearer `/v1/models` and `/v1/messages`, supports Anthropic-compatible and OpenAI-compatible streaming through the shared Director provider runtime, and aborts provider transport when the client disconnects.
+- It does not import or call `ICopilotApiService`, GitHub Copilot auth, or Copilot CAPI. The existing Copilot-backed `ClaudeProxyService` remains unchanged for legacy Claude paths.
+- Added provider runtime parity for Anthropic bearer auth, `thinking` request passthrough, and `cache_creation_input_tokens` usage passthrough.
+- Phase 6 should wire a Director-backed Claude-like SDK harness to this endpoint and solve Copilot-logout visibility, without changing the existing Copilot-backed Claude path unless explicitly gated.
 
 Phase 6:
 

@@ -53,10 +53,12 @@ export interface DirectorNativeMessageRequestOptions {
 	readonly baseURL: string;
 	readonly modelId: string;
 	readonly authHeader: string;
+	readonly authKind?: 'api-key' | 'bearer';
 	readonly messages: readonly DirectorNormalizedMessage[];
 	readonly tools?: readonly DirectorNormalizedToolDefinition[];
 	readonly maxTokens?: number;
 	readonly stream?: boolean;
+	readonly thinking?: { readonly type: string; readonly budget_tokens?: number };
 	readonly reasoningEcho?: DirectorOpenAIReasoningEcho;
 }
 
@@ -72,7 +74,7 @@ export function buildDirectorNativeMessageRequest(options: DirectorNativeMessage
 				method: 'POST',
 				headers: {
 					'content-type': 'application/json',
-					'x-api-key': options.authHeader,
+					...anthropicAuthHeaders(options.authHeader, options.authKind),
 					'anthropic-version': '2023-06-01',
 				},
 				body: JSON.stringify({
@@ -81,6 +83,7 @@ export function buildDirectorNativeMessageRequest(options: DirectorNativeMessage
 					...(systemPrompt(options.messages) ? { system: systemPrompt(options.messages) } : {}),
 					messages: buildAnthropicMessages(options.messages),
 					...(options.tools?.length ? { tools: buildAnthropicTools(options.tools) } : {}),
+					...(options.thinking ? { thinking: options.thinking } : {}),
 					stream: options.stream === true,
 				}),
 			};
@@ -147,6 +150,12 @@ export function buildDirectorNativeMessageRequest(options: DirectorNativeMessage
 		case 'custom-http':
 			throw new Error(`Director provider api type '${options.apiType}' does not have a Phase 3 normalized message adapter.`);
 	}
+}
+
+function anthropicAuthHeaders(authHeader: string, authKind: 'api-key' | 'bearer' | undefined): Record<string, string> {
+	return authKind === 'bearer'
+		? { authorization: `Bearer ${authHeader}` }
+		: { 'x-api-key': authHeader };
 }
 
 function systemPrompt(messages: readonly DirectorNormalizedMessage[]): string | undefined {

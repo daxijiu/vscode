@@ -87,6 +87,29 @@ suite('directorProviderAdapters', () => {
 		});
 	});
 
+	test('serializes Anthropic bearer auth and thinking config', () => {
+		const request = buildDirectorNativeMessageRequest({
+			apiType: 'anthropic-messages',
+			baseURL: 'https://api.anthropic.com',
+			modelId: 'claude-test',
+			authHeader: 'bearer-token',
+			authKind: 'bearer',
+			messages,
+			thinking: { type: 'enabled', budget_tokens: 1024 },
+		});
+		const body = JSON.parse(request.body) as { readonly thinking?: unknown };
+
+		assert.deepStrictEqual({
+			apiKey: request.headers['x-api-key'],
+			authorization: request.headers.authorization,
+			thinking: body.thinking,
+		}, {
+			apiKey: undefined,
+			authorization: 'Bearer bearer-token',
+			thinking: { type: 'enabled', budget_tokens: 1024 },
+		});
+	});
+
 	test('serializes OpenAI Chat tool calls, tool results, and function schema', () => {
 		const request = buildDirectorNativeMessageRequest({
 			apiType: 'openai-completions',

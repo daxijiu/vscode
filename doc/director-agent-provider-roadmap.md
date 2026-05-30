@@ -397,6 +397,8 @@ Exit criteria:
 
 ### Phase 5 - Provider-Backed Anthropic Endpoint Proxy
 
+Status: implemented locally on 2026-05-30. See `doc/director-agent-provider-phase5-plan.md`.
+
 Goal: create the reusable local endpoint needed by Claude-like SDKs without Copilot CAPI.
 
 Scope:
@@ -421,6 +423,13 @@ Exit criteria:
 - A local SDK-compatible endpoint can stream from an Anthropic-compatible or OpenAI-compatible backend.
 - No GitHub token is required.
 - Tests prove `ICopilotApiService` is not touched.
+
+Implemented notes:
+
+- `DirectorAnthropicEndpointService` exposes a loopback Anthropic-compatible endpoint backed by `IDirectorProviderBackendHub`, `IDirectorRuntimeCredentialService`, and the shared Director provider runtime.
+- The endpoint keeps nonce/session bearer auth, `/v1/messages`, `/v1/models`, client-disconnect abort behavior, secret-free responses, and Anthropic JSON/SSE response shapes.
+- Anthropic bearer auth, `thinking`, and cache creation usage now pass through the Director provider request/runtime layer.
+- The existing Copilot-backed `ClaudeProxyService` remains unchanged for legacy Claude paths.
 
 ### Phase 6 - Claude-Like SDK Harness De-CAPI
 

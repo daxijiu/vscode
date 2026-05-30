@@ -44,6 +44,7 @@ Current docs:
 - `doc/director-agent-provider-phase2-plan.md`
 - `doc/director-agent-provider-phase3-plan.md`
 - `doc/director-agent-provider-phase4-plan.md`
+- `doc/director-agent-provider-phase5-plan.md`
 - `doc/director-agent-provider-phase7-plan.md`
 - `doc/research/claude-agenthost-phase-handoff.md`
 - `doc/research/custom-agent-provider-backend-plan.md`
@@ -176,3 +177,11 @@ Current Phase 7 baseline:
 - Upstream VS Code `20ed2bc21d4 Fix offline BYOK state management (#318187)` is the source of truth for the configured-BYOK/no-GitHub-sign-in gate; do not add Director-specific Chat Setup or Copilot login bypasses.
 - The rejected 2026-05-28 repair experiments were rolled back: no eager `selectLanguageModels` startup workaround, no global `targetChatSessionType` selector filter, no `director-code` auth-metadata bypass, and no private direct-LM structured-message attachment side channel. Direct `director-code` requests still use the narrow Phase 7 AgentHost-session bridge and are not accepted for tool-heavy generic chat yet.
 - Provider Settings / Refresh Models remain Workbench-owned and secret-redacted.
+
+Accepted Phase 5 implementation:
+
+- `DirectorAnthropicEndpointService` lives under `src/vs/platform/agentHost/node/director` as an additive Director-owned local Anthropic-compatible endpoint.
+- It binds to `127.0.0.1`, uses nonce/session bearer auth, exposes `/v1/models`, `/v1/messages`, and a clear unsupported `count_tokens` response, and aborts provider transport when the SDK/client disconnects.
+- It resolves provider/model selection through `IDirectorProviderBackendHub`, resolves credentials only through `IDirectorRuntimeCredentialService`, and calls the shared Director provider runtime. It does not import or call `ICopilotApiService`, GitHub Copilot auth, or Copilot CAPI.
+- Anthropic-compatible and OpenAI-compatible backends can produce Anthropic JSON/SSE output for SDK-compatible consumers. Local/custom-http providers remain gated until a compatible runtime contract exists.
+- The existing Copilot-backed `ClaudeProxyService` remains unchanged. Phase 6 wires a Director-backed Claude-like SDK harness to the new endpoint and handles Copilot-logout visibility.
