@@ -42,24 +42,32 @@ class DirectorFetchProvider implements DirectorLLMProvider {
 		const response = await this.fetchRequest(params, true);
 		let usage: DirectorTokenUsage | undefined;
 		let stopReason = 'end_turn';
+		let completed = false;
 		for await (const data of readServerSentEventData(response, params.abortSignal)) {
 			if (data === '[DONE]') {
-				yield { type: 'message_complete', ...(usage ? { usage } : {}), stopReason };
+				if (!completed) {
+					yield { type: 'message_complete', ...(usage ? { usage } : {}), stopReason };
+				}
 				return;
 			}
 			const parsed = parseJsonObject(data);
 			if (!parsed) {
 				continue;
 			}
+			usage = readProviderStreamUsage(this.apiType, parsed) ?? usage;
+			stopReason = readProviderStreamStopReason(this.apiType, parsed) ?? stopReason;
 			for (const event of parseProviderStreamEvent(this.apiType, parsed)) {
 				if (event.type === 'message_complete') {
-					usage = event.usage;
+					usage = event.usage ?? usage;
 					stopReason = event.stopReason;
+					completed = true;
 				}
 				yield event;
 			}
 		}
-		yield { type: 'message_complete', ...(usage ? { usage } : {}), stopReason };
+		if (!completed) {
+			yield { type: 'message_complete', ...(usage ? { usage } : {}), stopReason };
+		}
 	}
 
 	private async fetchRequest(params: DirectorCreateMessageParams, stream: boolean): Promise<Response> {
@@ -210,15 +218,22 @@ function readAnthropicToolCalls(value: Record<string, unknown>): readonly Direct
 function readOpenAIChatResponse(value: Record<string, unknown>): ParsedProviderResponse {
 	const choice = asRecord(arrayField(value, 'choices')[0]);
 	const message = asRecord(choice?.message);
-	const usage = asRecord(value.usage);
 	return {
 		text: stringField(message, 'content') ?? '',
 		thinking: stringField(message, 'reasoning_content'),
-		usage: usage ? {
-			input_tokens: numberField(usage, 'prompt_tokens') ?? 0,
-			output_tokens: numberField(usage, 'completion_tokens') ?? 0,
-		} : undefined,
+		usage: readOpenAIChatUsage(value),
 		toolCalls: readOpenAIToolCalls(message),
+	};
+}
+
+function readOpenAIChatUsage(value: Record<string, unknown>): DirectorTokenUsage | undefined {
+	const usage = asRecord(value.usage);
+	if (!usage) {
+		return undefined;
+	}
+	return {
+		input_tokens: numberField(usage, 'prompt_tokens') ?? 0,
+		output_tokens: numberField(usage, 'completion_tokens') ?? 0,
 	};
 }
 
@@ -324,10 +339,34 @@ function parseProviderStreamEvent(apiType: DirectorRuntimeProviderApiType, value
 	}
 }
 
+function readProviderStreamUsage(apiType: DirectorRuntimeProviderApiType, value: Record<string, unknown>): DirectorTokenUsage | undefined {
+	switch (apiType) {
+		case 'openai-completions':
+			return readOpenAIChatUsage(value);
+		case 'anthropic-messages':
+		case 'openai-codex':
+		case 'gemini-generative':
+			return undefined;
+	}
+}
+
+function readProviderStreamStopReason(apiType: DirectorRuntimeProviderApiType, value: Record<string, unknown>): string | undefined {
+	switch (apiType) {
+		case 'openai-completions': {
+			const choice = asRecord(arrayField(value, 'choices')[0]);
+			const finishReason = stringField(choice, 'finish_reason');
+			return finishReason ? mapOpenAIFinishReason(finishReason) : undefined;
+		}
+		case 'anthropic-messages':
+		case 'openai-codex':
+		case 'gemini-generative':
+			return undefined;
+	}
+}
+
 function readOpenAIChatStreamEvents(value: Record<string, unknown>): readonly DirectorProviderStreamEvent[] {
 	const choice = asRecord(arrayField(value, 'choices')[0]);
 	const delta = asRecord(choice?.delta);
-	const usage = asRecord(value.usage);
 	const events: DirectorProviderStreamEvent[] = [];
 	const thinking = stringField(delta, 'reasoning_content');
 	const text = stringField(delta, 'content');
@@ -346,16 +385,6 @@ function readOpenAIChatStreamEvents(value: Record<string, unknown>): readonly Di
 			id: stringField(record, 'id'),
 			name: stringField(fn, 'name'),
 			arguments: stringField(fn, 'arguments'),
-		});
-	}
-	if (usage) {
-		events.push({
-			type: 'message_complete',
-			usage: {
-				input_tokens: numberField(usage, 'prompt_tokens') ?? 0,
-				output_tokens: numberField(usage, 'completion_tokens') ?? 0,
-			},
-			stopReason: mapOpenAIFinishReason(stringField(choice, 'finish_reason')),
 		});
 	}
 	return events;

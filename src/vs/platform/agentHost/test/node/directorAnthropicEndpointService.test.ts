@@ -174,7 +174,42 @@ suite('DirectorAnthropicEndpointService', () => {
 		assert.strictEqual(providerHeaders?.get('x-api-key'), null);
 	});
 
-	test('falls back to non-streaming provider request when backend does not support endpoint streaming', async () => {
+	test('updates shared default selection for requests without a session-bound selection', async () => {
+		let providerUrl = '';
+		const service = disposables.add(createService(createMixedFixtures(), new FakeCredentialService(), async (input) => {
+			providerUrl = input.toString();
+			if (providerUrl.includes('openai.invalid')) {
+				return jsonResponse({
+					choices: [{ message: { content: 'openai selected' } }],
+					usage: { prompt_tokens: 2, completion_tokens: 3 },
+				});
+			}
+			return jsonResponse({
+				id: 'msg_provider',
+				type: 'message',
+				role: 'assistant',
+				model: 'claude-test',
+				content: [{ type: 'text', text: 'anthropic selected' }],
+				stop_reason: 'end_turn',
+				usage: { input_tokens: 1, output_tokens: 1 },
+			});
+		}));
+		disposables.add(await service.start({ providerInstanceId: 'anthropic-provider', modelId: 'anthropic-provider:claude-test' }));
+		const handle = disposables.add(await service.start({ providerInstanceId: 'openai-provider', modelId: 'openai-provider:gpt-test' }));
+
+		const response = await postMessage(handle, {
+			model: 'gpt-test',
+			max_tokens: 64,
+			messages: [{ role: 'user', content: 'hello' }],
+		});
+		const body = await response.json() as Record<string, unknown>;
+
+		assert.strictEqual(response.status, 200);
+		assert.strictEqual(providerUrl, 'https://openai.invalid/v1/chat/completions');
+		assert.deepStrictEqual(body.content, [{ type: 'text', text: 'openai selected' }]);
+	});
+
+	test('synthesizes Anthropic SSE from non-streaming provider request when backend does not support endpoint streaming', async () => {
 		let providerRequest: Record<string, unknown> | undefined;
 		const service = disposables.add(createService(createOpenAIFixtures('https://openai.invalid/v1', { streaming: false, toolCalling: true }), new FakeCredentialService(), async (_input, init) => {
 			providerRequest = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -191,12 +226,33 @@ suite('DirectorAnthropicEndpointService', () => {
 			stream: true,
 			messages: [{ role: 'user', content: 'hello' }],
 		});
-		const body = await response.json() as Record<string, unknown>;
+		const text = await response.text();
 
 		assert.strictEqual(response.status, 200);
-		assert.strictEqual(response.headers.get('content-type')?.includes('application/json'), true);
+		assert.strictEqual(response.headers.get('content-type')?.includes('text/event-stream'), true);
 		assert.strictEqual(providerRequest?.stream, false);
-		assert.deepStrictEqual(body.content, [{ type: 'text', text: 'non streaming fallback' }]);
+		assert.ok(text.includes('event: message_start'));
+		assert.ok(text.includes('"text":"non streaming fallback"'));
+		assert.ok(text.includes('event: message_stop'));
+	});
+
+	test('provider transport failures return a safe Anthropic error without raw credential text', async () => {
+		const service = disposables.add(createService(createAnthropicFixtures('https://anthropic.invalid'), new FakeCredentialService(), async () => {
+			throw new Error('upstream failed with director-secret Authorization: Bearer provider-token');
+		}));
+		const handle = disposables.add(await service.start({ providerInstanceId: 'anthropic-provider', modelId: 'anthropic-provider:claude-test', sessionId: 'session-1' }));
+
+		const response = await postMessage(handle, {
+			model: 'claude-test',
+			max_tokens: 64,
+			messages: [{ role: 'user', content: 'hello' }],
+		});
+		const body = await response.json() as { readonly error: { readonly message: string } };
+
+		assert.strictEqual(response.status, 502);
+		assert.strictEqual(body.error.message, 'Director provider request failed.');
+		assert.ok(!JSON.stringify(body).includes('director-secret'));
+		assert.ok(!JSON.stringify(body).includes('provider-token'));
 	});
 
 	test('streams OpenAI-compatible backend output as Anthropic SSE', async () => {
@@ -235,6 +291,47 @@ suite('DirectorAnthropicEndpointService', () => {
 		assert.ok(text.includes('"output_tokens":8'));
 		assert.ok(text.includes('event: message_stop'));
 		assert.ok(!text.includes('director-bearer'));
+	});
+
+	test('streams OpenAI-compatible tool calls with Anthropic tool_use stop reason', async () => {
+		const service = disposables.add(createService(createOpenAIFixtures('https://openai.invalid/v1'), new FakeCredentialService(), async (_input, init) => {
+			assert.ok(JSON.parse(String(init?.body)).stream);
+			return sseResponse([
+				{
+					choices: [{
+						delta: {
+							tool_calls: [{
+								index: 0,
+								id: 'call_1',
+								type: 'function',
+								function: { name: 'readFile', arguments: '{"filePath":"README.md"}' },
+							}],
+						},
+						finish_reason: 'tool_calls',
+					}],
+				},
+				{ choices: [], usage: { prompt_tokens: 13, completion_tokens: 5 } },
+				'[DONE]',
+			]);
+		}));
+		const handle = disposables.add(await service.start({ providerInstanceId: 'openai-provider', modelId: 'openai-provider:gpt-test', sessionId: 'session-1' }));
+
+		const response = await postMessage(handle, {
+			model: 'gpt-test',
+			max_tokens: 64,
+			stream: true,
+			messages: [{ role: 'user', content: 'hello' }],
+			tools: [{ name: 'readFile', description: 'Read file', input_schema: { type: 'object', properties: { filePath: { type: 'string' } }, required: ['filePath'] } }],
+		});
+		const text = await response.text();
+
+		assert.strictEqual(response.status, 200);
+		assert.ok(text.includes('"type":"tool_use"'));
+		assert.ok(text.includes('"partial_json":"{\\"filePath\\":\\"README.md\\"}"'));
+		assert.ok(text.includes('"stop_reason":"tool_use"'));
+		assert.ok(text.includes('"input_tokens":13'));
+		assert.ok(text.includes('"output_tokens":5'));
+		assert.ok(!text.includes('"stop_reason":"end_turn"'));
 	});
 
 	test('missing credentials return an Anthropic authentication error without provider transport', async () => {
@@ -381,5 +478,16 @@ function createOpenAIFixtures(baseURL: string, capabilities: { readonly streamin
 			supportsVision: false,
 			capabilities,
 		}],
+	};
+}
+
+function createMixedFixtures(): DirectorProviderBackendHubFixtures {
+	const anthropic = createAnthropicFixtures('https://anthropic.invalid');
+	const openai = createOpenAIFixtures('https://openai.invalid/v1');
+	return {
+		defaultProviderId: anthropic.defaultProviderId,
+		defaultModelId: anthropic.defaultModelId,
+		providerInstances: [...(anthropic.providerInstances ?? []), ...(openai.providerInstances ?? [])],
+		models: [...(anthropic.models ?? []), ...(openai.models ?? [])],
 	};
 }

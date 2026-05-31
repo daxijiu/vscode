@@ -4,19 +4,18 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type * as http from 'http';
-import { once } from 'events';
 import { AddressInfo } from 'net';
-import { generateUuid } from '../../../../base/common/uuid.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { createDecorator } from '../../../instantiation/common/instantiation.js';
 import { ILogService } from '../../../log/common/log.js';
 import { DirectorBackendResolution, DirectorProviderModel, DirectorProviderSelection, DirectorResolvedProviderBackend, IDirectorProviderBackendHub, isResolvedBackend } from '../../common/directorProviderBackend.js';
-import { DirectorCreateMessageParams, DirectorCreateMessageResponse, DirectorLLMProvider, DirectorNormalizedResponseBlock, DirectorProviderFetch, DirectorProviderRuntimeAuth, DirectorProviderStreamEvent, DirectorRuntimeProviderApiType, DirectorTokenUsage } from '../../common/directorProviderRuntime.js';
-import { DirectorNormalizedMessage, DirectorNormalizedToolCall, DirectorNormalizedToolDefinition } from '../../common/directorProviderAdapters.js';
+import { DirectorCreateMessageParams, DirectorCreateMessageResponse, DirectorLLMProvider, DirectorProviderFetch, DirectorProviderRuntimeAuth, DirectorProviderStreamEvent, DirectorRuntimeProviderApiType } from '../../common/directorProviderRuntime.js';
 import { DirectorRuntimeCredential, IDirectorRuntimeCredentialService } from '../../common/directorRuntimeCredentials.js';
 import { buildErrorEnvelope, formatSseErrorFrame, writeJsonError } from '../claude/anthropicErrors.js';
 import { parseProxyBearer } from '../claude/claudeProxyAuth.js';
-import { createDirectorProviderRuntime } from './providers/directorProviderRuntimeFactory.js';
+import { createDirectorProviderRuntime, DirectorProviderRuntimeHttpError } from './providers/directorProviderRuntimeFactory.js';
+import { isRecord, stringField, toAnthropicMessage, toDirectorCreateMessageParams } from './directorAnthropicEndpointProtocol.js';
+import { AnthropicStreamState, beginAnthropicSse, writeAnthropicFrame, writeSyntheticAnthropicStream } from './directorAnthropicStreamWriter.js';
 
 export interface IDirectorAnthropicEndpointHandle extends IDisposable {
 	readonly baseUrl: string;
@@ -44,8 +43,8 @@ interface IInFlight {
 }
 
 interface IEndpointRuntime {
-	readonly server: http.Server;
-	readonly baseUrl: string;
+	server: http.Server;
+	baseUrl: string;
 	readonly nonce: string;
 	readonly inFlight: Set<IInFlight>;
 	readonly sessionSelections: Map<string, DirectorProviderSelection>;
@@ -54,7 +53,6 @@ interface IEndpointRuntime {
 }
 
 const DIRECTOR_ANTHROPIC_ENDPOINT_NAME = 'DirectorAnthropicEndpointService';
-const DEFAULT_MAX_TOKENS = 2048;
 
 export class DirectorAnthropicEndpointService implements IDirectorAnthropicEndpointService {
 	declare readonly _serviceBrand: undefined;
@@ -148,9 +146,9 @@ export class DirectorAnthropicEndpointService implements IDirectorAnthropicEndpo
 			refcount: 0,
 		};
 		const server = createServer((req, res) => void this._handleRequest(req, res, runtime).catch(err => {
-			this._logService.error(`[${DIRECTOR_ANTHROPIC_ENDPOINT_NAME}] request failed`, err);
+			this._logService.error(`[${DIRECTOR_ANTHROPIC_ENDPOINT_NAME}] request failed: ${safeEndpointLogMessage(err)}`);
 			if (!res.headersSent) {
-				writeJsonError(res, 500, 'api_error', stringifyError(err));
+				writeJsonError(res, 500, 'api_error', 'Internal Director endpoint error.');
 			} else if (!res.writableEnded) {
 				try {
 					res.end();
@@ -172,11 +170,9 @@ export class DirectorAnthropicEndpointService implements IDirectorAnthropicEndpo
 			}
 			return this._startServer(defaultSelection, attempt + 1);
 		}
-		return {
-			...runtime,
-			server,
-			baseUrl: `http://127.0.0.1:${address.port}`,
-		};
+		runtime.server = server;
+		runtime.baseUrl = `http://127.0.0.1:${address.port}`;
+		return runtime;
 	}
 
 	private _releaseHandle(runtime: IEndpointRuntime): void {
@@ -309,8 +305,12 @@ export class DirectorAnthropicEndpointService implements IDirectorAnthropicEndpo
 
 		const request = toDirectorCreateMessageParams(body, backend.modelId, entry.ac.signal);
 		try {
-			if (body.stream === true && supportsEndpointStreaming(backend)) {
-				await this._streamMessages(provider, request, res, entry, sdkModelId);
+			if (body.stream === true) {
+				if (supportsEndpointStreaming(backend)) {
+					await this._streamMessages(provider, request, res, entry, sdkModelId);
+				} else {
+					await this._sendSyntheticStreamingMessage(provider, request, res, entry, sdkModelId);
+				}
 			} else {
 				await this._sendNonStreamingMessage(provider, request, res, entry, sdkModelId);
 			}
@@ -324,8 +324,8 @@ export class DirectorAnthropicEndpointService implements IDirectorAnthropicEndpo
 		let bodyString: string;
 		try {
 			bodyString = await readRequestBody(req);
-		} catch (err) {
-			writeJsonError(res, 400, 'invalid_request_error', `Failed to read request body: ${stringifyError(err)}`);
+		} catch {
+			writeJsonError(res, 400, 'invalid_request_error', 'Failed to read request body');
 			return undefined;
 		}
 
@@ -432,7 +432,7 @@ export class DirectorAnthropicEndpointService implements IDirectorAnthropicEndpo
 				this._endAbortedResponse(res, entry);
 				return;
 			}
-			writeJsonError(res, 502, 'api_error', stringifyError(err));
+			writeJsonError(res, 502, 'api_error', safeProviderErrorMessage(err));
 			return;
 		}
 
@@ -440,11 +440,25 @@ export class DirectorAnthropicEndpointService implements IDirectorAnthropicEndpo
 		res.end(JSON.stringify(toAnthropicMessage(response, sdkModelId)));
 	}
 
+	private async _sendSyntheticStreamingMessage(provider: DirectorLLMProvider, request: DirectorCreateMessageParams, res: http.ServerResponse, entry: IInFlight, sdkModelId: string): Promise<void> {
+		let response: DirectorCreateMessageResponse;
+		try {
+			response = await provider.createMessage(request);
+		} catch (err) {
+			if (entry.ac.signal.aborted) {
+				this._endAbortedResponse(res, entry);
+				return;
+			}
+			writeJsonError(res, 502, 'api_error', safeProviderErrorMessage(err));
+			return;
+		}
+		await writeSyntheticAnthropicStream(res, entry, response, sdkModelId);
+	}
+
 	private async _streamMessages(provider: DirectorLLMProvider, request: DirectorCreateMessageParams, res: http.ServerResponse, entry: IInFlight, sdkModelId: string): Promise<void> {
 		const stream = provider.createMessageStream?.(request);
 		if (!stream) {
-			const response = await provider.createMessage(request);
-			this._writeSyntheticStreamFromMessage(res, response, sdkModelId);
+			await this._sendSyntheticStreamingMessage(provider, request, res, entry, sdkModelId);
 			return;
 		}
 
@@ -456,25 +470,19 @@ export class DirectorAnthropicEndpointService implements IDirectorAnthropicEndpo
 				this._endAbortedResponse(res, entry);
 				return;
 			}
-			writeJsonError(res, 502, 'api_error', stringifyError(err));
+			writeJsonError(res, 502, 'api_error', safeProviderErrorMessage(err));
 			return;
 		}
 
-		res.writeHead(200, {
-			'Content-Type': 'text/event-stream',
-			'Cache-Control': 'no-cache',
-			'Connection': 'keep-alive',
-		});
-		res.flushHeaders();
-		setNoDelay(res);
+		beginAnthropicSse(res);
 
 		const state = new AnthropicStreamState(sdkModelId);
-		if (!await writeFrame(res, entry, 'message_start', state.messageStart())) {
+		if (!await writeAnthropicFrame(res, entry, 'message_start', state.messageStart())) {
 			return;
 		}
 
 		try {
-			if (!first.done && !await this._writeProviderStreamEvent(res, entry, state, first.value)) {
+			if (!first.done && !await state.writeProviderEvent(res, entry, first.value)) {
 				return;
 			}
 			while (true) {
@@ -487,7 +495,7 @@ export class DirectorAnthropicEndpointService implements IDirectorAnthropicEndpo
 						return;
 					}
 					if (!res.writableEnded) {
-						res.write(formatSseErrorFrame(buildErrorEnvelope('api_error', stringifyError(err))));
+						res.write(formatSseErrorFrame(buildErrorEnvelope('api_error', safeProviderErrorMessage(err))));
 						res.end();
 					}
 					return;
@@ -495,13 +503,13 @@ export class DirectorAnthropicEndpointService implements IDirectorAnthropicEndpo
 				if (next.done) {
 					break;
 				}
-				if (!await this._writeProviderStreamEvent(res, entry, state, next.value)) {
+				if (!await state.writeProviderEvent(res, entry, next.value)) {
 					return;
 				}
 			}
-			await this._writeStreamComplete(res, entry, state, 'end_turn');
+			await state.writeComplete(res, entry, 'end_turn');
 		} catch (err) {
-			this._logService.warn(`[${DIRECTOR_ANTHROPIC_ENDPOINT_NAME}] stream loop unexpected error: ${stringifyError(err)}`);
+			this._logService.warn(`[${DIRECTOR_ANTHROPIC_ENDPOINT_NAME}] stream loop unexpected error: ${safeEndpointLogMessage(err)}`);
 			if (!res.writableEnded) {
 				try {
 					res.end();
@@ -510,238 +518,11 @@ export class DirectorAnthropicEndpointService implements IDirectorAnthropicEndpo
 		}
 	}
 
-	private async _writeProviderStreamEvent(res: http.ServerResponse, entry: IInFlight, state: AnthropicStreamState, event: DirectorProviderStreamEvent): Promise<boolean> {
-		switch (event.type) {
-			case 'text':
-				return state.writeText(res, entry, event.text);
-			case 'thinking':
-				return state.writeThinking(res, entry, event.thinking);
-			case 'tool_use_start':
-				return state.writeToolStart(res, entry, event.index ?? 0, event.id, event.name);
-			case 'tool_input_delta':
-				return state.writeToolDelta(res, entry, event.index ?? 0, event.json);
-			case 'tool_call_delta':
-				return state.writeToolCallDelta(res, entry, event);
-			case 'message_complete':
-				return this._writeStreamComplete(res, entry, state, event.stopReason, event.usage);
-		}
-	}
-
-	private async _writeStreamComplete(res: http.ServerResponse, entry: IInFlight, state: AnthropicStreamState, stopReason: string, usage?: DirectorTokenUsage): Promise<boolean> {
-		if (!await state.closeOpenBlocks(res, entry)) {
-			return false;
-		}
-		if (!await writeFrame(res, entry, 'message_delta', {
-			type: 'message_delta',
-			delta: {
-				stop_reason: toAnthropicStopReason(stopReason),
-				stop_sequence: null,
-			},
-			usage: toAnthropicUsage(usage),
-		})) {
-			return false;
-		}
-		if (!await writeFrame(res, entry, 'message_stop', { type: 'message_stop' })) {
-			return false;
-		}
-		if (!res.writableEnded) {
-			res.end();
-		}
-		return true;
-	}
-
-	private _writeSyntheticStreamFromMessage(res: http.ServerResponse, response: DirectorCreateMessageResponse, sdkModelId: string): void {
-		res.writeHead(200, {
-			'Content-Type': 'text/event-stream',
-			'Cache-Control': 'no-cache',
-			'Connection': 'keep-alive',
-		});
-		res.flushHeaders();
-		const state = new AnthropicStreamState(sdkModelId);
-		const entry: IInFlight = { ac: new AbortController(), res, clientGone: false };
-		void (async () => {
-			await writeFrame(res, entry, 'message_start', state.messageStart());
-			for (const block of response.content) {
-				await state.writeBlock(res, entry, block);
-			}
-			await this._writeStreamComplete(res, entry, state, response.stopReason, response.usage);
-		})();
-	}
-
 	private _endAbortedResponse(res: http.ServerResponse, entry: IInFlight): void {
 		if (!entry.clientGone && !res.writableEnded) {
 			res.destroy();
 		}
 	}
-}
-
-class AnthropicStreamState {
-	private _nextIndex = 0;
-	private _textIndex: number | undefined;
-	private _thinkingIndex: number | undefined;
-	private readonly _toolIndices = new Map<number, number>();
-	private readonly _openBlocks = new Set<number>();
-	private _completed = false;
-
-	constructor(private readonly _model: string) { }
-
-	messageStart(): Record<string, unknown> {
-		return {
-			type: 'message_start',
-			message: {
-				id: createAnthropicMessageId(),
-				type: 'message',
-				role: 'assistant',
-				model: this._model,
-				content: [],
-				stop_reason: null,
-				stop_sequence: null,
-				usage: { input_tokens: 0, output_tokens: 0 },
-			},
-		};
-	}
-
-	async writeBlock(res: http.ServerResponse, entry: IInFlight, block: DirectorNormalizedResponseBlock): Promise<boolean> {
-		switch (block.type) {
-			case 'text':
-				return this.writeText(res, entry, block.text);
-			case 'thinking':
-				return this.writeThinking(res, entry, block.thinking);
-			case 'tool_use':
-				if (!await this.writeToolStart(res, entry, this._toolIndices.size, block.toolCall.id, block.toolCall.name)) {
-					return false;
-				}
-				return this.writeToolDelta(res, entry, this._toolIndices.size - 1, block.toolCall.input);
-		}
-	}
-
-	async writeText(res: http.ServerResponse, entry: IInFlight, text: string): Promise<boolean> {
-		if (!text) {
-			return true;
-		}
-		const index = await this._ensureTextBlock(res, entry);
-		return writeFrame(res, entry, 'content_block_delta', {
-			type: 'content_block_delta',
-			index,
-			delta: { type: 'text_delta', text },
-		});
-	}
-
-	async writeThinking(res: http.ServerResponse, entry: IInFlight, thinking: string): Promise<boolean> {
-		if (!thinking) {
-			return true;
-		}
-		const index = await this._ensureThinkingBlock(res, entry);
-		return writeFrame(res, entry, 'content_block_delta', {
-			type: 'content_block_delta',
-			index,
-			delta: { type: 'thinking_delta', thinking },
-		});
-	}
-
-	async writeToolStart(res: http.ServerResponse, entry: IInFlight, providerIndex: number, id: string, name: string): Promise<boolean> {
-		if (this._toolIndices.has(providerIndex)) {
-			return true;
-		}
-		const index = this._nextIndex++;
-		this._toolIndices.set(providerIndex, index);
-		this._openBlocks.add(index);
-		return writeFrame(res, entry, 'content_block_start', {
-			type: 'content_block_start',
-			index,
-			content_block: {
-				type: 'tool_use',
-				id,
-				name,
-				input: {},
-			},
-		});
-	}
-
-	async writeToolDelta(res: http.ServerResponse, entry: IInFlight, providerIndex: number, json: string): Promise<boolean> {
-		if (!this._toolIndices.has(providerIndex)) {
-			if (!await this.writeToolStart(res, entry, providerIndex, `toolu_${providerIndex}`, 'tool')) {
-				return false;
-			}
-		}
-		return writeFrame(res, entry, 'content_block_delta', {
-			type: 'content_block_delta',
-			index: this._toolIndices.get(providerIndex),
-			delta: { type: 'input_json_delta', partial_json: json },
-		});
-	}
-
-	async writeToolCallDelta(res: http.ServerResponse, entry: IInFlight, event: Extract<DirectorProviderStreamEvent, { readonly type: 'tool_call_delta' }>): Promise<boolean> {
-		const providerIndex = event.index;
-		if (!this._toolIndices.has(providerIndex) && (event.id || event.name)) {
-			if (!await this.writeToolStart(res, entry, providerIndex, event.id ?? `toolu_${providerIndex}`, event.name ?? 'tool')) {
-				return false;
-			}
-		}
-		if (event.arguments) {
-			return this.writeToolDelta(res, entry, providerIndex, event.arguments);
-		}
-		return true;
-	}
-
-	async closeOpenBlocks(res: http.ServerResponse, entry: IInFlight): Promise<boolean> {
-		if (this._completed) {
-			return true;
-		}
-		this._completed = true;
-		for (const index of [...this._openBlocks].sort((a, b) => a - b)) {
-			if (!await writeFrame(res, entry, 'content_block_stop', { type: 'content_block_stop', index })) {
-				return false;
-			}
-		}
-		this._openBlocks.clear();
-		return true;
-	}
-
-	private async _ensureTextBlock(res: http.ServerResponse, entry: IInFlight): Promise<number> {
-		if (this._textIndex !== undefined) {
-			return this._textIndex;
-		}
-		const index = this._nextIndex++;
-		this._textIndex = index;
-		this._openBlocks.add(index);
-		await writeFrame(res, entry, 'content_block_start', {
-			type: 'content_block_start',
-			index,
-			content_block: { type: 'text', text: '' },
-		});
-		return index;
-	}
-
-	private async _ensureThinkingBlock(res: http.ServerResponse, entry: IInFlight): Promise<number> {
-		if (this._thinkingIndex !== undefined) {
-			return this._thinkingIndex;
-		}
-		const index = this._nextIndex++;
-		this._thinkingIndex = index;
-		this._openBlocks.add(index);
-		await writeFrame(res, entry, 'content_block_start', {
-			type: 'content_block_start',
-			index,
-			content_block: { type: 'thinking', thinking: '', signature: '' },
-		});
-		return index;
-	}
-}
-
-async function writeFrame(res: http.ServerResponse, entry: IInFlight, event: string, data: unknown): Promise<boolean> {
-	if (entry.ac.signal.aborted || res.writableEnded) {
-		return false;
-	}
-	const ok = res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-	if (!ok) {
-		try {
-			await once(res, 'drain', { signal: entry.ac.signal });
-		} catch {
-			return false;
-		}
-	}
-	return true;
 }
 
 function toProviderSelection(options: DirectorAnthropicEndpointStartOptions): DirectorProviderSelection {
@@ -772,204 +553,6 @@ const FetchForbiddenPorts = new Set([
 	587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060,
 	5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080,
 ]);
-
-function toDirectorCreateMessageParams(body: Record<string, unknown>, modelId: string, abortSignal: AbortSignal): DirectorCreateMessageParams {
-	return {
-		model: modelId,
-		maxTokens: numberField(body, 'max_tokens') ?? DEFAULT_MAX_TOKENS,
-		messages: toDirectorMessages(body),
-		tools: toDirectorTools(body.tools),
-		thinking: toDirectorThinking(body.thinking),
-		abortSignal,
-	};
-}
-
-function toDirectorThinking(value: unknown): DirectorCreateMessageParams['thinking'] | undefined {
-	if (!isRecord(value)) {
-		return undefined;
-	}
-	const type = stringField(value, 'type');
-	if (!type) {
-		return undefined;
-	}
-	return {
-		type,
-		...(numberField(value, 'budget_tokens') !== undefined ? { budget_tokens: numberField(value, 'budget_tokens') } : {}),
-	};
-}
-
-function toDirectorMessages(body: Record<string, unknown>): readonly DirectorNormalizedMessage[] {
-	const messages: DirectorNormalizedMessage[] = [];
-	const system = contentText(body.system);
-	if (system) {
-		messages.push({ role: 'system', content: system });
-	}
-
-	for (const item of arrayField(body, 'messages')) {
-		const record = isRecord(item) ? item : undefined;
-		const role = stringField(record, 'role');
-		if (!record || (role !== 'user' && role !== 'assistant')) {
-			continue;
-		}
-
-		const toolResults = toolResultMessages(record.content);
-		const text = contentText(record.content);
-		const thinking = contentThinking(record.content);
-		const toolCalls = role === 'assistant' ? contentToolCalls(record.content) : [];
-		if (text || thinking || toolCalls.length || !toolResults.length) {
-			messages.push({
-				role,
-				content: text,
-				...(thinking ? { thinking } : {}),
-				...(toolCalls.length ? { toolCalls } : {}),
-			});
-		}
-		messages.push(...toolResults);
-	}
-	return messages;
-}
-
-function toDirectorTools(value: unknown): readonly DirectorNormalizedToolDefinition[] | undefined {
-	if (!Array.isArray(value)) {
-		return undefined;
-	}
-	const tools = value.flatMap((tool): DirectorNormalizedToolDefinition[] => {
-		const record = isRecord(tool) ? tool : undefined;
-		const name = stringField(record, 'name');
-		if (!name) {
-			return [];
-		}
-		const inputSchema = normalizeInputSchema(record?.input_schema);
-		return [{
-			name,
-			description: stringField(record, 'description'),
-			inputSchema,
-		}];
-	});
-	return tools.length ? tools : undefined;
-}
-
-function toAnthropicMessage(response: DirectorCreateMessageResponse, model: string): Record<string, unknown> {
-	return {
-		id: createAnthropicMessageId(),
-		type: 'message',
-		role: 'assistant',
-		model,
-		content: response.content.map(toAnthropicContentBlock),
-		stop_reason: toAnthropicStopReason(response.stopReason),
-		stop_sequence: null,
-		usage: toAnthropicUsage(response.usage),
-	};
-}
-
-function toAnthropicContentBlock(block: DirectorNormalizedResponseBlock): Record<string, unknown> {
-	switch (block.type) {
-		case 'text':
-			return { type: 'text', text: block.text };
-		case 'thinking':
-			return { type: 'thinking', thinking: block.thinking, signature: '' };
-		case 'tool_use':
-			return {
-				type: 'tool_use',
-				id: block.toolCall.id,
-				name: block.toolCall.name,
-				input: parseToolInput(block.toolCall.input),
-			};
-	}
-}
-
-function toAnthropicUsage(usage: DirectorTokenUsage | undefined): Record<string, number> {
-	return {
-		input_tokens: usage?.input_tokens ?? 0,
-		output_tokens: usage?.output_tokens ?? 0,
-		...(usage?.cache_creation_input_tokens !== undefined ? { cache_creation_input_tokens: usage.cache_creation_input_tokens } : {}),
-		...(usage?.cache_read_input_tokens !== undefined ? { cache_read_input_tokens: usage.cache_read_input_tokens } : {}),
-	};
-}
-
-function toAnthropicStopReason(stopReason: string): string {
-	switch (stopReason) {
-		case 'tool_use':
-		case 'max_tokens':
-		case 'end_turn':
-			return stopReason;
-		case 'stop':
-			return 'end_turn';
-		case 'length':
-			return 'max_tokens';
-		case 'tool_calls':
-			return 'tool_use';
-		default:
-			return stopReason || 'end_turn';
-	}
-}
-
-function contentText(value: unknown): string {
-	if (typeof value === 'string') {
-		return value;
-	}
-	if (!Array.isArray(value)) {
-		return '';
-	}
-	return value.map(block => {
-		const record = isRecord(block) ? block : undefined;
-		if (stringField(record, 'type') === 'text') {
-			return stringField(record, 'text') ?? '';
-		}
-		return '';
-	}).filter(text => !!text).join('\n');
-}
-
-function contentThinking(value: unknown): string | undefined {
-	if (!Array.isArray(value)) {
-		return undefined;
-	}
-	const thinking = value.map(block => {
-		const record = isRecord(block) ? block : undefined;
-		if (stringField(record, 'type') === 'thinking') {
-			return stringField(record, 'thinking') ?? '';
-		}
-		return '';
-	}).filter(text => !!text).join('\n');
-	return thinking || undefined;
-}
-
-function contentToolCalls(value: unknown): readonly DirectorNormalizedToolCall[] {
-	if (!Array.isArray(value)) {
-		return [];
-	}
-	return value.flatMap((block): DirectorNormalizedToolCall[] => {
-		const record = isRecord(block) ? block : undefined;
-		if (!record || stringField(record, 'type') !== 'tool_use') {
-			return [];
-		}
-		const id = stringField(record, 'id');
-		const name = stringField(record, 'name');
-		if (!id || !name) {
-			return [];
-		}
-		return [{ id, name, input: stableStringify(record.input) }];
-	});
-}
-
-function toolResultMessages(value: unknown): readonly DirectorNormalizedMessage[] {
-	if (!Array.isArray(value)) {
-		return [];
-	}
-	return value.flatMap((block): DirectorNormalizedMessage[] => {
-		const record = isRecord(block) ? block : undefined;
-		if (!record || stringField(record, 'type') !== 'tool_result') {
-			return [];
-		}
-		const toolCallId = stringField(record, 'tool_use_id');
-		return [{
-			role: 'tool',
-			content: contentText(record.content) || stableStringify(record.content),
-			...(toolCallId ? { toolCallId } : {}),
-			isError: record.is_error === true,
-		}];
-	});
-}
 
 function credentialToRuntimeAuth(credential: DirectorRuntimeCredential): DirectorProviderRuntimeAuth {
 	switch (credential.kind) {
@@ -1002,46 +585,6 @@ function supportsEndpointStreaming(backend: DirectorResolvedProviderBackend): bo
 		&& (backend.apiType === 'anthropic-messages' || backend.apiType === 'openai-completions');
 }
 
-function normalizeInputSchema(value: unknown): DirectorNormalizedToolDefinition['inputSchema'] | undefined {
-	if (!isRecord(value) || value.type !== 'object') {
-		return undefined;
-	}
-	const properties = isRecord(value.properties) ? value.properties as Record<string, object> : undefined;
-	const required = Array.isArray(value.required) ? value.required.filter((item): item is string => typeof item === 'string') : undefined;
-	return {
-		type: 'object',
-		...(properties ? { properties } : {}),
-		...(required ? { required } : {}),
-	} satisfies DirectorNormalizedToolDefinition['inputSchema'];
-}
-
-function parseToolInput(input: string): Record<string, unknown> {
-	try {
-		const parsed = JSON.parse(input) as unknown;
-		if (isRecord(parsed)) {
-			return parsed;
-		}
-		return { input: parsed };
-	} catch {
-		return { input };
-	}
-}
-
-function stableStringify(value: unknown): string {
-	if (typeof value === 'string') {
-		return value;
-	}
-	try {
-		return JSON.stringify(value ?? {});
-	} catch {
-		return '{}';
-	}
-}
-
-function createAnthropicMessageId(): string {
-	return `msg_${generateUuid().replace(/-/g, '')}`;
-}
-
 function readRequestBody(req: http.IncomingMessage): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const chunks: Buffer[] = [];
@@ -1051,37 +594,25 @@ function readRequestBody(req: http.IncomingMessage): Promise<string> {
 	});
 }
 
-function setNoDelay(res: http.ServerResponse): void {
-	const socket = res.socket;
-	if (socket && typeof socket.setNoDelay === 'function') {
-		try {
-			socket.setNoDelay(true);
-		} catch { /* ignore */ }
-	}
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function arrayField(value: Record<string, unknown> | undefined, key: string): readonly unknown[] {
-	const field = value?.[key];
-	return Array.isArray(field) ? field : [];
-}
-
-function stringField(value: Record<string, unknown> | undefined, key: string): string | undefined {
-	const field = value?.[key];
-	return typeof field === 'string' ? field : undefined;
-}
-
-function numberField(value: Record<string, unknown> | undefined, key: string): number | undefined {
-	const field = value?.[key];
-	return typeof field === 'number' && Number.isFinite(field) ? field : undefined;
-}
-
-function stringifyError(err: unknown): string {
-	if (err instanceof Error) {
+function safeProviderErrorMessage(err: unknown): string {
+	if (err instanceof DirectorProviderRuntimeHttpError) {
 		return err.message;
 	}
-	return String(err);
+	return 'Director provider request failed.';
+}
+
+function safeEndpointLogMessage(err: unknown): string {
+	if (err instanceof DirectorProviderRuntimeHttpError) {
+		return err.message;
+	}
+	if (err instanceof Error) {
+		return `${err.name}: ${redactSensitiveLogText(err.message)}`;
+	}
+	return redactSensitiveLogText(String(err));
+}
+
+function redactSensitiveLogText(value: string): string {
+	return value
+		.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer <redacted>')
+		.replace(/(authorization|x-api-key|api[_-]?key|access[_-]?token)(["':=\s]+)([^\s'",}]+)/gi, '$1$2<redacted>');
 }
