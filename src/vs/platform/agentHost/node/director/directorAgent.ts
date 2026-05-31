@@ -20,7 +20,7 @@ import { AgentProvider, AgentSession, AgentSignal, IAgent, IAgentCreateSessionCo
 import { SessionConfigKey } from '../../common/sessionConfigKeys.js';
 import { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
 import { MessageAttachment, ModelSelection, ProtectedResourceMetadata, ToolDefinition } from '../../common/state/protocol/state.js';
-import { CustomizationRef, PendingMessage, SessionInputAnswer, SessionInputResponseKind, ToolCallResult, Turn } from '../../common/state/sessionState.js';
+import { ClientPluginCustomization, PendingMessage, SessionInputAnswer, SessionInputResponseKind, ToolCallResult, Turn } from '../../common/state/sessionState.js';
 import { IAgentConfigurationService } from '../agentConfigurationService.js';
 import { DirectorAgentSession } from './directorAgentSession.js';
 
@@ -232,7 +232,7 @@ export class DirectorAgent extends Disposable implements IAgent {
 		return this._sessions.get(AgentSession.id(session))?.session.createMetadata();
 	}
 
-	async setClientCustomizations(_session: URI, _clientId: string, _customizations: CustomizationRef[]): Promise<ISyncedCustomization[]> {
+	async setClientCustomizations(_session: URI, _clientId: string, _customizations: ClientPluginCustomization[]): Promise<ISyncedCustomization[]> {
 		return [];
 	}
 

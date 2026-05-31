@@ -15,6 +15,7 @@ import { getResolvedShellEnv } from '../../shell/node/shellEnv.js';
 import { IAgentHostConnection, IAgentHostStarter } from '../common/agent.js';
 import { ExternalAcpAgentsExecutionEnabledEnvVar, ExternalAcpAgentsExecutionEnabledSetting } from '../common/acpAgentConfig.js';
 import { AgentHostClaudeAgentSdkPathSettingId, AgentHostClaudeSdkPathEnvVar, AgentHostDirectorAgentEnabledSettingId, AgentHostEnableDirectorAgentEnvVar, AgentHostOTelCaptureContentSettingId, AgentHostOTelDbSpanExporterEnabledSettingId, AgentHostOTelEnabledSettingId, AgentHostOTelExporterTypeSettingId, AgentHostOTelOtlpEndpointSettingId, AgentHostOTelOutfileSettingId, buildAgentHostOTelEnv } from '../common/agentService.js';
+import '../common/agentHostStarter.config.contribution.js';
 
 /**
  * Options for configuring the agent host WebSocket server in the child process.

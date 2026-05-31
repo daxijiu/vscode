@@ -5,6 +5,7 @@
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
+import { structuralEquals } from '../../../../base/common/equals.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
@@ -33,6 +34,7 @@ import {
 	IBrowserViewCertificateError,
 	IElementData,
 	IBrowserViewOwner,
+	IBrowserViewRect,
 	browserZoomDefaultIndex,
 	browserZoomFactors,
 	IBrowserViewState,
@@ -214,6 +216,7 @@ export interface IBrowserViewModel extends IDisposable {
 	readonly canZoomIn: boolean;
 	readonly canZoomOut: boolean;
 	readonly isElementSelectionActive: boolean;
+	readonly isAreaSelectionActive: boolean;
 	readonly device: IBrowserDeviceProfile | undefined;
 
 	readonly onDidChangeSharingState: Event<BrowserViewSharingState>;
@@ -231,6 +234,8 @@ export interface IBrowserViewModel extends IDisposable {
 	readonly onWillDispose: Event<void>;
 	readonly onDidSelectElement: Event<IElementData>;
 	readonly onDidChangeElementSelectionActive: Event<boolean>;
+	readonly onDidPickArea: Event<IBrowserViewRect | undefined>;
+	readonly onDidChangeAreaSelectionActive: Event<boolean>;
 	readonly onDidChangeDevice: Event<IBrowserDeviceProfile | undefined>;
 
 	layout(bounds: IBrowserViewBounds): Promise<void>;
@@ -254,6 +259,7 @@ export interface IBrowserViewModel extends IDisposable {
 	resetZoom(): Promise<void>;
 	getConsoleLogs(): Promise<string>;
 	toggleElementSelection(enabled?: boolean): Promise<void>;
+	toggleAreaSelection(enabled?: boolean): Promise<void>;
 	setDevice(device: IBrowserDeviceProfile | undefined): Promise<void>;
 }
 
@@ -276,7 +282,11 @@ export class BrowserViewModel extends Disposable implements IBrowserViewModel {
 	private _sharedWithAgent: boolean = false;
 	private _browserZoomIndex: number = browserZoomDefaultIndex;
 	private _isElementSelectionActive: boolean = false;
+	private _isAreaSelectionActive: boolean = false;
 	private _device: IBrowserDeviceProfile | undefined;
+
+	private readonly _onDidChangeDevice = this._register(new Emitter<IBrowserDeviceProfile | undefined>());
+	readonly onDidChangeDevice: Event<IBrowserDeviceProfile | undefined> = this._onDidChangeDevice.event;
 
 	private readonly _onDidChangeSharingState = this._register(new Emitter<BrowserViewSharingState>());
 	readonly onDidChangeSharingState: Event<BrowserViewSharingState> = this._onDidChangeSharingState.event;
@@ -319,6 +329,7 @@ export class BrowserViewModel extends Disposable implements IBrowserViewModel {
 		this._storageScope = initialState.storageScope;
 		this._browserZoomIndex = initialState.browserZoomIndex;
 		this._isElementSelectionActive = initialState.isElementSelectionActive;
+		this._isAreaSelectionActive = initialState.isAreaSelectionActive;
 		this._device = initialState.device;
 		this._isEphemeral = this._storageScope === BrowserViewStorageScope.Ephemeral;
 		this._zoomHost = parseZoomHost(this._url);
@@ -393,8 +404,11 @@ export class BrowserViewModel extends Disposable implements IBrowserViewModel {
 			this._visible = visible;
 		}));
 
-		this._register(this.onDidChangeDevice(device => {
-			this._device = device;
+		this._register(this.browserViewService.onDynamicDidChangeDeviceEmulation(this.id)(device => {
+			if (!structuralEquals(this._device, device)) {
+				this._device = device;
+				this._onDidChangeDevice.fire(device);
+			}
 		}));
 
 		this._register(this.onDidChangeElementSelectionActive(active => {
@@ -402,6 +416,10 @@ export class BrowserViewModel extends Disposable implements IBrowserViewModel {
 				this.telemetryService.publicLog2<IntegratedBrowserAddElementToChatStartEvent, IntegratedBrowserAddElementToChatStartClassification>('integratedBrowser.addElementToChat.start', {});
 			}
 			this._isElementSelectionActive = active;
+		}));
+
+		this._register(this.onDidChangeAreaSelectionActive(active => {
+			this._isAreaSelectionActive = active;
 		}));
 
 		this._register(this.playwrightService.onDidChangeTrackedPages(ids => {
@@ -436,6 +454,7 @@ export class BrowserViewModel extends Disposable implements IBrowserViewModel {
 	get canZoomIn(): boolean { return this._browserZoomIndex < browserZoomFactors.length - 1; }
 	get canZoomOut(): boolean { return this._browserZoomIndex > 0; }
 	get isElementSelectionActive(): boolean { return this._isElementSelectionActive; }
+	get isAreaSelectionActive(): boolean { return this._isAreaSelectionActive; }
 	get device(): IBrowserDeviceProfile | undefined { return this._device; }
 
 	get onDidNavigate(): Event<IBrowserViewNavigationEvent> {
@@ -472,10 +491,6 @@ export class BrowserViewModel extends Disposable implements IBrowserViewModel {
 
 	get onDidChangeVisibility(): Event<IBrowserViewVisibilityEvent> {
 		return this.browserViewService.onDynamicDidChangeVisibility(this.id);
-	}
-
-	get onDidChangeDevice(): Event<IBrowserDeviceProfile | undefined> {
-		return this.browserViewService.onDynamicDidChangeDeviceEmulation(this.id);
 	}
 
 	get onDidClose(): Event<void> {
@@ -518,7 +533,7 @@ export class BrowserViewModel extends Disposable implements IBrowserViewModel {
 	async captureScreenshot(options?: IBrowserViewCaptureScreenshotOptions): Promise<VSBuffer> {
 		const result = await this.browserViewService.captureScreenshot(this.id, options);
 		// Store full-page screenshots for display in UI as placeholders
-		if (!options?.screenRect && !options?.pageRect) {
+		if (!options?.screenRect && !options?.pageRect && !options?.fullPage) {
 			this._screenshot = result;
 		}
 		return result;
@@ -603,6 +618,10 @@ export class BrowserViewModel extends Disposable implements IBrowserViewModel {
 		return this.browserViewService.toggleElementSelection(this.id, enabled);
 	}
 
+	async toggleAreaSelection(enabled?: boolean): Promise<void> {
+		return this.browserViewService.toggleAreaSelection(this.id, enabled);
+	}
+
 	get onDidSelectElement(): Event<IElementData> {
 		return this.browserViewService.onDynamicDidSelectElement(this.id);
 	}
@@ -611,7 +630,21 @@ export class BrowserViewModel extends Disposable implements IBrowserViewModel {
 		return this.browserViewService.onDynamicDidChangeElementSelectionActive(this.id);
 	}
 
+	get onDidPickArea(): Event<IBrowserViewRect | undefined> {
+		return this.browserViewService.onDynamicDidPickArea(this.id);
+	}
+
+	get onDidChangeAreaSelectionActive(): Event<boolean> {
+		return this.browserViewService.onDynamicDidChangeAreaSelectionActive(this.id);
+	}
+
 	async setDevice(device: IBrowserDeviceProfile | undefined): Promise<void> {
+		// Update model state optimistically so dependent UI reacts immediately;
+		// the echo from the main process is filtered by deep comparison.
+		if (!structuralEquals(this._device, device)) {
+			this._device = device;
+			this._onDidChangeDevice.fire(device);
+		}
 		return this.browserViewService.setDeviceEmulation(this.id, device);
 	}
 

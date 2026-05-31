@@ -15,7 +15,8 @@ import { ExternalAcpAgentCapability, ExternalAcpAgentSnapshotAgent, sanitizeExte
 import { AgentProvider, AgentSession, IAgent, IAgentCreateSessionConfig, IAgentCreateSessionResult, IAgentDescriptor, IAgentModelInfo, IAgentResolveSessionConfigParams, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata, IAgentSessionProjectInfo, AgentSignal } from '../../common/agentService.js';
 import { ISyncedCustomization } from '../../common/agentPluginManager.js';
 import { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
-import { CustomizationRef, MessageAttachment, ModelSelection, PendingMessage, ProtectedResourceMetadata, SessionInputAnswer, SessionInputResponseKind, ToolCallResult, ToolDefinition, Turn } from '../../common/state/protocol/state.js';
+import { MessageAttachment, ModelSelection, PendingMessage, ProtectedResourceMetadata, SessionInputAnswer, SessionInputResponseKind, ToolCallResult, ToolDefinition, Turn } from '../../common/state/protocol/state.js';
+import { type ClientPluginCustomization } from '../../common/state/sessionState.js';
 import { AcpAgentSession, toAcpUserMessage } from './acpAgentSession.js';
 import { acpModelsToAgentModels, AcpNegotiatedCapabilities, EmptyAcpNegotiatedCapabilities, EmptyAcpSessionConfigSchema, resolveAcpSessionConfigValues } from './acpCapabilities.js';
 import { AcpFileSystemBridge } from './acpFileSystemBridge.js';
@@ -216,7 +217,7 @@ export class AcpAgent extends Disposable implements IAgent {
 		return this._sessions.get(session.toString())?.session.createMetadata();
 	}
 
-	async setClientCustomizations(_session: URI, _clientId: string, _customizations: CustomizationRef[]): Promise<ISyncedCustomization[]> {
+	async setClientCustomizations(_session: URI, _clientId: string, _customizations: ClientPluginCustomization[]): Promise<ISyncedCustomization[]> {
 		return [];
 	}
 
