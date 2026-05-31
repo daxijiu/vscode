@@ -47,7 +47,7 @@ export class DirectorRuntimeCredentialService extends Disposable implements IDir
 
 		return {
 			kind: 'missing',
-			message: `Director provider '${request.providerInstanceId}' credentials are not available to AgentHost. Open Director Settings in this window, verify the provider is signed in or has an API key, then try again.`,
+			message: 'Selected Director provider credentials are not available to AgentHost. Open Director Settings in this window, verify the provider is signed in or has an API key, then try again.',
 		};
 	}
 }

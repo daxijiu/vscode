@@ -1,6 +1,6 @@
 # Project Memory - Director Agent / Provider Backend
 
-Updated: 2026-05-27
+Updated: 2026-05-31
 
 ## Project Context
 
@@ -123,6 +123,12 @@ Phase plans:
 - `doc/director-agent-provider-phase2-plan.md`
 - `doc/director-agent-provider-phase3-plan.md`
 - `doc/director-agent-provider-phase4-plan.md`
+- `doc/director-agent-provider-phase5-plan.md`
+- `doc/director-agent-provider-phase6-plan.md`
+- `doc/director-agent-provider-phase7-plan.md`
+- `doc/director-agent-provider-phase8-plan.md`
+- `doc/director-agent-provider-phase9-plan.md`
+- `doc/director-agent-provider-phase10-plan.md`
 
 Research:
 
@@ -289,12 +295,22 @@ Phase 8:
 
 Phase 9:
 
-- Session restore, migration, and compatibility.
-- Observed acceptance follow-up: Phase 2 Director sessions keep messages only in current process memory. Durable Director conversation history belongs in Phase 9.
+- Minimal session restore slice completed locally on 2026-05-31.
+- Added `DirectorSessionStore` under `src/vs/platform/agentHost/node/director/`, persisting Director session metadata and normalized `Turn[]` in the existing per-session `session.db`.
+- Added a narrow Director catalog metadata entry so `DirectorAgent.listSessions()` can surface persisted Director sessions after AgentHost restart.
+- `DirectorAgent.createSession`, `sendMessage`, `changeModel`, `listSessions`, `getSessionMetadata`, `getSessionMessages`, and `truncateSession` now use the persisted store.
+- Restored sessions can continue provider-backed conversation with previous user/assistant turns included in the next provider request.
+- Saved model/provider/auth gaps remain listable/openable and fail through the existing recoverable send error path.
+- Deferred: old Chat Agent full transcript migration, in-place cross-harness conversion, durable compaction/session-summary generation beyond this metadata/turn store.
 
 Phase 10:
 
-- Hardening, telemetry, stress tests, dogfood.
+- Minimal hardening slice completed locally on 2026-05-31.
+- Added `DirectorTelemetryReporter` under `src/vs/platform/agentHost/node/director/`, reusing `ITelemetryService` for Director session, provider resolution, and model-call outcome telemetry.
+- Telemetry is low-cardinality and avoids prompts, responses, file paths, provider instance ids, model ids, API keys, OAuth access tokens, and refresh tokens.
+- Focused tests cover restore-after-restart history reuse, saved model removal after restore, and telemetry redaction.
+- Manual dogfood checklist is recorded in `doc/director-agent-provider-phase10-plan.md`.
+- Deferred: full external preview readiness, broad abort/soak/leak checks, Director-backed Claude SDK transcript partition hardening, and old Chat Agent full migration.
 
 Phase 11:
 
@@ -363,8 +379,7 @@ git diff --check -- <changed-doc-paths>
 
 ## Next Recommended Action
 
-Phase 4:
+Phase 11:
 
-- Wrap the old Director `AgentEngine` as an AgentHost harness adapter.
-- Keep real provider network validation/model discovery, real OpenAI Codex OAuth browser/device flow, Claude SDK de-CAPI migration, and durable Director session history in their later roadmap scopes unless the user explicitly expands Phase 4.
-- Reuse the Phase 3 provider registry/auth/model snapshot as the non-secret model-list and auth-state boundary; design a narrow secret bridge only when real LLM turns need credentials.
+- Plan SDK/runtime distribution so supported non-Copilot agents do not require manual SDK path setup.
+- Keep full external preview readiness, old Chat Agent transcript migration, and broad soak/leak testing as explicit follow-up unless the user expands Phase 10.

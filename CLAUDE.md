@@ -48,6 +48,8 @@ Current docs:
 - `doc/director-agent-provider-phase6-plan.md`
 - `doc/director-agent-provider-phase7-plan.md`
 - `doc/director-agent-provider-phase8-plan.md`
+- `doc/director-agent-provider-phase9-plan.md`
+- `doc/director-agent-provider-phase10-plan.md`
 - `doc/research/claude-agenthost-phase-handoff.md`
 - `doc/research/custom-agent-provider-backend-plan.md`
 - `MEMORY.md`
@@ -204,3 +206,19 @@ Current Phase 8 minimal slice:
 - Anthropic OAuth is available as a deterministic local/manual Provider Settings template with provider-specific auth state.
 - Runtime credential bridges return bearer access tokens only; refresh tokens are not exposed to AgentHost, snapshots, model metadata, registry JSON, or logs.
 - Real browser/device OAuth, real Anthropic PKCE exchange, VS Code `AuthenticationProvider`, and provider-specific `ProtectedResourceMetadata` integration remain deferred.
+
+Current Phase 9 minimal slice:
+
+- Director provider-backed AgentHost sessions persist metadata and normalized `Turn[]` into the existing per-session `session.db`.
+- `DirectorAgent` restores sessions through `listSessions`, `getSessionMetadata`, and `getSessionMessages`, so `AgentService.restoreSession()` remains the UI/state restore path.
+- Restored sessions can continue provider-backed conversation with previous user/assistant turns included in the next provider request.
+- Saved provider/model/auth gaps remain listable/openable and fail through the existing recoverable send error path.
+- Old Chat Agent full migration remains deferred.
+
+Current Phase 10 minimal slice:
+
+- Director session/provider/model-call telemetry uses the existing `ITelemetryService` path with low-cardinality payloads.
+- Telemetry must not include prompts, responses, file paths, provider instance ids, model ids, API keys, OAuth access tokens, or refresh tokens.
+- Focused tests cover restore-after-restart history reuse, saved model removal after restore, and telemetry redaction.
+- Manual dogfood checklist lives in `doc/director-agent-provider-phase10-plan.md`.
+- Full external preview readiness, broad soak/leak testing, and old Chat Agent migration remain deferred.

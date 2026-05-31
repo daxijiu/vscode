@@ -4,18 +4,27 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { mkdtempSync, rmSync } from 'fs';
 import type { Server } from 'http';
+import { tmpdir } from 'os';
+import { join } from '../../../../base/common/path.js';
 import { Event } from '../../../../base/common/event.js';
-import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Schemas } from '../../../../base/common/network.js';
 import { hasKey } from '../../../../base/common/types.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
+import { FileService } from '../../../files/common/fileService.js';
+import { DiskFileSystemProvider } from '../../../files/node/diskFileSystemProvider.js';
 import { ServiceCollection } from '../../../instantiation/common/serviceCollection.js';
 import { InstantiationService } from '../../../instantiation/common/instantiationService.js';
 import { ILogService, NullLogService } from '../../../log/common/log.js';
+import { ITelemetryData, ITelemetryService, TelemetryLevel } from '../../../telemetry/common/telemetry.js';
+import { NullTelemetryService } from '../../../telemetry/common/telemetryUtils.js';
 import { ISchema, SchemaDefinition, SchemaValue } from '../../common/agentHostSchema.js';
 import { IDirectorProviderBackendHub } from '../../common/directorProviderBackend.js';
 import { DirectorRuntimeCredential, DirectorRuntimeCredentialRequest, IDirectorRuntimeCredentialService } from '../../common/directorRuntimeCredentials.js';
+import { ISessionDataService } from '../../common/sessionDataService.js';
 import { AgentSession, AgentSignal } from '../../common/agentService.js';
 import { SessionConfigKey } from '../../common/sessionConfigKeys.js';
 import { ActionType } from '../../common/state/sessionActions.js';
@@ -23,6 +32,7 @@ import { ResponsePartKind, ToolCallStatus, ToolResultContentType, TurnState } fr
 import { IAgentConfigurationService } from '../../node/agentConfigurationService.js';
 import { DirectorAgent } from '../../node/director/directorAgent.js';
 import { DirectorProviderBackendHub, DirectorProviderBackendHubFixtures } from '../../node/director/directorProviderBackendHub.js';
+import { SessionDataService } from '../../node/sessionDataService.js';
 
 suite('DirectorAgent', () => {
 
@@ -31,15 +41,32 @@ suite('DirectorAgent', () => {
 	teardown(() => disposables.clear());
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	function createAgent(fixtures: DirectorProviderBackendHubFixtures = {}, credential: DirectorRuntimeCredential = { kind: 'none' }, mode: 'interactive' | 'plan' = 'interactive'): DirectorAgent {
+	function createAgent(
+		fixtures: DirectorProviderBackendHubFixtures = {},
+		credential: DirectorRuntimeCredential = { kind: 'none' },
+		mode: 'interactive' | 'plan' = 'interactive',
+		sessionDataService: ISessionDataService = createSessionDataService(),
+		telemetryService: ITelemetryService = NullTelemetryService,
+	): DirectorAgent {
 		const services = new ServiceCollection(
 			[ILogService, new NullLogService()],
 			[IDirectorProviderBackendHub, new DirectorProviderBackendHub(fixtures)],
 			[IDirectorRuntimeCredentialService, new TestDirectorRuntimeCredentialService(credential)],
 			[IAgentConfigurationService, new TestAgentConfigurationService(mode)],
+			[ISessionDataService, sessionDataService],
+			[ITelemetryService, telemetryService],
 		);
 		const instantiationService = disposables.add(new InstantiationService(services));
 		return disposables.add(instantiationService.createInstance(DirectorAgent));
+	}
+
+	function createSessionDataService(): ISessionDataService {
+		const tempDir = mkdtempSync(join(tmpdir(), 'director-agent-session-'));
+		const logService = new NullLogService();
+		const fileService = disposables.add(new FileService(logService));
+		disposables.add(fileService.registerProvider(Schemas.file, disposables.add(new DiskFileSystemProvider(logService))));
+		disposables.add(toDisposable(() => rmSync(tempDir, { recursive: true, force: true })));
+		return new SessionDataService(URI.file(tempDir), fileService, logService);
 	}
 
 	function summarizeSignals(signals: readonly AgentSignal[]): readonly object[] {
@@ -141,7 +168,7 @@ suite('DirectorAgent', () => {
 					name: 'Director Needs Key',
 					providerInstanceId: 'director-missing-key',
 					policyState: 'unconfigured',
-					statusMessage: 'Director provider \'director-missing-key\' requires api-key credentials.',
+					statusMessage: 'Selected Director provider requires api-key credentials.',
 				},
 			],
 		});
@@ -175,6 +202,220 @@ suite('DirectorAgent', () => {
 			}],
 			afterDispose: [],
 		});
+	});
+
+	test('persists sessions and restores turn history across DirectorAgent instances', async () => {
+		const requests: unknown[] = [];
+		const server = disposables.add(await createSequenceJsonServer([
+			{ choices: [{ message: { content: 'first persisted response' } }] },
+			{ choices: [{ message: { content: 'second restored response' } }] },
+		], requests));
+		const sessionDataService = createSessionDataService();
+		const workingDirectory = URI.file('C:/director/persisted');
+		const agent1 = createAgent(createOpenAIFixtures(server.url), { kind: 'api-key', value: 'sk-test' }, 'interactive', sessionDataService);
+		const created = await agent1.createSession({ workingDirectory });
+
+		await agent1.sendMessage(created.session, 'first persisted prompt', undefined, 'turn-persist-1');
+		await agent1.shutdown();
+
+		const agent2 = createAgent(createOpenAIFixtures(server.url), { kind: 'api-key', value: 'sk-test' }, 'interactive', sessionDataService);
+		const listed = await agent2.listSessions();
+		const restoredTurns = await agent2.getSessionMessages(created.session);
+		await agent2.sendMessage(created.session, 'second restored prompt', undefined, 'turn-persist-2');
+
+		const secondBody = requests[1] as { readonly messages: readonly { readonly role: string; readonly content: string }[] } | undefined;
+		const finalTurns = await agent2.getSessionMessages(created.session);
+		assert.deepStrictEqual({
+			requestCount: requests.length,
+			listed: listed.map(session => ({
+				session: session.session.toString(),
+				workingDirectory: session.workingDirectory?.toString(),
+				project: session.project ? { uri: session.project.uri.toString(), displayName: session.project.displayName } : undefined,
+				model: session.model,
+			})),
+			restoredTurns: restoredTurns.map(turn => ({
+				id: turn.id,
+				text: turn.userMessage.text,
+				state: turn.state,
+				responseText: turn.responseParts
+					.filter(part => part.kind === ResponsePartKind.Markdown)
+					.map(part => part.content)
+					.join(''),
+			})),
+			secondRequestMessages: secondBody?.messages.map(message => ({ role: message.role, content: message.content })),
+			finalTurnIds: finalTurns.map(turn => turn.id),
+		}, {
+			requestCount: 2,
+			listed: [{
+				session: created.session.toString(),
+				workingDirectory: workingDirectory.toString(),
+				project: { uri: workingDirectory.toString(), displayName: 'persisted' },
+				model: { id: 'test-provider:gpt-test' },
+			}],
+			restoredTurns: [{
+				id: 'turn-persist-1',
+				text: 'first persisted prompt',
+				state: TurnState.Complete,
+				responseText: 'first persisted response',
+			}],
+			secondRequestMessages: [
+				{ role: 'system', content: secondBody?.messages[0]?.content },
+				{ role: 'user', content: 'first persisted prompt' },
+				{ role: 'assistant', content: 'first persisted response' },
+				{ role: 'user', content: 'second restored prompt' },
+			],
+			finalTurnIds: ['turn-persist-1', 'turn-persist-2'],
+		});
+	});
+
+	test('restored sessions stay listable when the saved model is removed and fail recoverably on send', async () => {
+		const sessionDataService = createSessionDataService();
+		const agent1 = createAgent(createOpenAIFixtures('http://127.0.0.1:1'), { kind: 'api-key', value: 'sk-test' }, 'interactive', sessionDataService);
+		const created = await agent1.createSession();
+		await agent1.shutdown();
+
+		const removedModelFixtures = createOpenAIFixtures('http://127.0.0.1:1', undefined, 'gpt-other');
+		const agent2 = createAgent(removedModelFixtures, { kind: 'api-key', value: 'sk-test' }, 'interactive', sessionDataService);
+		const listed = await agent2.listSessions();
+		const signals: AgentSignal[] = [];
+		disposables.add(agent2.onDidSessionProgress(signal => signals.push(signal)));
+
+		await agent2.sendMessage(created.session, 'after model removal', undefined, 'turn-missing-model');
+		const turns = await agent2.getSessionMessages(created.session);
+
+		assert.deepStrictEqual({
+			listed: listed.map(session => ({ session: session.session.toString(), model: session.model })),
+			signals: summarizeSignals(signals),
+			turns: turns.map(turn => ({ id: turn.id, state: turn.state })),
+		}, {
+			listed: [{ session: created.session.toString(), model: { id: 'test-provider:gpt-test' } }],
+			signals: [
+				{ type: ActionType.SessionError, turnId: 'turn-missing-model', message: 'Selected Director model is not available.' },
+			],
+			turns: [{ id: 'turn-missing-model', state: TurnState.Error }],
+		});
+	});
+
+	test('keeps active client tools delivered before lazy restored session sends', async () => {
+		const requests: unknown[] = [];
+		const server = disposables.add(await createSequenceJsonServer([
+			{ choices: [{ message: { content: '', tool_calls: [{ id: 'call-restored-tool', type: 'function', function: { name: 'runTests', arguments: '{"query":"restored"}' } }] } }] },
+			{ choices: [{ message: { content: 'restored tool result observed' } }] },
+		], requests));
+		const sessionDataService = createSessionDataService();
+		const agent1 = createAgent(createOpenAIFixtures(server.url, { toolCalling: true }), { kind: 'api-key', value: 'sk-test' }, 'interactive', sessionDataService);
+		const created = await agent1.createSession();
+		await agent1.shutdown();
+
+		const agent2 = createAgent(createOpenAIFixtures(server.url, { toolCalling: true }), { kind: 'api-key', value: 'sk-test' }, 'interactive', sessionDataService);
+		await agent2.listSessions();
+		agent2.setClientTools(created.session, 'client-1', [{
+			name: 'runTests',
+			title: 'Run Tests',
+			description: 'Returns a deterministic result',
+			inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+		}]);
+		const signals: AgentSignal[] = [];
+		disposables.add(agent2.onDidSessionProgress(signal => {
+			signals.push(signal);
+			if (signal.kind === 'pending_confirmation') {
+				agent2.respondToPermissionRequest(signal.state.toolCallId, true);
+				agent2.onClientToolCallComplete(created.session, signal.state.toolCallId, {
+					success: true,
+					pastTenseMessage: 'Ran Run Tests',
+					content: [{ type: ToolResultContentType.Text, text: 'restored tool result' }],
+				});
+			}
+		}));
+
+		await agent2.sendMessage(created.session, 'use restored tool', undefined, 'turn-restored-tool');
+		const firstBody = requests[0] as { messages: Array<{ role: string; content?: string | null }> };
+		const secondBody = requests[1] as { messages: Array<{ role: string; content?: string | null }> };
+		const turns = await agent2.getSessionMessages(created.session);
+
+		assert.deepStrictEqual({
+			requestCount: requests.length,
+			systemPromptHasToolList: firstBody.messages[0]?.role === 'system' && firstBody.messages[0]?.content?.includes('## Available Tools') && firstBody.messages[0]?.content?.includes('**runTests**'),
+			pendingToolNames: signals.filter(signal => signal.kind === 'pending_confirmation').map(signal => signal.state.toolName),
+			secondRequestMessages: secondBody.messages.map(message => ({ role: message.role, content: message.content })),
+			turns: turns.map(turn => ({
+				id: turn.id,
+				state: turn.state,
+				toolStatus: turn.responseParts.find(part => part.kind === ResponsePartKind.ToolCall)?.toolCall.status,
+				responseText: turn.responseParts
+					.filter(part => part.kind === ResponsePartKind.Markdown)
+					.map(part => part.content)
+					.join(''),
+			})),
+		}, {
+			requestCount: 2,
+			systemPromptHasToolList: true,
+			pendingToolNames: ['runTests'],
+			secondRequestMessages: [
+				{ role: 'system', content: secondBody.messages[0]?.content },
+				{ role: 'user', content: 'use restored tool' },
+				{ role: 'assistant', content: null },
+				{ role: 'tool', content: 'restored tool result' },
+			],
+			turns: [{
+				id: 'turn-restored-tool',
+				state: TurnState.Complete,
+				toolStatus: ToolCallStatus.Completed,
+				responseText: 'restored tool result observed',
+			}],
+		});
+	});
+
+	test('truncates persisted turns so restored history does not keep stale tail', async () => {
+		const server = disposables.add(await createSequenceJsonServer([
+			{ choices: [{ message: { content: 'first before truncate' } }] },
+			{ choices: [{ message: { content: 'second before truncate' } }] },
+		], []));
+		const sessionDataService = createSessionDataService();
+		const agent1 = createAgent(createOpenAIFixtures(server.url), { kind: 'api-key', value: 'sk-test' }, 'interactive', sessionDataService);
+		const created = await agent1.createSession();
+
+		await agent1.sendMessage(created.session, 'first turn', undefined, 'turn-truncate-1');
+		await agent1.sendMessage(created.session, 'second turn', undefined, 'turn-truncate-2');
+		await agent1.truncateSession(created.session, 'turn-truncate-1');
+		await agent1.shutdown();
+
+		const agent2 = createAgent(createOpenAIFixtures(server.url), { kind: 'api-key', value: 'sk-test' }, 'interactive', sessionDataService);
+		const turns = await agent2.getSessionMessages(created.session);
+
+		assert.deepStrictEqual(turns.map(turn => ({
+			id: turn.id,
+			text: turn.userMessage.text,
+			responseText: turn.responseParts
+				.filter(part => part.kind === ResponsePartKind.Markdown)
+				.map(part => part.content)
+				.join(''),
+		})), [{
+			id: 'turn-truncate-1',
+			text: 'first turn',
+			responseText: 'first before truncate',
+		}]);
+	});
+
+	test('records low-cardinality telemetry without prompts, responses, or credentials', async () => {
+		const requests: unknown[] = [];
+		const telemetryService = new TestTelemetryService();
+		const server = disposables.add(await createSequenceJsonServer([
+			{ choices: [{ message: { content: 'telemetry response' } }] },
+		], requests));
+		const agent = createAgent(createOpenAIFixtures(server.url), { kind: 'api-key', value: 'sk-test' }, 'interactive', createSessionDataService(), telemetryService);
+		const created = await agent.createSession();
+
+		await agent.sendMessage(created.session, 'telemetry prompt', undefined, 'turn-telemetry');
+
+		const eventNames = telemetryService.events.map(event => event.eventName);
+		const payload = JSON.stringify(telemetryService.events);
+		assert.ok(eventNames.includes('director.session'));
+		assert.ok(eventNames.includes('director.providerResolution'));
+		assert.ok(eventNames.includes('director.modelCall'));
+		assert.ok(!payload.includes('telemetry prompt'));
+		assert.ok(!payload.includes('telemetry response'));
+		assert.ok(!payload.includes('sk-test'));
 	});
 
 	test('acknowledges steering messages so unsupported injections do not stay pending', async () => {
@@ -222,7 +463,7 @@ suite('DirectorAgent', () => {
 			})),
 		}, {
 			signals: [
-				{ type: ActionType.SessionResponsePart, turnId: 'turn-1', kind: ResponsePartKind.SystemNotification, content: 'Director AgentEngine using provider \'test-provider\' with model \'gpt-test\'.' },
+				{ type: ActionType.SessionResponsePart, turnId: 'turn-1', kind: ResponsePartKind.SystemNotification, content: 'Director AgentEngine using the selected provider and model.' },
 				{ type: ActionType.SessionResponsePart, turnId: 'turn-1', kind: ResponsePartKind.Markdown, content: 'provider backed hello' },
 				{ type: ActionType.SessionUsage, turnId: 'turn-1', usage: { inputTokens: 11, outputTokens: 3 } },
 				{ type: ActionType.SessionTurnComplete, turnId: 'turn-1' },
@@ -267,7 +508,7 @@ suite('DirectorAgent', () => {
 			})),
 		}, {
 			signals: [
-				{ type: ActionType.SessionResponsePart, turnId: 'turn-stream', kind: ResponsePartKind.SystemNotification, content: 'Director AgentEngine using provider \'test-provider\' with model \'gpt-test\'.' },
+				{ type: ActionType.SessionResponsePart, turnId: 'turn-stream', kind: ResponsePartKind.SystemNotification, content: 'Director AgentEngine using the selected provider and model.' },
 				{ type: ActionType.SessionResponsePart, turnId: 'turn-stream', kind: ResponsePartKind.Markdown, content: '' },
 				{ type: ActionType.SessionDelta, turnId: 'turn-stream', content: 'stream ' },
 				{ type: ActionType.SessionDelta, turnId: 'turn-stream', content: 'hello' },
@@ -310,7 +551,7 @@ suite('DirectorAgent', () => {
 			})),
 		}, {
 			signals: [
-				{ type: ActionType.SessionResponsePart, turnId: 'turn-anthropic-stream', kind: ResponsePartKind.SystemNotification, content: 'Director AgentEngine using provider \'anthropic-provider\' with model \'claude-test\'.' },
+				{ type: ActionType.SessionResponsePart, turnId: 'turn-anthropic-stream', kind: ResponsePartKind.SystemNotification, content: 'Director AgentEngine using the selected provider and model.' },
 				{ type: ActionType.SessionResponsePart, turnId: 'turn-anthropic-stream', kind: ResponsePartKind.Markdown, content: '' },
 				{ type: ActionType.SessionDelta, turnId: 'turn-anthropic-stream', content: 'anthropic ' },
 				{ type: ActionType.SessionDelta, turnId: 'turn-anthropic-stream', content: 'stream' },
@@ -414,7 +655,7 @@ suite('DirectorAgent', () => {
 			],
 			systemPromptHasToolList: true,
 			signals: [
-				{ type: ActionType.SessionResponsePart, turnId: 'turn-tool', kind: ResponsePartKind.SystemNotification, content: 'Director AgentEngine using provider \'test-provider\' with model \'gpt-test\'.' },
+				{ type: ActionType.SessionResponsePart, turnId: 'turn-tool', kind: ResponsePartKind.SystemNotification, content: 'Director AgentEngine using the selected provider and model.' },
 				{ type: ActionType.SessionResponsePart, turnId: 'turn-tool', kind: ResponsePartKind.Reasoning, content: undefined },
 				{ type: ActionType.SessionToolCallStart, turnId: 'turn-tool', toolCallId: 'call-1', toolName: 'runTests' },
 				{ type: ActionType.SessionToolCallDelta, turnId: 'turn-tool', toolCallId: 'call-1', content: '{"query":"abc"}' },
@@ -926,7 +1167,7 @@ suite('DirectorAgent', () => {
 			errorSignals: [{
 				type: ActionType.SessionError,
 				turnId: 'turn-tool-fail',
-				message: 'Director provider \'test-provider\' returned 500 Internal Server Error: {"error":"transient failure with <redacted>"}',
+				message: 'Director provider returned 500 Internal Server Error: {"error":"transient failure with <redacted>"}',
 			}],
 			turns: [{
 				id: 'turn-tool-fail',
@@ -1046,7 +1287,7 @@ suite('DirectorAgent', () => {
 				id: 'turn-tool-loop',
 				state: TurnState.Complete,
 				completedToolParts: 3,
-				responseText: 'Director AgentEngine stopped because provider \'test-provider\' repeatedly requested tool \'runTests\' with the same input 4 times.',
+				responseText: 'Director AgentEngine stopped because the selected provider repeatedly requested tool \'runTests\' with the same input 4 times.',
 			}],
 		});
 	});
@@ -1119,7 +1360,7 @@ suite('DirectorAgent', () => {
 			})),
 		}, {
 			signals: [
-				{ type: ActionType.SessionResponsePart, turnId: 'turn-abort', kind: ResponsePartKind.SystemNotification, content: 'Director AgentEngine using provider \'test-provider\' with model \'gpt-test\'.' },
+				{ type: ActionType.SessionResponsePart, turnId: 'turn-abort', kind: ResponsePartKind.SystemNotification, content: 'Director AgentEngine using the selected provider and model.' },
 				{ type: ActionType.SessionTurnCancelled, turnId: 'turn-abort' },
 			],
 			turns: [{
@@ -1171,6 +1412,27 @@ class TestAgentConfigurationService implements IAgentConfigurationService {
 	updateRootConfig(_patch: Record<string, unknown>, _replace?: boolean): void { }
 
 	persistRootConfig(): void { }
+}
+
+class TestTelemetryService implements ITelemetryService {
+	declare readonly _serviceBrand: undefined;
+	readonly telemetryLevel = TelemetryLevel.USAGE;
+	readonly sessionId = 'director-test-session';
+	readonly machineId = 'director-test-machine';
+	readonly sqmId = 'director-test-sqm';
+	readonly devDeviceId = 'director-test-device';
+	readonly firstSessionDate = '2026-05-31';
+	readonly sendErrorTelemetry = false;
+	readonly events: { readonly eventName: string; readonly data: ITelemetryData | undefined }[] = [];
+
+	publicLog(_eventName: string, _data?: ITelemetryData): void { }
+	publicLog2(eventName: string, data?: ITelemetryData): void {
+		this.events.push({ eventName, data });
+	}
+	publicLogError(_eventName: string, _data?: ITelemetryData): void { }
+	publicLogError2(_eventName: string, _data?: ITelemetryData): void { }
+	setExperimentProperty(_name: string, _value: string): void { }
+	setCommonProperty(_name: string, _value: unknown): void { }
 }
 
 function createOpenAIFixtures(baseURL: string, capabilities?: { readonly streaming?: boolean; readonly toolCalling?: boolean }, modelId = 'gpt-test'): DirectorProviderBackendHubFixtures {

@@ -12,7 +12,7 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../log/common/log.js';
 import { PendingRequestRegistry } from '../../common/pendingRequestRegistry.js';
-import { IDirectorProviderBackendHub, isResolvedBackend } from '../../common/directorProviderBackend.js';
+import { DirectorResolvedProviderBackend, IDirectorProviderBackendHub, isResolvedBackend } from '../../common/directorProviderBackend.js';
 import { IDirectorRuntimeCredentialService } from '../../common/directorRuntimeCredentials.js';
 import { DirectorNormalizedToolCall, DirectorNormalizedToolDefinition } from '../../common/directorProviderAdapters.js';
 import { normalizeDirectorClientToolDefinitions, validateDirectorToolCallInput } from '../../common/directorToolPolicy.js';
@@ -21,6 +21,7 @@ import { ActionType } from '../../common/state/sessionActions.js';
 import { MessageAttachment, ModelSelection, ToolCallPendingConfirmationState, ToolDefinition } from '../../common/state/protocol/state.js';
 import { ResponsePart, ResponsePartKind, ToolCallCancellationReason, ToolCallConfirmationReason, ToolCallResult, ToolCallState, ToolCallStatus, ToolResultContentType, Turn, TurnState, UsageInfo } from '../../common/state/sessionState.js';
 import { DirectorAgentEngineAdapter, DirectorAgentToolExecution, stringifyDirectorToolResult } from './directorAgentEngineAdapter.js';
+import { DirectorTelemetryReporter } from './directorTelemetry.js';
 
 interface IDirectorInFlightTurn {
 	readonly turnId: string;
@@ -34,6 +35,10 @@ interface IDirectorInFlightTurn {
 	cancelled: boolean;
 	terminalEmitted: boolean;
 	clientToolsSnapshot: IDirectorClientToolsSnapshot;
+	backend: DirectorResolvedProviderBackend | undefined;
+	historyTurnCount: number;
+	toolCount: number;
+	modelCallReported: boolean;
 }
 
 export type DirectorSessionMode = 'interactive' | 'plan';
@@ -66,12 +71,16 @@ export class DirectorAgentSession extends Disposable {
 		readonly workingDirectory: URI | undefined,
 		private _model: ModelSelection | undefined,
 		private readonly _readMode: (session: URI) => DirectorSessionMode | undefined,
+		private readonly _telemetryReporter: DirectorTelemetryReporter,
+		initialTurns: readonly Turn[] = [],
+		modifiedAt: number | undefined = undefined,
 		@IDirectorProviderBackendHub private readonly _backendHub: IDirectorProviderBackendHub,
 		@IDirectorRuntimeCredentialService private readonly _credentialService: IDirectorRuntimeCredentialService,
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
-		this._modifiedAt = createdAt;
+		this._turns.push(...initialTurns.map(cloneTurn));
+		this._modifiedAt = modifiedAt ?? createdAt;
 	}
 
 	get model(): ModelSelection | undefined {
@@ -105,6 +114,10 @@ export class DirectorAgentSession extends Disposable {
 			cancelled: false,
 			terminalEmitted: false,
 			clientToolsSnapshot: this._captureClientToolsSnapshot(),
+			backend: undefined,
+			historyTurnCount: this._turns.length,
+			toolCount: 0,
+			modelCallReported: false,
 		};
 		this._inFlight = inFlight;
 		this._modifiedAt = Date.now();
@@ -119,11 +132,16 @@ export class DirectorAgentSession extends Disposable {
 
 			const resolution = await this._backendHub.resolveBackend(this._model ? { modelId: this._model.id } : undefined);
 			if (!isResolvedBackend(resolution)) {
+				this._telemetryReporter.providerResolution(resolution);
 				this._error(inFlight, resolution.message);
 				return;
 			}
+			this._telemetryReporter.providerResolution(resolution);
+			inFlight.backend = resolution.backend;
 
 			const adapter = new DirectorAgentEngineAdapter(this._credentialService);
+			const tools = this._normalizedClientTools(inFlight.clientToolsSnapshot);
+			inFlight.toolCount = tools.length;
 			for await (const event of adapter.runTurn({
 				backend: resolution.backend,
 				prompt,
@@ -131,7 +149,7 @@ export class DirectorAgentSession extends Disposable {
 				turns: this._turns,
 				cwd: this.workingDirectory?.fsPath,
 				abortSignal: inFlight.abortController.signal,
-				tools: this._normalizedClientTools(inFlight.clientToolsSnapshot),
+				tools,
 				executeToolCall: toolCall => this._executeToolCall(inFlight, toolCall),
 			})) {
 				if (this._isTerminal(inFlight)) {
@@ -157,7 +175,7 @@ export class DirectorAgentSession extends Disposable {
 						this._emitUsage(inFlight, event.usage);
 						break;
 					case 'result':
-						this._complete(inFlight);
+						this._complete(inFlight, event.subtype);
 						break;
 				}
 			}
@@ -189,6 +207,20 @@ export class DirectorAgentSession extends Disposable {
 
 	changeModel(model: ModelSelection): void {
 		this._model = model;
+		this._modifiedAt = Date.now();
+	}
+
+	truncate(turnId: string | undefined): void {
+		if (turnId === undefined) {
+			this._turns.splice(0, this._turns.length);
+			this._modifiedAt = Date.now();
+			return;
+		}
+		const index = this._turns.findIndex(turn => turn.id === turnId);
+		if (index < 0) {
+			return;
+		}
+		this._turns.splice(index + 1, this._turns.length - index - 1);
 		this._modifiedAt = Date.now();
 	}
 
@@ -402,11 +434,12 @@ export class DirectorAgentSession extends Disposable {
 		});
 	}
 
-	private _complete(inFlight: IDirectorInFlightTurn): void {
+	private _complete(inFlight: IDirectorInFlightTurn, result: 'success' | 'error_max_turns' = 'success'): void {
 		if (this._isTerminal(inFlight)) {
 			return;
 		}
 		inFlight.terminalEmitted = true;
+		this._reportModelCall(inFlight, result === 'success' ? 'success' : 'error', result);
 		this._turns.push({
 			id: inFlight.turnId,
 			userMessage: {
@@ -436,6 +469,7 @@ export class DirectorAgentSession extends Disposable {
 			return;
 		}
 		inFlight.terminalEmitted = true;
+		this._reportModelCall(inFlight, 'error', undefined, classifyDirectorError(message));
 		this._turns.push({
 			id: inFlight.turnId,
 			userMessage: {
@@ -469,6 +503,7 @@ export class DirectorAgentSession extends Disposable {
 			return;
 		}
 		inFlight.terminalEmitted = true;
+		this._reportModelCall(inFlight, 'cancelled');
 		this._turns.push({
 			id: inFlight.turnId,
 			userMessage: {
@@ -495,6 +530,19 @@ export class DirectorAgentSession extends Disposable {
 
 	private _isTerminal(inFlight: IDirectorInFlightTurn): boolean {
 		return inFlight.terminalEmitted || this._inFlight !== inFlight;
+	}
+
+	private _reportModelCall(inFlight: IDirectorInFlightTurn, outcome: 'success' | 'error' | 'cancelled', result?: 'success' | 'error_max_turns', errorKind?: string): void {
+		if (!inFlight.backend || inFlight.modelCallReported) {
+			return;
+		}
+		inFlight.modelCallReported = true;
+		this._telemetryReporter.modelCall(inFlight.backend, outcome, {
+			...(result ? { result } : {}),
+			...(errorKind ? { errorKind } : {}),
+			historyTurnCount: inFlight.historyTurnCount,
+			toolCount: inFlight.toolCount,
+		});
 	}
 
 	private _captureClientToolsSnapshot(): IDirectorClientToolsSnapshot {
@@ -740,4 +788,31 @@ function toolCallInput(toolCall: ToolCallState): string {
 
 function toolCallInvocationMessage(toolCall: ToolCallState, fallback: string) {
 	return toolCall.invocationMessage || fallback;
+}
+
+function classifyDirectorError(message: string): string {
+	if (/credential|auth|token|key/i.test(message)) {
+		return 'auth';
+	}
+	if (/cancel/i.test(message)) {
+		return 'cancelled';
+	}
+	if (/\b(408|409|425|429|5\d\d)\b/.test(message)) {
+		return 'transport';
+	}
+	if (/not available|not registered|disabled|model/i.test(message)) {
+		return 'resolution';
+	}
+	return 'error';
+}
+
+function cloneTurn(turn: Turn): Turn {
+	return {
+		...turn,
+		userMessage: {
+			...turn.userMessage,
+			...(turn.userMessage.attachments ? { attachments: [...turn.userMessage.attachments] } : {}),
+		},
+		responseParts: turn.responseParts.map(part => ({ ...part })),
+	};
 }

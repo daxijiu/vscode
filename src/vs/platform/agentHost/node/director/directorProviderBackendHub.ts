@@ -131,7 +131,7 @@ export class DirectorProviderBackendHub implements IDirectorProviderBackendHub {
 				status: 'error',
 				message: selection.providerInstanceId === undefined
 					? 'No enabled Director provider is available.'
-					: `Director provider '${selection.providerInstanceId}' is not registered.`,
+					: 'Selected Director provider is not registered.',
 			};
 		}
 
@@ -139,7 +139,7 @@ export class DirectorProviderBackendHub implements IDirectorProviderBackendHub {
 			return {
 				status: 'disabled',
 				providerInstanceId: provider.id,
-				message: `Director provider '${provider.id}' is disabled.`,
+				message: 'Selected Director provider is disabled.',
 			};
 		}
 
@@ -149,7 +149,7 @@ export class DirectorProviderBackendHub implements IDirectorProviderBackendHub {
 				status: 'modelUnavailable',
 				providerInstanceId: provider.id,
 				modelId: selection.modelId ?? provider.defaultModelId ?? '<default>',
-				message: `Director model '${selection.modelId ?? provider.defaultModelId ?? '<default>'}' is not available for provider '${provider.id}'.`,
+				message: 'Selected Director model is not available.',
 			};
 		}
 
@@ -158,7 +158,7 @@ export class DirectorProviderBackendHub implements IDirectorProviderBackendHub {
 			return {
 				status: 'missingAuth',
 				providerInstanceId: provider.id,
-				message: authState.message ?? `Director provider '${provider.id}' requires ${provider.authKind} credentials.`,
+				message: `Selected Director provider requires ${provider.authKind} credentials.`,
 			};
 		}
 
@@ -277,7 +277,7 @@ export class DirectorProviderBackendHub implements IDirectorProviderBackendHub {
 
 		return {
 			kind: 'missing',
-			message: `Director provider '${provider.id}' requires ${provider.authKind} credentials.`,
+			message: `Selected Director provider requires ${provider.authKind} credentials.`,
 		};
 	}
 }

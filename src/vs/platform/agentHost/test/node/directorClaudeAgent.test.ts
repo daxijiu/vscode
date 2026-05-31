@@ -329,7 +329,7 @@ suite('DirectorClaudeAgent', () => {
 				policyState: 'unconfigured',
 				providerInstanceId: 'needs-key-provider',
 				backendModelId: 'claude-needs-key',
-				statusMessage: 'Director provider \'needs-key-provider\' requires api-key credentials.',
+				statusMessage: 'Selected Director provider requires api-key credentials.',
 				leaksSecret: false,
 			},
 		]);

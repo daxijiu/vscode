@@ -372,11 +372,11 @@ export class DirectorAnthropicEndpointService implements IDirectorAnthropicEndpo
 
 	private async _createProviderRuntime(backend: DirectorResolvedProviderBackend, res: http.ServerResponse): Promise<DirectorLLMProvider | undefined> {
 		if (backend.apiType === 'local' || backend.apiType === 'custom-http') {
-			writeJsonError(res, 400, 'invalid_request_error', `Director provider '${backend.providerInstanceId}' uses '${backend.apiType}', which is not supported by the Anthropic endpoint.`);
+			writeJsonError(res, 400, 'invalid_request_error', `Selected Director provider uses '${backend.apiType}', which is not supported by the Anthropic endpoint.`);
 			return undefined;
 		}
 		if (!backend.baseURL) {
-			writeJsonError(res, 400, 'invalid_request_error', `Director provider '${backend.providerInstanceId}' does not have a base URL.`);
+			writeJsonError(res, 400, 'invalid_request_error', 'Selected Director provider does not have a base URL.');
 			return undefined;
 		}
 
@@ -391,7 +391,7 @@ export class DirectorAnthropicEndpointService implements IDirectorAnthropicEndpo
 			baseURL: backend.baseURL,
 			headers: backend.headers,
 			capabilities: backend.capabilities,
-			label: `Director provider '${backend.providerInstanceId}'`,
+			label: 'Director provider',
 			fetch: this._fetcher,
 		});
 	}

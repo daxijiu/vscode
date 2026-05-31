@@ -67,15 +67,15 @@ export class DirectorAgentEngineAdapter {
 			throw new Error(credential.message);
 		}
 		if (backend.apiType === 'local' || backend.apiType === 'custom-http') {
-			throw new Error(`Director provider '${backend.providerInstanceId}' uses '${backend.apiType}', which is not supported by the Phase 4 AgentEngine adapter yet.`);
+			throw new Error(`Selected Director provider uses '${backend.apiType}', which is not supported by the Phase 4 AgentEngine adapter yet.`);
 		}
 		if (!backend.baseURL) {
-			throw new Error(`Director provider '${backend.providerInstanceId}' does not have a base URL.`);
+			throw new Error('Selected Director provider does not have a base URL.');
 		}
 
 		yield {
 			type: 'system',
-			message: `Director AgentEngine using provider '${backend.providerInstanceId}' with model '${backend.modelId}'.`,
+			message: 'Director AgentEngine using the selected provider and model.',
 		};
 
 		const tools = supportsToolCalling(backend) ? options.tools ?? [] : [];
@@ -103,7 +103,7 @@ export class DirectorAgentEngineAdapter {
 					if (stream && provider.createMessageStream) {
 						const streamed = yield* this.streamProviderResponse(provider, request, backend, options.abortSignal, toolSideEffectOccurred);
 						if (!streamed.text.trim() && !streamed.thinking?.trim()) {
-							throw new Error(`Director provider '${backend.providerInstanceId}' returned an empty response.`);
+							throw new Error('Selected Director provider returned an empty response.');
 						}
 						if (streamed.usage) {
 							yield { type: 'usage', usage: streamed.usage };
@@ -131,7 +131,7 @@ export class DirectorAgentEngineAdapter {
 			if (parsed.toolCalls.length) {
 				const repeatedToolCall = findRepeatedToolCall(parsed.toolCalls, toolCallSignatureCounts);
 				if (repeatedToolCall) {
-					yield { type: 'text', text: `Director AgentEngine stopped because provider '${backend.providerInstanceId}' repeatedly requested tool '${repeatedToolCall.name}' with the same input ${MAX_REPEATED_TOOL_CALLS + 1} times.` };
+					yield { type: 'text', text: `Director AgentEngine stopped because the selected provider repeatedly requested tool '${repeatedToolCall.name}' with the same input ${MAX_REPEATED_TOOL_CALLS + 1} times.` };
 					yield { type: 'result', subtype: 'error_max_turns' };
 					return;
 				}
@@ -162,7 +162,7 @@ export class DirectorAgentEngineAdapter {
 				continue;
 			}
 			if (!parsed.text.trim()) {
-				throw new Error(`Director provider '${backend.providerInstanceId}' returned an empty response.`);
+				throw new Error('Selected Director provider returned an empty response.');
 			}
 			if (parsed.usage) {
 				yield { type: 'usage', usage: parsed.usage };
@@ -209,7 +209,7 @@ export class DirectorAgentEngineAdapter {
 			baseURL: backend.baseURL,
 			headers: backend.headers,
 			capabilities: backend.capabilities,
-			label: `Director provider '${backend.providerInstanceId}'`,
+			label: 'Director provider',
 			reasoningEcho,
 			fetch: (input, init) => this.fetcher(input.toString(), init ?? {}),
 		});
@@ -248,7 +248,7 @@ export class DirectorAgentEngineAdapter {
 				throw error;
 			}
 		}
-		throw lastError ?? new Error(`Director provider '${backend.providerInstanceId}' request failed.`);
+		throw lastError ?? new Error('Selected Director provider request failed.');
 	}
 
 	private async *streamProviderResponse(
@@ -293,7 +293,7 @@ export class DirectorAgentEngineAdapter {
 				throw error;
 			}
 		}
-		throw lastError ?? new Error(`Director provider '${backend.providerInstanceId}' stream request failed.`);
+		throw lastError ?? new Error('Selected Director provider stream request failed.');
 	}
 }
 

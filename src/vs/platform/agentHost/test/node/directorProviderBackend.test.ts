@@ -130,22 +130,22 @@ suite('directorProviderBackend', () => {
 			disabled: {
 				status: 'disabled',
 				providerInstanceId: 'director-disabled',
-				message: 'Director provider \'director-disabled\' is disabled.',
+				message: 'Selected Director provider is disabled.',
 			},
 			unknownModel: {
 				status: 'modelUnavailable',
 				providerInstanceId: 'director-fake',
 				modelId: 'missing-model',
-				message: 'Director model \'missing-model\' is not available for provider \'director-fake\'.',
+				message: 'Selected Director model is not available.',
 			},
 			missingAuth: {
 				status: 'missingAuth',
 				providerInstanceId: 'director-missing-key',
-				message: 'Director provider \'director-missing-key\' requires api-key credentials.',
+				message: 'Selected Director provider requires api-key credentials.',
 			},
 			unknownProvider: {
 				status: 'error',
-				message: 'Director provider \'director-unknown\' is not registered.',
+				message: 'Selected Director provider is not registered.',
 			},
 		});
 	});

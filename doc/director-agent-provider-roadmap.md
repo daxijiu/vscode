@@ -551,6 +551,8 @@ Current minimal slice:
 
 ### Phase 9 - Session Restore, Migration, and Compatibility
 
+Status: minimal implementation slice completed locally on 2026-05-31. See `doc/director-agent-provider-phase9-plan.md`.
+
 Goal: make the new optional-agent architecture durable across restarts and compatible with old Director user data where reasonable.
 
 Scope:
@@ -575,7 +577,18 @@ Exit criteria:
 - Missing backend produces recoverable UI state.
 - Session kind remains stable.
 
+Current minimal slice:
+
+- Director provider-backed AgentHost sessions persist metadata and normalized `Turn[]` into the existing per-session `session.db`.
+- A narrow Director catalog metadata entry lets `listSessions()` surface persisted Director sessions after AgentHost restart.
+- `createSession`, `sendMessage`, `changeModel`, `listSessions`, `getSessionMetadata`, `getSessionMessages`, and `truncateSession` are wired to the persisted store.
+- Restored sessions can continue provider-backed conversation with previous user/assistant turns included in the next provider request.
+- Missing saved model/provider/auth remains listable/openable and the next send follows the existing recoverable error path.
+- Old Chat Agent transcript migration remains deferred.
+
 ### Phase 10 - Hardening, Telemetry, and Dogfood
+
+Status: minimal telemetry/test/checklist slice completed locally on 2026-05-31. See `doc/director-agent-provider-phase10-plan.md`. Full external preview readiness remains deferred.
 
 Goal: move from working slices to usable preview.
 
@@ -596,6 +609,14 @@ Exit criteria:
 
 - Ready for external preview behind a feature gate.
 - Copilot paths have regression coverage or manual smoke notes.
+
+Current minimal slice:
+
+- Director session/provider/model-call telemetry uses the existing `ITelemetryService` path.
+- Telemetry is low-cardinality and omits prompts, responses, file paths, provider instance ids, model ids, API keys, OAuth access tokens, and refresh tokens.
+- Focused tests cover restore-after-restart history reuse, saved model removal after restore, and telemetry redaction.
+- Manual dogfood checklist is recorded in the Phase 10 plan.
+- Full external preview readiness, broad stress soak, local/custom runtime leak checks, and old Chat Agent migration remain deferred.
 
 ### Phase 11 - SDK / Runtime Distribution
 

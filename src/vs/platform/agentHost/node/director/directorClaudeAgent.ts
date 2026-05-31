@@ -146,13 +146,13 @@ class DirectorClaudeAgentBackend implements IClaudeAgentBackend {
 		if (model?.id) {
 			const selected = await this._findModelBySelectionId(model.id);
 			if (!selected) {
-				throw new Error(`Director Claude model '${model.id}' is not available.`);
+				throw new Error('Selected Director Claude model is not available.');
 			}
 			const selection: DirectorProviderSelection = { providerInstanceId: selected.providerInstanceId, modelId: selected.id };
 			const resolution = await this._backendHub.resolveBackend(selection);
 			if (isResolvedBackend(resolution)) {
 				if (!isClaudeEndpointSupported(resolution.backend.apiType, resolution.backend.providerKind)) {
-					throw new Error(`Director provider '${resolution.backend.providerInstanceId}' is not supported by the Director Claude endpoint.`);
+					throw new Error('Selected Director provider is not supported by the Director Claude endpoint.');
 				}
 				return this._selectionForBackend(resolution.backend);
 			}
@@ -226,7 +226,7 @@ function projectDirectorClaudeModel(agentProvider: AgentProvider, model: Directo
 
 function getDirectorClaudeResolutionMessage(resolution: DirectorBackendResolution): string {
 	if (isResolvedBackend(resolution)) {
-		return `Director provider '${resolution.backend.providerInstanceId}' is not supported by the Director Claude endpoint.`;
+		return 'Selected Director provider is not supported by the Director Claude endpoint.';
 	}
 	return resolution.message;
 }
