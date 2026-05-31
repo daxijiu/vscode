@@ -8,6 +8,7 @@ import { Disposable, DisposableStore } from '../../../../../base/common/lifecycl
 import { localize } from '../../../../../nls.js';
 import { DirectorProviderApiType, DirectorProviderAuthKind, DirectorProviderKind } from '../../../../../platform/agentHost/common/directorProviderBackend.js';
 import { buildDirectorConnectionTestRequest } from '../../../../../platform/agentHost/common/directorProviderRequest.js';
+import type { DirectorOAuthAuthVariant } from '../../../../../platform/agentHost/common/directorRuntimeCredentials.js';
 import { DirectorProviderAuthState, makeDirectorProviderModelKey, sanitizeDirectorProviderHeaders, sanitizeDirectorProviderId } from '../../../../../platform/agentHost/common/directorProviderSnapshot.js';
 import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
 import { createDirectorProviderInstance, DirectorProviderRegistryState, DirectorStoredProviderInstance, DirectorStoredProviderModel, IDirectorApiKeyService, IDirectorModelResolverService, IDirectorOAuthService, IDirectorProviderConnectionTestService, IDirectorProviderRegistryService, IDirectorProviderSnapshotService } from '../../common/provider/directorProviderServices.js';
@@ -26,7 +27,7 @@ interface DirectorProviderTemplate {
 	readonly recommended?: boolean;
 	readonly custom?: boolean;
 	readonly allowMultiple?: boolean;
-	readonly authVariant?: 'default' | 'openai-codex';
+	readonly authVariant?: DirectorOAuthAuthVariant;
 }
 
 type ProviderDialogMode =
@@ -129,7 +130,7 @@ const apiKeyProviderTemplates: readonly DirectorProviderTemplate[] = [
 
 const oauthProviderTemplates: readonly DirectorProviderTemplate[] = [
 	{
-		id: 'openai-codex-oauth',
+		id: 'openai-codex',
 		kind: 'openai-codex',
 		apiType: 'openai-codex',
 		authKind: 'oauth',
@@ -138,6 +139,18 @@ const oauthProviderTemplates: readonly DirectorProviderTemplate[] = [
 		note: localize('directorSettings.template.openaiCodexOAuth.note', "OpenAI Codex provider using Director-owned OAuth state."),
 		baseURL: 'https://chatgpt.com/backend-api/codex',
 		defaultModelId: 'gpt-5.2-codex',
+		recommended: true,
+	},
+	{
+		id: 'anthropic-oauth',
+		kind: 'anthropic',
+		apiType: 'anthropic-messages',
+		authKind: 'oauth',
+		authVariant: 'default',
+		label: localize('directorSettings.template.anthropicOAuth', "Anthropic OAuth"),
+		note: localize('directorSettings.template.anthropicOAuth.note', "Anthropic provider using Director-owned OAuth state."),
+		baseURL: 'https://api.anthropic.com',
+		defaultModelId: 'claude-sonnet-4.5',
 		recommended: true,
 	},
 ];
@@ -690,28 +703,37 @@ export class ProviderSettingsWidget extends Disposable {
 			DOM.append(header, $('.dc-oauth-dialog-title')).textContent = template.label;
 			DOM.append(form, $('.dc-section-subtitle')).textContent = template.note;
 
-			const idInput = this.createInputRow(form, localize('directorSettings.providerId', "Provider ID"), 'openai-codex');
-			idInput.value = provider?.id ?? 'openai-codex';
+			const idInput = this.createInputRow(form, localize('directorSettings.providerId', "Provider ID"), template.id);
+			idInput.value = provider?.id ?? sanitizeDirectorProviderId(template.id);
 			idInput.disabled = !!provider;
 			const displayNameInput = this.createInputRow(form, localize('directorSettings.displayName', "Display Name"), template.label);
 			displayNameInput.value = provider?.displayName ?? template.label;
 			const status = DOM.append(form, $('.dc-dialog-status'));
 			const setStatus = (message: string, kind: StatusKind = 'info') => this.setStatus(status, message, kind);
 			void this.getAuthState(provider).then(authState => {
-				setStatus(authState.kind === 'ready'
-					? localize('directorSettings.oauthReady', "OAuth state is ready.")
-					: localize('directorSettings.oauthSignedOut', "OAuth state is signed out."),
-					authState.kind === 'ready' ? 'success' : 'info');
+				setStatus(
+					authState.kind === 'ready'
+						? localize('directorSettings.oauthReady', "OAuth state is ready.")
+						: authState.message ?? localize('directorSettings.oauthSignedOut', "OAuth state is signed out."),
+					authState.kind === 'ready' ? 'success' : authState.kind === 'expired' || authState.kind === 'error' ? 'error' : 'info'
+				);
 			});
 
 			this.addModalAction(footer, localize('directorSettings.cancel', "Cancel"), 'secondary', close);
 			if (provider) {
 				this.addModalAction(footer, localize('directorSettings.validateSetup', "Validate Setup"), 'secondary', () => void this.validateProvider(provider, setStatus));
-				this.addModalAction(footer, localize('directorSettings.signOut', "Sign Out"), 'secondary', () => void this.oauthService.signOutOpenAICodex(provider.id).then(() => {
+				this.addModalAction(footer, localize('directorSettings.signOut', "Sign Out"), 'secondary', () => void this.oauthService.signOutProvider(provider.id).then(() => {
 					void this.snapshotService.writeSnapshot();
 					setStatus(localize('directorSettings.oauthSignedOut', "OAuth state is signed out."), 'info');
 				}));
-				this.addModalAction(footer, localize('directorSettings.signIn', "Sign In"), 'primary', () => void this.oauthService.signInOpenAICodex(provider.id).then(() => {
+				this.addModalAction(footer, localize('directorSettings.refreshToken', "Refresh Token"), 'secondary', () => void this.oauthService.refreshProviderToken(provider).then(authState => {
+					void this.snapshotService.writeSnapshot();
+					setStatus(authState.kind === 'ready'
+						? localize('directorSettings.oauthReady', "OAuth state is ready.")
+						: authState.message ?? localize('directorSettings.oauthSignedOut', "OAuth state is signed out."),
+						authState.kind === 'ready' ? 'success' : 'error');
+				}));
+				this.addModalAction(footer, localize('directorSettings.signIn', "Sign In"), 'primary', () => void this.oauthService.signInProvider(provider).then(() => {
 					void this.snapshotService.writeSnapshot();
 					setStatus(localize('directorSettings.oauthReady', "OAuth state is ready."), 'success');
 				}));
@@ -909,7 +931,7 @@ export class ProviderSettingsWidget extends Disposable {
 		});
 		await this.runLocalMutation(async () => {
 			await this.registryService.saveProvider(provider);
-			await this.oauthService.signInOpenAICodex(provider.id);
+			await this.oauthService.signInProvider(provider);
 			await this.registryService.setDefaults(provider.id, provider.defaultModelId);
 			await this.snapshotService.writeSnapshot();
 		}, 'providersAndModels');
@@ -1037,7 +1059,7 @@ export class ProviderSettingsWidget extends Disposable {
 			await this.registryService.removeProvider(provider.id);
 			await this.apiKeyService.deleteProviderInstanceKey(provider.id);
 			if (provider.authKind === 'oauth') {
-				await this.oauthService.signOutOpenAICodex(provider.id);
+				await this.oauthService.signOutProvider(provider.id);
 			}
 			await this.snapshotService.writeSnapshot();
 		}, 'providersAndModels');
@@ -1070,7 +1092,13 @@ export class ProviderSettingsWidget extends Disposable {
 
 	private authLabel(provider: DirectorStoredProviderInstance): string {
 		if (provider.authKind === 'oauth') {
-			return provider.authVariant === 'openai-codex' ? 'ChatGPT/Codex OAuth' : 'OAuth';
+			if (provider.authVariant === 'openai-codex') {
+				return 'ChatGPT/Codex OAuth';
+			}
+			if (provider.kind === 'anthropic' || provider.kind === 'anthropic-compatible') {
+				return 'Anthropic OAuth';
+			}
+			return 'OAuth';
 		}
 		if (provider.authKind === 'api-key') {
 			return 'API Key';

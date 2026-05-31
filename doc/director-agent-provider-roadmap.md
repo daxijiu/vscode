@@ -541,6 +541,14 @@ Exit criteria:
 - Token refresh does not leak into agent harness code.
 - OAuth-backed Director models remain visible/configurable according to their own provider auth state, and Copilot logout does not force Director model or subagent login prompts.
 
+Current minimal slice:
+
+- Added provider-instance scoped Director OAuth token records in Secret Storage, with provider id, auth variant, identity key, access token, optional refresh token, optional expiry, and timestamps.
+- Kept OpenAI Codex deterministic local OAuth acceptance through the generic lifecycle.
+- Added Anthropic OAuth as a deterministic local/manual provider template in Director Settings.
+- Runtime credential bridges return only bearer access tokens and treat expired tokens as missing; refresh tokens remain Workbench/Secret Storage only.
+- Real browser/device OAuth, real Anthropic PKCE exchange, and VS Code `AuthenticationProvider` / provider-specific `ProtectedResourceMetadata` integration remain deferred.
+
 ### Phase 9 - Session Restore, Migration, and Compatibility
 
 Goal: make the new optional-agent architecture durable across restarts and compatible with old Director user data where reasonable.

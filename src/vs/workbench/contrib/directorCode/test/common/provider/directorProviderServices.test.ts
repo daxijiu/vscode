@@ -17,6 +17,7 @@ import { IUserDataProfilesService, toUserDataProfile } from '../../../../../../p
 import { IUserDataProfileService } from '../../../../../services/userDataProfile/common/userDataProfile.js';
 import { createDirectorProviderInstance, DirectorApiKeyService, DirectorModelResolverService, DirectorOAuthService, DirectorProviderConnectionTestService, DirectorProviderRegistryService, DirectorProviderSnapshotService, DirectorRuntimeCredentialService } from '../../../common/provider/directorProviderServices.js';
 import { getDirectorProviderRegistryResourceFromGlobalStorageHome, getDirectorProviderSnapshotResourceFromGlobalStorageHome } from '../../../../../../platform/agentHost/common/directorProviderSnapshot.js';
+import { getDirectorOAuthTokenSecretStorageKey, parseDirectorOAuthTokenRecord } from '../../../../../../platform/agentHost/common/directorRuntimeCredentials.js';
 
 suite('directorProviderServices', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
@@ -226,19 +227,132 @@ suite('directorProviderServices', () => {
 
 		await registryService.saveProvider(provider);
 		await oauthService.signInOpenAICodex(provider.id);
+		const tokenRecord = parseDirectorOAuthTokenRecord(await secretStorageService.get(getDirectorOAuthTokenSecretStorageKey(provider.id)));
 		const readySnapshot = await snapshotService.writeSnapshot();
 		await oauthService.signOutOpenAICodex(provider.id);
 		const signedOutSnapshot = await snapshotService.writeSnapshot();
 		const snapshotText = JSON.stringify(await readJson(getDirectorProviderSnapshotResourceFromGlobalStorageHome(userDataProfileService.currentProfile.globalStorageHome)));
 
 		assert.deepStrictEqual({
+			tokenRecord: tokenRecord && {
+				providerInstanceId: tokenRecord.providerInstanceId,
+				providerId: tokenRecord.providerId,
+				authVariant: tokenRecord.authVariant,
+				identityKey: tokenRecord.identityKey,
+				hasRefreshToken: tokenRecord.refreshToken !== undefined,
+				hasExpiresAt: tokenRecord.expiresAt !== undefined,
+			},
 			readyAuthState: readySnapshot.providers[0].authState.kind,
+			readyIdentityKey: readySnapshot.providers[0].authState.identityKey,
 			signedOutAuthState: signedOutSnapshot.providers[0].authState.kind,
 			leaksFakeToken: snapshotText.includes('director-code-fake-openai-codex-token'),
 		}, {
+			tokenRecord: {
+				providerInstanceId: provider.id,
+				providerId: 'openai',
+				authVariant: 'openai-codex',
+				identityKey: `oauth:openai:openai-codex:${provider.id}:local`,
+				hasRefreshToken: true,
+				hasExpiresAt: true,
+			},
 			readyAuthState: 'ready',
+			readyIdentityKey: `oauth:openai:openai-codex:${provider.id}:local`,
 			signedOutAuthState: 'signedOut',
 			leaksFakeToken: false,
+		});
+	});
+
+	test('tracks Anthropic OAuth state through provider-scoped token records', async () => {
+		const provider = createDirectorProviderInstance({
+			id: 'anthropic-oauth',
+			kind: 'anthropic',
+			displayName: 'Anthropic OAuth',
+			authKind: 'oauth',
+			apiType: 'anthropic-messages',
+			authVariant: 'default',
+			baseURL: 'https://api.anthropic.test',
+			modelId: 'claude-test',
+		});
+
+		await registryService.saveProvider(provider);
+		await oauthService.signInProvider(provider);
+		const snapshot = await snapshotService.writeSnapshot();
+		const tokenRecord = parseDirectorOAuthTokenRecord(await secretStorageService.get(getDirectorOAuthTokenSecretStorageKey(provider.id)));
+		const registryText = JSON.stringify(await readJson(getDirectorProviderRegistryResourceFromGlobalStorageHome(userDataProfileService.currentProfile.globalStorageHome)));
+		const snapshotText = JSON.stringify(await readJson(getDirectorProviderSnapshotResourceFromGlobalStorageHome(userDataProfileService.currentProfile.globalStorageHome)));
+
+		assert.deepStrictEqual({
+			tokenRecord: tokenRecord && {
+				providerInstanceId: tokenRecord.providerInstanceId,
+				providerId: tokenRecord.providerId,
+				authVariant: tokenRecord.authVariant,
+				identityKey: tokenRecord.identityKey,
+				accessToken: tokenRecord.accessToken,
+				hasRefreshToken: tokenRecord.refreshToken !== undefined,
+			},
+			authState: snapshot.providers[0].authState,
+			runtimeCredential: await runtimeCredentialService.resolveCredential({ providerInstanceId: provider.id, authKind: 'oauth' }),
+			registryLeaksAccessToken: registryText.includes('director-code-fake-anthropic-oauth-token'),
+			snapshotLeaksAccessToken: snapshotText.includes('director-code-fake-anthropic-oauth-token'),
+			runtimeCredentialLeaksRefreshToken: JSON.stringify(await runtimeCredentialService.resolveCredential({ providerInstanceId: provider.id, authKind: 'oauth' })).includes('refresh'),
+		}, {
+			tokenRecord: {
+				providerInstanceId: provider.id,
+				providerId: 'anthropic',
+				authVariant: 'default',
+				identityKey: `oauth:anthropic:default:${provider.id}:local`,
+				accessToken: 'director-code-fake-anthropic-oauth-token',
+				hasRefreshToken: true,
+			},
+			authState: {
+				kind: 'ready',
+				identityKey: `oauth:anthropic:default:${provider.id}:local`,
+				updatedAt: snapshot.providers[0].authState.updatedAt,
+			},
+			runtimeCredential: { kind: 'bearer', accessToken: 'director-code-fake-anthropic-oauth-token' },
+			registryLeaksAccessToken: false,
+			snapshotLeaksAccessToken: false,
+			runtimeCredentialLeaksRefreshToken: false,
+		});
+	});
+
+	test('tracks OAuth expiry, deterministic refresh, and logout state', async () => {
+		const provider = createDirectorProviderInstance({
+			id: 'anthropic-oauth',
+			kind: 'anthropic',
+			displayName: 'Anthropic OAuth',
+			authKind: 'oauth',
+			apiType: 'anthropic-messages',
+			authVariant: 'default',
+			baseURL: 'https://api.anthropic.test',
+			modelId: 'claude-test',
+		});
+
+		await oauthService.storeToken(provider, {
+			accessToken: 'expired-token',
+			refreshToken: 'refresh-token',
+			expiresAt: Date.now() - 1,
+			identityKey: `oauth:anthropic:default:${provider.id}:local`,
+		});
+		const expired = await oauthService.getAuthState(provider);
+		const missingCredential = await runtimeCredentialService.resolveCredential({ providerInstanceId: provider.id, authKind: 'oauth' });
+		const refreshed = await oauthService.refreshProviderToken(provider);
+		const refreshedCredential = await runtimeCredentialService.resolveCredential({ providerInstanceId: provider.id, authKind: 'oauth' });
+		await oauthService.signOutProvider(provider.id);
+		const signedOut = await oauthService.getAuthState(provider);
+
+		assert.deepStrictEqual({
+			expired: expired.kind,
+			missingCredential: missingCredential.kind,
+			refreshed: refreshed.kind,
+			refreshedCredential,
+			signedOut: signedOut.kind,
+		}, {
+			expired: 'expired',
+			missingCredential: 'missing',
+			refreshed: 'ready',
+			refreshedCredential: { kind: 'bearer', accessToken: 'director-code-fake-anthropic-oauth-refreshed-token' },
+			signedOut: 'signedOut',
 		});
 	});
 
@@ -461,7 +575,9 @@ suite('directorProviderServices', () => {
 
 	async function closeServer(server: import('http').Server): Promise<void> {
 		await new Promise<void>((resolve, reject) => {
+			server.closeAllConnections();
 			server.close(err => err ? reject(err) : resolve());
 		});
+		await new Promise(resolve => setTimeout(resolve, 50));
 	}
 });

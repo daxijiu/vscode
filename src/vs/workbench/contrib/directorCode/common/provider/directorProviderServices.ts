@@ -15,7 +15,7 @@ import { ISecretStorageService } from '../../../../../platform/secrets/common/se
 import { IUserDataProfilesService } from '../../../../../platform/userDataProfile/common/userDataProfile.js';
 import { IUserDataProfileService } from '../../../../services/userDataProfile/common/userDataProfile.js';
 import type { DirectorProviderApiType, DirectorProviderAuthKind, DirectorProviderCapabilities, DirectorProviderInstance, DirectorProviderKind } from '../../../../../platform/agentHost/common/directorProviderBackend.js';
-import { getDirectorApiKeySecretStorageKey, getDirectorOAuthTokenSecretStorageKey, parseDirectorOAuthAccessToken, type DirectorRuntimeCredential, type DirectorRuntimeCredentialRequest, type IDirectorRuntimeCredentialService } from '../../../../../platform/agentHost/common/directorRuntimeCredentials.js';
+import { getDirectorApiKeySecretStorageKey, getDirectorOAuthTokenSecretStorageKey, isDirectorOAuthTokenExpired, parseDirectorOAuthAccessToken, parseDirectorOAuthTokenRecord, type DirectorOAuthAuthVariant, type DirectorOAuthTokenRecord, type DirectorRuntimeCredential, type DirectorRuntimeCredentialRequest, type IDirectorRuntimeCredentialService } from '../../../../../platform/agentHost/common/directorRuntimeCredentials.js';
 import { buildDirectorConnectionTestRequest, type DirectorConnectionTestRequest } from '../../../../../platform/agentHost/common/directorProviderRequest.js';
 import { DirectorProviderSnapshotVersion, getDirectorProviderRegistryResourceFromGlobalStorageHome, getDirectorProviderSnapshotResourceFromGlobalStorageHome, makeDirectorProviderModelKey, sanitizeDirectorProviderHeaders, sanitizeDirectorProviderId, type DirectorProviderAuthState, type DirectorProviderSnapshot, type DirectorProviderSnapshotModel, type DirectorProviderSnapshotProvider } from '../../../../../platform/agentHost/common/directorProviderSnapshot.js';
 
@@ -28,7 +28,7 @@ export const IDirectorProviderConnectionTestService = createDecorator<IDirectorP
 
 export interface DirectorStoredProviderInstance extends DirectorProviderInstance {
 	readonly apiType: DirectorProviderApiType;
-	readonly authVariant?: 'default' | 'openai-codex';
+	readonly authVariant?: DirectorOAuthAuthVariant;
 	readonly models?: readonly DirectorStoredProviderModel[];
 	readonly createdAt: number;
 	readonly updatedAt: number;
@@ -78,10 +78,23 @@ export interface IDirectorApiKeyService {
 export interface IDirectorOAuthService {
 	readonly _serviceBrand: undefined;
 	readonly onDidChangeAuth: Event<string>;
+	signInProvider(provider: DirectorStoredProviderInstance): Promise<void>;
+	storeToken(provider: DirectorStoredProviderInstance, token: DirectorOAuthTokenPayload): Promise<void>;
+	refreshProviderToken(provider: DirectorStoredProviderInstance): Promise<DirectorProviderAuthState>;
+	signOutProvider(providerInstanceId: string): Promise<void>;
+	getAccessToken(providerInstanceId: string): Promise<string | undefined>;
+	getTokenRecord(providerInstanceId: string): Promise<DirectorOAuthTokenRecord | undefined>;
 	signInOpenAICodex(providerInstanceId: string): Promise<void>;
 	signOutOpenAICodex(providerInstanceId: string): Promise<void>;
 	getOpenAICodexAccessToken(providerInstanceId: string): Promise<string | undefined>;
 	getAuthState(provider: DirectorStoredProviderInstance): Promise<DirectorProviderAuthState>;
+}
+
+export interface DirectorOAuthTokenPayload {
+	readonly accessToken: string;
+	readonly refreshToken?: string;
+	readonly expiresAt?: number;
+	readonly identityKey?: string;
 }
 
 export interface IDirectorModelResolverService {
@@ -247,23 +260,86 @@ export class DirectorOAuthService extends Disposable implements IDirectorOAuthSe
 		super();
 	}
 
-	async signInOpenAICodex(providerInstanceId: string): Promise<void> {
-		await this.secretStorageService.set(this.getKey(providerInstanceId), JSON.stringify({
-			authVariant: 'openai-codex',
-			accessToken: 'director-code-fake-openai-codex-token',
-			createdAt: Date.now(),
-		}));
-		this.onDidChangeAuthEmitter.fire(providerInstanceId);
+	async signInProvider(provider: DirectorStoredProviderInstance): Promise<void> {
+		await this.storeToken(provider, createLocalOAuthTokenPayload(provider, Date.now()));
 	}
 
-	async signOutOpenAICodex(providerInstanceId: string): Promise<void> {
+	async storeToken(provider: DirectorStoredProviderInstance, token: DirectorOAuthTokenPayload): Promise<void> {
+		const now = Date.now();
+		const providerId = getDirectorOAuthProviderId(provider);
+		const authVariant = getDirectorOAuthAuthVariant(provider);
+		await this.writeTokenRecord({
+			providerInstanceId: provider.id,
+			providerId,
+			authVariant,
+			identityKey: token.identityKey ?? getDirectorOAuthIdentityKey(provider),
+			accessToken: token.accessToken,
+			...(token.refreshToken !== undefined ? { refreshToken: token.refreshToken } : {}),
+			...(token.expiresAt !== undefined ? { expiresAt: token.expiresAt } : {}),
+			createdAt: now,
+			updatedAt: now,
+		});
+	}
+
+	async refreshProviderToken(provider: DirectorStoredProviderInstance): Promise<DirectorProviderAuthState> {
+		const record = await this.getTokenRecord(provider.id);
+		if (record === undefined) {
+			return { kind: 'signedOut', message: `Director provider '${provider.displayName}' is signed out.`, updatedAt: Date.now() };
+		}
+		const providerId = getDirectorOAuthProviderId(provider);
+		const authVariant = getDirectorOAuthAuthVariant(provider);
+		if (record.providerInstanceId !== provider.id || record.providerId !== providerId || record.authVariant !== authVariant) {
+			return {
+				kind: 'error',
+				message: `Director provider '${provider.displayName}' has OAuth state for a different provider identity.`,
+				updatedAt: Date.now(),
+			};
+		}
+		if (record.refreshToken === undefined) {
+			return { kind: 'expired', identityKey: record.identityKey, message: `Director provider '${provider.displayName}' needs OAuth re-authentication.`, updatedAt: Date.now() };
+		}
+		const now = Date.now();
+		await this.writeTokenRecord({
+			...record,
+			accessToken: createLocalOAuthAccessToken(record.providerId, record.authVariant, true),
+			expiresAt: now + DirectorOAuthLocalTokenLifetimeMs,
+			updatedAt: now,
+		});
+		return this.getAuthState(provider);
+	}
+
+	async signOutProvider(providerInstanceId: string): Promise<void> {
 		await this.secretStorageService.delete(this.getKey(providerInstanceId));
 		this.onDidChangeAuthEmitter.fire(providerInstanceId);
 	}
 
-	async getOpenAICodexAccessToken(providerInstanceId: string): Promise<string | undefined> {
+	async getAccessToken(providerInstanceId: string): Promise<string | undefined> {
 		const value = await this.secretStorageService.get(this.getKey(providerInstanceId));
 		return parseDirectorOAuthAccessToken(value);
+	}
+
+	async getTokenRecord(providerInstanceId: string): Promise<DirectorOAuthTokenRecord | undefined> {
+		const value = await this.secretStorageService.get(this.getKey(providerInstanceId));
+		return parseDirectorOAuthTokenRecord(value);
+	}
+
+	async signInOpenAICodex(providerInstanceId: string): Promise<void> {
+		await this.signInProvider(createDirectorProviderInstance({
+			id: providerInstanceId,
+			kind: 'openai-codex',
+			displayName: 'OpenAI Codex',
+			authKind: 'oauth',
+			apiType: 'openai-codex',
+			authVariant: 'openai-codex',
+		}));
+	}
+
+	async signOutOpenAICodex(providerInstanceId: string): Promise<void> {
+		await this.signOutProvider(providerInstanceId);
+	}
+
+	async getOpenAICodexAccessToken(providerInstanceId: string): Promise<string | undefined> {
+		return this.getAccessToken(providerInstanceId);
 	}
 
 	async getAuthState(provider: DirectorStoredProviderInstance): Promise<DirectorProviderAuthState> {
@@ -271,14 +347,95 @@ export class DirectorOAuthService extends Disposable implements IDirectorOAuthSe
 			return { kind: 'missing', message: `Director provider '${provider.id}' is not configured for OAuth.`, updatedAt: Date.now() };
 		}
 		const value = await this.secretStorageService.get(this.getKey(provider.id));
-		return value
-			? { kind: 'ready', identityKey: `oauth:openai:openai-codex:${provider.id}`, updatedAt: Date.now() }
-			: { kind: 'signedOut', message: `Director provider '${provider.displayName}' is signed out.`, updatedAt: Date.now() };
+		if (!value) {
+			return { kind: 'signedOut', message: `Director provider '${provider.displayName}' is signed out.`, updatedAt: Date.now() };
+		}
+		const record = parseDirectorOAuthTokenRecord(value);
+		if (record !== undefined) {
+			const providerId = getDirectorOAuthProviderId(provider);
+			const authVariant = getDirectorOAuthAuthVariant(provider);
+			if (record.providerInstanceId !== provider.id || record.providerId !== providerId || record.authVariant !== authVariant) {
+				return {
+					kind: 'error',
+					message: `Director provider '${provider.displayName}' has OAuth state for a different provider identity.`,
+					updatedAt: Date.now(),
+				};
+			}
+			if (isDirectorOAuthTokenExpired(record)) {
+				return {
+					kind: 'expired',
+					identityKey: record.identityKey,
+					message: `Director provider '${provider.displayName}' OAuth token expired. Sign in again or refresh the token.`,
+					updatedAt: Date.now(),
+				};
+			}
+			return { kind: 'ready', identityKey: record.identityKey, updatedAt: Date.now() };
+		}
+		return parseDirectorOAuthAccessToken(value)
+			? { kind: 'ready', identityKey: getDirectorOAuthIdentityKey(provider), updatedAt: Date.now() }
+			: { kind: 'error', message: `Director provider '${provider.displayName}' has an invalid OAuth token record.`, updatedAt: Date.now() };
 	}
 
 	private getKey(providerInstanceId: string): string {
 		return getDirectorOAuthTokenSecretStorageKey(providerInstanceId);
 	}
+
+	private async writeTokenRecord(record: DirectorOAuthTokenRecord): Promise<void> {
+		await this.secretStorageService.set(this.getKey(record.providerInstanceId), JSON.stringify(record));
+		this.onDidChangeAuthEmitter.fire(record.providerInstanceId);
+	}
+}
+
+const DirectorOAuthLocalTokenLifetimeMs = 60 * 60 * 1000;
+
+function createLocalOAuthTokenPayload(provider: DirectorStoredProviderInstance, now: number): DirectorOAuthTokenPayload {
+	const providerId = getDirectorOAuthProviderId(provider);
+	const authVariant = getDirectorOAuthAuthVariant(provider);
+	return {
+		accessToken: createLocalOAuthAccessToken(providerId, authVariant, false),
+		refreshToken: `director-code-fake-${providerId}-${authVariant}-refresh-token`,
+		expiresAt: now + DirectorOAuthLocalTokenLifetimeMs,
+		identityKey: getDirectorOAuthIdentityKey(provider),
+	};
+}
+
+function createLocalOAuthAccessToken(providerId: string, authVariant: DirectorOAuthAuthVariant, refreshed: boolean): string {
+	if (providerId === 'openai' && authVariant === 'openai-codex') {
+		return refreshed ? 'director-code-fake-openai-codex-refreshed-token' : 'director-code-fake-openai-codex-token';
+	}
+	if (providerId === 'anthropic') {
+		return refreshed ? 'director-code-fake-anthropic-oauth-refreshed-token' : 'director-code-fake-anthropic-oauth-token';
+	}
+	return `director-code-fake-${providerId}-${authVariant}-${refreshed ? 'refreshed' : 'access'}-token`;
+}
+
+function getDirectorOAuthProviderId(provider: Pick<DirectorStoredProviderInstance, 'kind'>): string {
+	switch (provider.kind) {
+		case 'openai':
+		case 'openai-codex':
+			return 'openai';
+		case 'anthropic':
+		case 'anthropic-compatible':
+			return 'anthropic';
+		case 'openai-compatible':
+			return 'openai-compatible';
+		case 'gemini':
+			return 'gemini';
+		case 'local':
+			return 'local';
+		case 'custom-http':
+			return 'custom-http';
+	}
+}
+
+function getDirectorOAuthAuthVariant(provider: Pick<DirectorStoredProviderInstance, 'authVariant'>): DirectorOAuthAuthVariant {
+	return provider.authVariant ?? 'default';
+}
+
+function getDirectorOAuthIdentityKey(provider: Pick<DirectorStoredProviderInstance, 'id' | 'kind' | 'authVariant'>): string {
+	const providerId = getDirectorOAuthProviderId(provider);
+	const authVariant = getDirectorOAuthAuthVariant(provider);
+	return `oauth:${providerId}:${authVariant}:${provider.id}:local`;
 }
 
 export class DirectorRuntimeCredentialService implements IDirectorRuntimeCredentialService {
@@ -301,7 +458,7 @@ export class DirectorRuntimeCredentialService implements IDirectorRuntimeCredent
 			}
 			case 'oauth':
 			case 'bearer': {
-				const accessToken = await this.oauthService.getOpenAICodexAccessToken(request.providerInstanceId);
+				const accessToken = await this.oauthService.getAccessToken(request.providerInstanceId);
 				return accessToken
 					? { kind: 'bearer', accessToken }
 					: { kind: 'missing', message: `Director provider '${request.providerInstanceId}' is signed out or missing an OAuth token.` };
@@ -369,8 +526,9 @@ export class DirectorModelResolverService implements IDirectorModelResolverServi
 			}
 			case 'oauth':
 			case 'bearer': {
-				const value = await this.oauthService.getOpenAICodexAccessToken(provider.id);
-				return value ? { kind: 'bearer', value, identityKey: `oauth:${provider.id}` } : undefined;
+				const record = await this.oauthService.getTokenRecord(provider.id);
+				const value = await this.oauthService.getAccessToken(provider.id);
+				return value ? { kind: 'bearer', value, identityKey: record?.identityKey ?? `oauth:${provider.id}` } : undefined;
 			}
 		}
 	}
@@ -657,7 +815,7 @@ export function createDirectorProviderInstance(options: {
 	readonly apiType: DirectorProviderApiType;
 	readonly baseURL?: string;
 	readonly modelId?: string;
-	readonly authVariant?: 'default' | 'openai-codex';
+	readonly authVariant?: DirectorOAuthAuthVariant;
 }): DirectorStoredProviderInstance {
 	const id = sanitizeDirectorProviderId(options.id ?? options.displayName);
 	const modelLabel = options.modelId?.trim();

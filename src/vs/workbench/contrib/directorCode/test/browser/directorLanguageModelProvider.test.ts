@@ -8,12 +8,12 @@ import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { DirectorProviderAuthState, DirectorProviderSnapshotModel } from '../../../../../platform/agentHost/common/directorProviderSnapshot.js';
-import type { DirectorRuntimeCredential, DirectorRuntimeCredentialRequest, IDirectorRuntimeCredentialService } from '../../../../../platform/agentHost/common/directorRuntimeCredentials.js';
+import type { DirectorOAuthTokenRecord, DirectorRuntimeCredential, DirectorRuntimeCredentialRequest, IDirectorRuntimeCredentialService } from '../../../../../platform/agentHost/common/directorRuntimeCredentials.js';
 import { syncDirectorLanguageModelConfigurationGroup } from '../../browser/directorLanguageModel/directorLanguageModelGroupSync.js';
 import { DirectorLanguageModelProvider } from '../../browser/directorLanguageModel/directorLanguageModelProvider.js';
 import { ChatMessageRole, type IChatResponsePart } from '../../../chat/common/languageModels.js';
 import type { ConfigureLanguageModelsOptions, ILanguageModelsConfigurationService, ILanguageModelsProviderGroup } from '../../../chat/common/languageModelsConfiguration.js';
-import { IDirectorApiKeyService, IDirectorModelResolverService, IDirectorOAuthService, IDirectorProviderRegistryService, type DirectorProviderRegistryState, type DirectorStoredProviderInstance } from '../../common/provider/directorProviderServices.js';
+import { IDirectorApiKeyService, IDirectorModelResolverService, IDirectorOAuthService, IDirectorProviderRegistryService, type DirectorOAuthTokenPayload, type DirectorProviderRegistryState, type DirectorStoredProviderInstance } from '../../common/provider/directorProviderServices.js';
 
 suite('DirectorLanguageModelProvider', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
@@ -305,6 +305,12 @@ class TestOAuthService implements IDirectorOAuthService {
 	declare readonly _serviceBrand: undefined;
 	readonly onDidChangeAuth = Event.None;
 
+	signInProvider(_provider: DirectorStoredProviderInstance): Promise<void> { return Promise.resolve(); }
+	storeToken(_provider: DirectorStoredProviderInstance, _token: DirectorOAuthTokenPayload): Promise<void> { return Promise.resolve(); }
+	refreshProviderToken(_provider: DirectorStoredProviderInstance): Promise<DirectorProviderAuthState> { return Promise.resolve({ kind: 'signedOut' }); }
+	signOutProvider(_providerInstanceId: string): Promise<void> { return Promise.resolve(); }
+	getAccessToken(_providerInstanceId: string): Promise<string | undefined> { return Promise.resolve(undefined); }
+	getTokenRecord(_providerInstanceId: string): Promise<DirectorOAuthTokenRecord | undefined> { return Promise.resolve(undefined); }
 	signInOpenAICodex(): Promise<void> { return Promise.resolve(); }
 	signOutOpenAICodex(): Promise<void> { return Promise.resolve(); }
 	getOpenAICodexAccessToken(): Promise<string | undefined> { return Promise.resolve(undefined); }

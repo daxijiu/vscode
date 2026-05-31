@@ -282,7 +282,10 @@ Phase 7:
 
 Phase 8:
 
-- OAuth hardening and additional provider support.
+- Completed locally on 2026-05-31: added a minimal OAuth hardening slice with provider-instance scoped `DirectorOAuthTokenRecord` storage under Secret Storage, generic Workbench `DirectorOAuthService` lifecycle methods, expiry-aware auth state, deterministic refresh, and logout.
+- OpenAI Codex keeps deterministic local/manual OAuth acceptance through the generic lifecycle; Anthropic OAuth is now available as a deterministic local/manual Provider Settings template.
+- Runtime credential bridges still return bearer access tokens only and do not expose refresh tokens. Registry JSON, provider snapshots, model metadata, and AgentHost state remain token-free.
+- Deferred: real OpenAI Codex browser/device OAuth, real Anthropic PKCE/manual-code exchange, VS Code `AuthenticationProvider`, provider-specific `ProtectedResourceMetadata`, network refresh endpoints, and Phase 10 telemetry/stress work.
 
 Phase 9:
 

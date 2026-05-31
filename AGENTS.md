@@ -45,7 +45,9 @@ Current docs:
 - `doc/director-agent-provider-phase3-plan.md`
 - `doc/director-agent-provider-phase4-plan.md`
 - `doc/director-agent-provider-phase5-plan.md`
+- `doc/director-agent-provider-phase6-plan.md`
 - `doc/director-agent-provider-phase7-plan.md`
+- `doc/director-agent-provider-phase8-plan.md`
 - `doc/research/claude-agenthost-phase-handoff.md`
 - `doc/research/custom-agent-provider-backend-plan.md`
 - `MEMORY.md`
@@ -194,3 +196,11 @@ Accepted Phase 6 implementation:
 - Director-backed Claude models come from `IDirectorProviderBackendHub`; missing-auth models remain visible as `PolicyState.Unconfigured`, while disabled/local/custom-http providers are hidden.
 - `claudeSdkOptions` now consumes a neutral SDK endpoint handle instead of depending on `IClaudeProxyHandle`; endpoint handles are disposed after the SDK session pipeline.
 - API keys/OAuth tokens remain behind Director runtime credential resolution and are not written into model metadata, provider snapshots, AgentHost protocol state, or SDK options logs.
+
+Current Phase 8 minimal slice:
+
+- Director OAuth tokens are provider-instance scoped `DirectorOAuthTokenRecord`s in Secret Storage with provider id, auth variant, identity key, access token, optional refresh token, optional expiry, and timestamps.
+- OpenAI Codex keeps deterministic local/manual OAuth acceptance through the generic lifecycle.
+- Anthropic OAuth is available as a deterministic local/manual Provider Settings template with provider-specific auth state.
+- Runtime credential bridges return bearer access tokens only; refresh tokens are not exposed to AgentHost, snapshots, model metadata, registry JSON, or logs.
+- Real browser/device OAuth, real Anthropic PKCE exchange, VS Code `AuthenticationProvider`, and provider-specific `ProtectedResourceMetadata` integration remain deferred.
