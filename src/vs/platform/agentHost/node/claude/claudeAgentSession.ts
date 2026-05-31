@@ -7,7 +7,7 @@ import type { Options, PermissionMode, SDKUserMessage } from '@anthropic-ai/clau
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { CancellationError } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IInstantiationService } from '../../../instantiation/common/instantiation.js';
 import { ILogService } from '../../../log/common/log.js';
@@ -31,7 +31,7 @@ import { SessionClientCustomizationsDiff } from './customizations/claudeSessionC
 import { projectSessionCustomizations } from './customizations/claudeSessionCustomizationsProjector.js';
 import { ClaudeSdkCustomizationBundler } from './customizations/claudeSdkCustomizationBundler.js';
 import { resolvePromptToContentBlocks } from './claudePromptResolver.js';
-import { IClaudeProxyHandle } from './claudeProxyService.js';
+import { IClaudeSdkEndpointHandle } from './claudeSdkEndpoint.js';
 import { ClaudeSdkPipeline, IRematerializer, type ISdkResolvedCustomizations } from './claudeSdkPipeline.js';
 import { SubagentRegistry } from './claudeSubagentRegistry.js';
 import { ClaudePermissionKind } from './claudeToolDisplay.js';
@@ -42,11 +42,11 @@ export type { IRematerializer } from './claudeSdkPipeline.js';
 /**
  * Inputs to {@link ClaudeAgentSession.materialize}. Carries the
  * agent-supplied dependencies that the session itself does not own
- * (proxy auth, the `canUseTool` closure that bridges back to the
+ * (SDK endpoint auth, the `canUseTool` closure that bridges back to the
  * agent's per-session lookup, and the resume-vs-fresh discriminator).
  */
 export interface IMaterializeContext {
-	readonly proxyHandle: IClaudeProxyHandle;
+	readonly endpointHandle: IClaudeSdkEndpointHandle;
 	readonly canUseTool: NonNullable<Options['canUseTool']>;
 	readonly isResume: boolean;
 }
@@ -217,7 +217,7 @@ export class ClaudeAgentSession extends Disposable {
 	 * snapshot change). Idempotent on re-call: extra calls throw rather
 	 * than silently re-materialize.
 	 *
-	 * If the supplied {@link IMaterializeContext.proxyHandle}'s underlying
+	 * If the supplied {@link IMaterializeContext.endpointHandle}'s underlying
 	 * `abortController` fires while `sdk.startup()` is in flight, the SDK
 	 * unwinds via the controller; if `startup` resolves anyway, the
 	 * `WarmQuery` is asyncDisposed and a {@link CancellationError} is
@@ -234,135 +234,145 @@ export class ClaudeAgentSession extends Disposable {
 		const permissionMode = readClaudePermissionMode(this._configurationService, this.sessionUri) ?? this._permissionModeFallback;
 		const mcpServers = await buildClientMcpServers(this.toolDiff, this._pendingClientToolCalls, this._sdkService);
 
-		const options = await buildOptions(
-			{
-				sessionId: this.sessionId,
-				workingDirectory: this.workingDirectory,
-				model: this._provisionalModel,
-				abortController: this.abortController,
-				permissionMode,
-				canUseTool: ctx.canUseTool,
-				isResume: ctx.isResume,
-				mcpServers,
-				plugins: this.clientCustomizationsDiff.consume(),
-				agent: this._resolveAgentName(this._provisionalAgent),
-			},
-			ctx.proxyHandle,
-			data => this._logService.error(`[Claude SDK stderr] ${data}`),
-			msg => this._logService.info(`[Claude] declining elicitation from MCP server (Phase 7 stub): ${msg}`),
-		);
-
-		this._logService.info(`[Claude] session ${this.sessionId}: enableFileCheckpointing=${options.enableFileCheckpointing} isResume=${ctx.isResume}`);
-
-		const warm = await this._sdkService.startup({ options });
-
-		if (this.abortController.signal.aborted) {
-			await warm[Symbol.asyncDispose]();
-			throw new CancellationError();
-		}
-
-		const dbRef = this._sessionDataService.openDatabase(this.sessionUri);
-		let pipeline: ClaudeSdkPipeline;
+		let endpointRegistered = false;
 		try {
-			pipeline = this._register(this._instantiationService.createInstance(
-				ClaudeSdkPipeline,
-				this.sessionId,
-				this.sessionUri,
-				warm,
-				this.abortController,
-				dbRef,
-				this.subagents,
-				this.toolDiff.model.state.get().clientId,
+			const options = await buildOptions(
+				{
+					sessionId: this.sessionId,
+					workingDirectory: this.workingDirectory,
+					model: this._provisionalModel,
+					abortController: this.abortController,
+					permissionMode,
+					canUseTool: ctx.canUseTool,
+					isResume: ctx.isResume,
+					mcpServers,
+					plugins: this.clientCustomizationsDiff.consume(),
+					agent: this._resolveAgentName(this._provisionalAgent),
+				},
+				ctx.endpointHandle,
+				data => this._logService.error(`[Claude SDK stderr] ${data}`),
+				msg => this._logService.info(`[Claude] declining elicitation from MCP server (Phase 7 stub): ${msg}`),
+			);
+
+			this._logService.info(`[Claude] session ${this.sessionId}: enableFileCheckpointing=${options.enableFileCheckpointing} isResume=${ctx.isResume}`);
+
+			const warm = await this._sdkService.startup({ options });
+
+			if (this.abortController.signal.aborted) {
+				await warm[Symbol.asyncDispose]();
+				throw new CancellationError();
+			}
+
+			const dbRef = this._sessionDataService.openDatabase(this.sessionUri);
+			let pipeline: ClaudeSdkPipeline;
+			try {
+				pipeline = this._register(this._instantiationService.createInstance(
+					ClaudeSdkPipeline,
+					this.sessionId,
+					this.sessionUri,
+					warm,
+					this.abortController,
+					dbRef,
+					this.subagents,
+					this.toolDiff.model.state.get().clientId,
+				));
+			} catch (err) {
+				dbRef.dispose();
+				await warm[Symbol.asyncDispose]();
+				throw err;
+			}
+			this._register(toDisposable(() => ctx.endpointHandle.dispose()));
+			endpointRegistered = true;
+			this._register(pipeline.onDidProduceSignal(s => this._onDidSessionProgress.fire(s)));
+			this._pipeline = pipeline;
+			// On-disk Open Plugin bundle for SDK-discovered customizations.
+			// The bundle directory is content-addressed by the SDK snapshot
+			// hash and lives under the plugin manager's user-data tree;
+			// disposing the bundler does NOT delete the on-disk tree (kept
+			// as a warm cache across sessions on the same workingDirectory).
+			this._sdkBundler = this._register(this._instantiationService.createInstance(
+				ClaudeSdkCustomizationBundler,
+				this.workingDirectory,
 			));
+
+			// Seed the pipeline's bijective config cache so a rebuild re-applies
+			// the user's last-chosen model / effort without losing the picker
+			// config. Read provisional state directly off the session.
+			pipeline.seedCurrentConfig(
+				this._provisionalModel?.id,
+				clampEffortForRuntime(resolveClaudeEffort(this._provisionalModel)),
+				permissionMode,
+			);
+
+			// Fresh sessions persist their customization-directory / model /
+			// permissionMode overlay so a later resume re-reads them. Resume
+			// sessions skip the write because they READ from the overlay
+			// upstream and would otherwise overwrite their source.
+			if (!ctx.isResume) {
+				try {
+					await this._metadataStore.write(this.sessionUri, {
+						customizationDirectory: this.workingDirectory,
+						model: this._provisionalModel,
+						permissionMode,
+					});
+				} catch (err) {
+					this._logService.error(`[Claude] Failed to persist customization directory; aborting materialize`, err);
+					throw err;
+				}
+			}
+
+			// Final pre-commit abort gate. The first gate above caught aborts
+			// that landed while `sdk.startup()` was in flight; this one catches
+			// aborts that landed during the metadata write (a separate async
+			// boundary). Without it, a racing `disposeSession` could complete
+			// before this method returns and leave the pipeline live.
+			if (this.abortController.signal.aborted) {
+				throw new CancellationError();
+			}
+
+			pipeline.attachRematerializer(async (_reason) => {
+				const liveMode = readClaudePermissionMode(this._configurationService, this.sessionUri) ?? this._permissionModeFallback;
+				try {
+					const rebuildMcp = await buildClientMcpServers(this.toolDiff, this._pendingClientToolCalls, this._sdkService);
+					const rebuildAbort = new AbortController();
+					const rebuildOptions = await buildOptions(
+						{
+							sessionId: this.sessionId,
+							workingDirectory: this.workingDirectory!,
+							model: this._provisionalModel,
+							abortController: rebuildAbort,
+							permissionMode: liveMode,
+							canUseTool: ctx.canUseTool,
+							isResume: true,
+							mcpServers: rebuildMcp,
+							plugins: this.clientCustomizationsDiff.consume(),
+							agent: this._resolveAgentName(this._provisionalAgent),
+						},
+						ctx.endpointHandle,
+						data => this._logService.error(`[Claude SDK stderr] ${data}`),
+						msg => this._logService.info(`[Claude] declining elicitation from MCP server (Phase 7 stub): ${msg}`),
+					);
+					this._logService.info(`[Claude] session ${this.sessionId}: resume rebuild agent=${rebuildOptions.agent ?? '(none)'}`);
+					const rebuildWarm = await this._sdkService.startup({ options: rebuildOptions });
+					return { warm: rebuildWarm, abortController: rebuildAbort };
+				} catch (err) {
+					this.toolDiff.markDirty();
+					this.clientCustomizationsDiff.markDirty();
+					throw err;
+				}
+			});
+
+			// Surface the SDK-resolved customization tier to the workbench.
+			// Pre-materialize, getSessionCustomizations returns only the
+			// client-pushed slice; firing here prompts the workbench to refetch
+			// and pick up the bundled `Discovered in Claude` entry.
+			this._onDidCustomizationsChange.fire();
 		} catch (err) {
-			dbRef.dispose();
-			await warm[Symbol.asyncDispose]();
+			if (!endpointRegistered) {
+				ctx.endpointHandle.dispose();
+			}
 			throw err;
 		}
-		this._register(pipeline.onDidProduceSignal(s => this._onDidSessionProgress.fire(s)));
-		this._pipeline = pipeline;
-		// On-disk Open Plugin bundle for SDK-discovered customizations.
-		// The bundle directory is content-addressed by the SDK snapshot
-		// hash and lives under the plugin manager's user-data tree;
-		// disposing the bundler does NOT delete the on-disk tree (kept
-		// as a warm cache across sessions on the same workingDirectory).
-		this._sdkBundler = this._register(this._instantiationService.createInstance(
-			ClaudeSdkCustomizationBundler,
-			this.workingDirectory,
-		));
-
-		// Seed the pipeline's bijective config cache so a rebuild re-applies
-		// the user's last-chosen model / effort without losing the picker
-		// config. Read provisional state directly off the session.
-		pipeline.seedCurrentConfig(
-			this._provisionalModel?.id,
-			clampEffortForRuntime(resolveClaudeEffort(this._provisionalModel)),
-			permissionMode,
-		);
-
-		// Fresh sessions persist their customization-directory / model /
-		// permissionMode overlay so a later resume re-reads them. Resume
-		// sessions skip the write because they READ from the overlay
-		// upstream and would otherwise overwrite their source.
-		if (!ctx.isResume) {
-			try {
-				await this._metadataStore.write(this.sessionUri, {
-					customizationDirectory: this.workingDirectory,
-					model: this._provisionalModel,
-					permissionMode,
-				});
-			} catch (err) {
-				this._logService.error(`[Claude] Failed to persist customization directory; aborting materialize`, err);
-				throw err;
-			}
-		}
-
-		// Final pre-commit abort gate. The first gate above caught aborts
-		// that landed while `sdk.startup()` was in flight; this one catches
-		// aborts that landed during the metadata write (a separate async
-		// boundary). Without it, a racing `disposeSession` could complete
-		// before this method returns and leave the pipeline live.
-		if (this.abortController.signal.aborted) {
-			throw new CancellationError();
-		}
-
-		pipeline.attachRematerializer(async (_reason) => {
-			const liveMode = readClaudePermissionMode(this._configurationService, this.sessionUri) ?? this._permissionModeFallback;
-			try {
-				const rebuildMcp = await buildClientMcpServers(this.toolDiff, this._pendingClientToolCalls, this._sdkService);
-				const rebuildAbort = new AbortController();
-				const rebuildOptions = await buildOptions(
-					{
-						sessionId: this.sessionId,
-						workingDirectory: this.workingDirectory!,
-						model: this._provisionalModel,
-						abortController: rebuildAbort,
-						permissionMode: liveMode,
-						canUseTool: ctx.canUseTool,
-						isResume: true,
-						mcpServers: rebuildMcp,
-						plugins: this.clientCustomizationsDiff.consume(),
-						agent: this._resolveAgentName(this._provisionalAgent),
-					},
-					ctx.proxyHandle,
-					data => this._logService.error(`[Claude SDK stderr] ${data}`),
-					msg => this._logService.info(`[Claude] declining elicitation from MCP server (Phase 7 stub): ${msg}`),
-				);
-				this._logService.info(`[Claude] session ${this.sessionId}: resume rebuild agent=${rebuildOptions.agent ?? '(none)'}`);
-				const rebuildWarm = await this._sdkService.startup({ options: rebuildOptions });
-				return { warm: rebuildWarm, abortController: rebuildAbort };
-			} catch (err) {
-				this.toolDiff.markDirty();
-				this.clientCustomizationsDiff.markDirty();
-				throw err;
-			}
-		});
-
-		// Surface the SDK-resolved customization tier to the workbench.
-		// Pre-materialize, getSessionCustomizations returns only the
-		// client-pushed slice; firing here prompts the workbench to refetch
-		// and pick up the bundled `Discovered in Claude` entry.
-		this._onDidCustomizationsChange.fire();
 	}
 
 	/** True once {@link materialize} has installed the SDK pipeline. */

@@ -14,13 +14,13 @@ import { PendingRequestRegistry } from '../../common/pendingRequestRegistry.js';
 import type { ModelSelection } from '../../common/state/protocol/state.js';
 import { IClaudeAgentSdkService } from './claudeAgentSdkService.js';
 import { buildClientToolMcpServer } from './clientTools/claudeClientToolMcpServer.js';
-import { IClaudeProxyHandle } from './claudeProxyService.js';
+import { IClaudeSdkEndpointHandle } from './claudeSdkEndpoint.js';
 import { SessionClientToolsDiff } from './clientTools/claudeSessionClientToolsModel.js';
 
 /**
  * Inputs to {@link buildOptions} that vary per startup. Pure-data: no
  * services, no live event subscribers. The function is a deterministic
- * projection from this bag plus a {@link IClaudeProxyHandle} onto the
+ * projection from this bag plus a {@link IClaudeSdkEndpointHandle} onto the
  * SDK's {@link Options} discriminated union.
  */
 export interface IBuildOptionsInput {
@@ -69,15 +69,15 @@ export interface IBuildOptionsInput {
  */
 export async function buildOptions(
 	input: IBuildOptionsInput,
-	proxyHandle: IClaudeProxyHandle,
+	endpointHandle: IClaudeSdkEndpointHandle,
 	logStderr: (data: string) => void,
 	logElicitation: (msg: string) => void,
 ): Promise<Options> {
 	const subprocessEnv = buildSubprocessEnv();
 	const resolvedRgDiskPath = await rgDiskPath();
 	const settingsEnv: Record<string, string> = {
-		ANTHROPIC_BASE_URL: proxyHandle.baseUrl,
-		ANTHROPIC_AUTH_TOKEN: `${proxyHandle.nonce}.${input.sessionId}`,
+		ANTHROPIC_BASE_URL: endpointHandle.baseUrl,
+		ANTHROPIC_AUTH_TOKEN: `${endpointHandle.nonce}.${input.sessionId}`,
 		CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
 		USE_BUILTIN_RIPGREP: '0',
 		PATH: `${dirname(resolvedRgDiskPath)}${delimiter}${process.env.PATH ?? ''}`,

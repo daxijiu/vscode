@@ -266,8 +266,11 @@ Phase 5:
 
 Phase 6:
 
-- De-CAPI Claude-like SDK harness.
-- Observed acceptance follow-up: the current upstream Claude provider can disappear while logged out of Copilot because the current Claude path is still Copilot-protected/CAPI-backed. Fix this in Phase 6 by making the Director-backed Claude-like provider independent from GitHub Copilot login state.
+- Completed locally on 2026-05-31: added `director-claude`, an optional Director-backed Claude-like AgentHost provider gated by the Claude SDK path and the Director agent env gate.
+- Refactored the Claude SDK harness through a backend strategy and neutral SDK endpoint handle. Legacy `claude` still uses `ClaudeProxyService`; `director-claude` uses `IDirectorAnthropicEndpointService.start({ sessionId })`.
+- `director-claude` has no protected resources and `authenticate()` returns false, so Copilot logout does not suppress or sign-in gate this provider.
+- Director-backed Claude model projection comes from `IDirectorProviderBackendHub`, keeps missing-auth models as unconfigured, hides disabled/local/custom-http providers, and does not write API keys/OAuth tokens into metadata/log/snapshot surfaces.
+- Deferred: real Director-backed subagent runtime selection, durable transcript partitioning, local/custom-http endpoint compatibility, and OAuth hardening beyond the existing Director credential bridge.
 
 Phase 7:
 

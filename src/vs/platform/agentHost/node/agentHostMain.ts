@@ -28,6 +28,7 @@ import { ClaudeAgentSdkService, IClaudeAgentSdkService } from './claude/claudeAg
 import { ClaudeProxyService, IClaudeProxyService } from './claude/claudeProxyService.js';
 import { DirectorAgent } from './director/directorAgent.js';
 import { DirectorAnthropicEndpointService, IDirectorAnthropicEndpointService } from './director/directorAnthropicEndpointService.js';
+import { DirectorClaudeAgent } from './director/directorClaudeAgent.js';
 import { DirectorProviderBackendHub } from './director/directorProviderBackendHub.js';
 import { DirectorRuntimeCredentialService } from './director/directorRuntimeCredentialService.js';
 import { DirectorRuntimeCredentialChannelName, IDirectorRuntimeCredentialService } from '../common/directorRuntimeCredentials.js';
@@ -184,6 +185,9 @@ async function startAgentHost(): Promise<void> {
 		// absolute path to a locally-installed `@anthropic-ai/claude-agent-sdk` package.
 		if (process.env[AgentHostClaudeSdkPathEnvVar]) {
 			agentService.registerProvider(instantiationService.createInstance(ClaudeAgent));
+		}
+		if (process.env[AgentHostClaudeSdkPathEnvVar] && process.env[AgentHostEnableDirectorAgentEnvVar]) {
+			agentService.registerProvider(instantiationService.createInstance(DirectorClaudeAgent));
 		}
 		if (process.env[AgentHostEnableDirectorAgentEnvVar]) {
 			agentService.registerProvider(instantiationService.createInstance(DirectorAgent));

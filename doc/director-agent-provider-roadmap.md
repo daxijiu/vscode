@@ -433,7 +433,19 @@ Implemented notes:
 
 ### Phase 6 - Claude-Like SDK Harness De-CAPI
 
+Status: minimal AgentHost-owned slice implemented locally on 2026-05-31. See `doc/director-agent-provider-phase6-plan.md`.
+
 Goal: make the Claude SDK harness consume the Director backend hub instead of GitHub Copilot CAPI.
+
+Completed slice:
+
+- Added an optional `director-claude` AgentHost provider gated by the Claude SDK path and `VSCODE_AGENT_HOST_ENABLE_DIRECTOR_AGENT`.
+- Kept the legacy `claude` provider on the existing Copilot-backed `ClaudeProxyService` path.
+- Split Claude SDK endpoint handling behind a neutral `{ baseUrl, nonce, dispose }` handle so the SDK options/session pipeline no longer depends on `IClaudeProxyHandle`.
+- Reused the existing Claude SDK session/materialization pipeline through a backend strategy instead of copying `ClaudeAgent`.
+- Routed `director-claude` materialization through `IDirectorAnthropicEndpointService.start({ sessionId, providerInstanceId })`, with no protected resources and `authenticate()` returning `false`; model ids stay in the SDK request body so materialized model changes remain live inside the pinned Director provider.
+- Projected Director backend models into the `director-claude` model list, including missing-auth models as `PolicyState.Unconfigured`, while hiding disabled, local, and custom-http providers.
+- Preserved secret isolation: API keys and OAuth tokens remain outside model metadata, SDK options logs, provider snapshots, and AgentHost protocol state.
 
 Scope:
 
@@ -456,6 +468,8 @@ Out of scope:
 
 - Removing the existing Copilot-backed Claude provider immediately.
 - OAuth provider implementation.
+- Director-backed Claude subagent runtime selection beyond the inherited Claude SDK client-tool surface.
+- Durable restore partitioning between legacy `claude` SDK transcripts and `director-claude` transcripts.
 
 Exit criteria:
 

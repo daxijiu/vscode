@@ -39,6 +39,7 @@ import { ClaudeAgentSdkService, IClaudeAgentSdkService } from './claude/claudeAg
 import { ClaudeProxyService, IClaudeProxyService } from './claude/claudeProxyService.js';
 import { DirectorAgent } from './director/directorAgent.js';
 import { DirectorAnthropicEndpointService, IDirectorAnthropicEndpointService } from './director/directorAnthropicEndpointService.js';
+import { DirectorClaudeAgent } from './director/directorClaudeAgent.js';
 import { DirectorProviderBackendHub } from './director/directorProviderBackendHub.js';
 import { DirectorRuntimeCredentialService } from './director/directorRuntimeCredentialService.js';
 import { IAgentHostOTelService } from '../common/otel/agentHostOTelService.js';
@@ -272,6 +273,11 @@ async function main(): Promise<void> {
 			const directorAgent = disposables.add(instantiationService.createInstance(DirectorAgent));
 			agentService.registerProvider(directorAgent);
 			log('DirectorAgent registered');
+			if (process.env[AgentHostClaudeSdkPathEnvVar]) {
+				const directorClaudeAgent = disposables.add(instantiationService.createInstance(DirectorClaudeAgent));
+				agentService.registerProvider(directorClaudeAgent);
+				log('DirectorClaudeAgent registered');
+			}
 		}
 	}
 

@@ -3,7 +3,6 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import type { CCAModel } from '@vscode/copilot-api';
 import type { Options, SDKSessionInfo, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { SequencerByKey } from '../../../../base/common/async.js';
@@ -20,87 +19,27 @@ import { ILogService } from '../../../log/common/log.js';
 import { IAgentPluginManager, ISyncedCustomization } from '../../common/agentPluginManager.js';
 import { createSchema, platformSessionSchema, schemaProperty } from '../../common/agentHostSchema.js';
 import { ClaudePermissionMode, ClaudeSessionConfigKey, narrowClaudePermissionMode } from '../../common/claudeSessionConfigKeys.js';
-import { createClaudeThinkingLevelSchema, isClaudeEffortLevel } from '../../common/claudeModelConfig.js';
 import { SessionConfigKey } from '../../common/sessionConfigKeys.js';
-import { AgentProvider, AgentSession, AgentSignal, GITHUB_COPILOT_PROTECTED_RESOURCE, IAgent, IAgentCreateSessionConfig, IAgentCreateSessionResult, IAgentDescriptor, IAgentMaterializeSessionEvent, IAgentModelInfo, IAgentResolveSessionConfigParams, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata, IAgentSessionProjectInfo } from '../../common/agentService.js';
+import { AgentProvider, AgentSession, AgentSignal, IAgent, IAgentCreateSessionConfig, IAgentCreateSessionResult, IAgentDescriptor, IAgentMaterializeSessionEvent, IAgentModelInfo, IAgentResolveSessionConfigParams, IAgentSessionConfigCompletionsParams, IAgentSessionMetadata, IAgentSessionProjectInfo } from '../../common/agentService.js';
 import { ActionType } from '../../common/state/sessionActions.js';
 import type { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
-import { AHP_AUTH_REQUIRED, ProtocolError } from '../../common/state/sessionProtocol.js';
-import { PolicyState, ProtectedResourceMetadata, type AgentSelection, type ModelSelection, type ToolDefinition } from '../../common/state/protocol/state.js';
+import { ProtectedResourceMetadata, type AgentSelection, type ModelSelection, type ToolDefinition } from '../../common/state/protocol/state.js';
 import { isSubagentSession, parseSubagentSessionUri, SessionInputResponseKind, type ClientPluginCustomization, type Customization, type MessageAttachment, type PendingMessage, type SessionInputAnswer, type ToolCallResult, type Turn } from '../../common/state/sessionState.js';
 import { IAgentConfigurationService } from '../agentConfigurationService.js';
 import { IAgentHostGitService } from '../agentHostGitService.js';
 import { PendingRequestRegistry } from '../../common/pendingRequestRegistry.js';
 import { projectFromCopilotContext } from '../copilot/copilotGitProject.js';
 import { ICopilotApiService } from '../shared/copilotApiService.js';
+import { CopilotClaudeAgentBackend, IClaudeAgentBackend } from './claudeAgentBackend.js';
 import { IClaudeAgentSdkService } from './claudeAgentSdkService.js';
 import { mapSessionMessagesToTurns } from './claudeReplayMapper.js';
 import { getSubagentTranscript } from './claudeSubagentResolver.js';
 import { ClaudeAgentSession } from './claudeAgentSession.js';
 import { handleCanUseTool } from './claudeCanUseTool.js';
-import { tryParseClaudeModelId } from './claudeModelId.js';
 import { resolvePromptToContentBlocks } from './claudePromptResolver.js';
-import { IClaudeProxyHandle, IClaudeProxyService } from './claudeProxyService.js';
+import { IClaudeProxyService } from './claudeProxyService.js';
 import { readClaudePermissionMode } from './claudeSessionPermissionMode.js';
 import { ClaudeSessionMetadataStore, IClaudeSessionOverlay } from './claudeSessionMetadataStore.js';
-
-/**
- * Returns true if `m` is a Claude-family model that should be advertised
- * to clients picking a model for the Claude provider.
- *
- * Combines the same surface checks the extension uses (vendor, picker
- * eligibility, tool-call support, `/v1/messages` endpoint) with a parse
- * of the model id via {@link tryParseClaudeModelId}, which excludes
- * synthetic ids like `auto` that aren't real Claude endpoints.
- */
-function isClaudeModel(m: CCAModel): boolean {
-	return (
-		m.vendor === 'Anthropic' &&
-		!!m.supported_endpoints?.includes('/v1/messages') &&
-		!!m.model_picker_enabled &&
-		!!m.capabilities?.supports?.tool_calls &&
-		tryParseClaudeModelId(m.id) !== undefined
-	);
-}
-
-/**
- * Augments the published `@vscode/copilot-api` `CCAModelSupports` with the
- * per-model `adaptive_thinking` / `reasoning_effort` fields the runtime
- * CAPI `/models` payload already carries but the SDK type doesn't yet
- * declare. Tracked at microsoft/vscode-capi#85; remove this when the SDK
- * catches up. Mirror of the same pattern at
- * `extensions/copilot/src/platform/endpoint/common/endpointProvider.ts`
- * (its locally-declared `IChatModelCapabilities`).
- */
-interface IClaudeModelSupports {
-	readonly adaptive_thinking?: boolean;
-	readonly reasoning_effort?: readonly string[];
-}
-
-/**
- * Project a {@link CCAModel} into the agent host's
- * {@link IAgentModelInfo} surface. The returned `provider` is the
- * agent's id (`'claude'`) — clients filter the root state's model list
- * by provider, so this must match {@link ClaudeAgent.id}, NOT the
- * upstream `vendor: 'Anthropic'` field.
- */
-function toAgentModelInfo(m: CCAModel, provider: AgentProvider): IAgentModelInfo {
-	const supports = m.capabilities?.supports;
-	const supportedEfforts = ((supports as IClaudeModelSupports | undefined)?.reasoning_effort ?? []).filter(isClaudeEffortLevel);
-	const configSchema = createClaudeThinkingLevelSchema(supportedEfforts);
-	const policyState = m.policy?.state as PolicyState | undefined;
-	const multiplier = m.billing?.multiplier;
-	return {
-		provider,
-		id: m.id,
-		name: m.name,
-		maxContextWindow: m.capabilities?.limits?.max_context_window_tokens,
-		supportsVision: !!supports?.vision,
-		...(configSchema ? { configSchema } : {}),
-		...(policyState ? { policyState } : {}),
-		...(typeof multiplier === 'number' ? { _meta: { multiplierNumeric: multiplier } } : {}),
-	};
-}
 
 // Single source of truth for narrowing an arbitrary runtime value to
 // the closed `ClaudePermissionMode` union now lives in
@@ -122,10 +61,8 @@ function toAgentModelInfo(m: CCAModel, provider: AgentProvider): IAgentModelInfo
  * What is implemented:
  * - Provider id, descriptor, and protected resources surface so root
  *   state advertises Claude alongside Copilot CLI.
- * - GitHub token capture via {@link authenticate} and lazy acquisition
- *   of an {@link IClaudeProxyHandle} from {@link IClaudeProxyService}.
- * - {@link models} observable derived from {@link ICopilotApiService.models}
- *   filtered to Claude-family entries via {@link isClaudeModel}.
+ * - Backend-supplied auth, model projection, and SDK endpoint acquisition.
+ * - {@link models} observable derived from the active backend strategy.
  *
  * What is stubbed:
  * - All other {@link IAgent} methods throw `Error('TODO: Phase N')`. The
@@ -136,8 +73,8 @@ function toAgentModelInfo(m: CCAModel, provider: AgentProvider): IAgentModelInfo
  * concern (sessions, sendMessage, permissions, etc.) so the surface area
  * of any single review stays small.
  */
-export class ClaudeAgent extends Disposable implements IAgent {
-	readonly id: AgentProvider = 'claude';
+export abstract class ClaudeSdkAgent extends Disposable implements IAgent {
+	readonly id: AgentProvider;
 
 	private readonly _onDidSessionProgress = this._register(new Emitter<AgentSignal>());
 	readonly onDidSessionProgress = this._onDidSessionProgress.event;
@@ -147,9 +84,6 @@ export class ClaudeAgent extends Disposable implements IAgent {
 
 	private readonly _models = observableValue<readonly IAgentModelInfo[]>(this, []);
 	readonly models: IObservable<readonly IAgentModelInfo[]> = this._models;
-
-	private _githubToken: string | undefined;
-	private _proxyHandle: IClaudeProxyHandle | undefined;
 
 	/**
 	 * Memoized teardown promise. Set on the first call to {@link shutdown},
@@ -221,9 +155,8 @@ export class ClaudeAgent extends Disposable implements IAgent {
 	}
 
 	constructor(
+		private readonly _backend: IClaudeAgentBackend,
 		@ILogService private readonly _logService: ILogService,
-		@ICopilotApiService private readonly _copilotApiService: ICopilotApiService,
-		@IClaudeProxyService private readonly _claudeProxyService: IClaudeProxyService,
 		@IClaudeAgentSdkService private readonly _sdkService: IClaudeAgentSdkService,
 		@IAgentHostGitService private readonly _gitService: IAgentHostGitService,
 		@IAgentConfigurationService private readonly _configurationService: IAgentConfigurationService,
@@ -231,96 +164,39 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		@IAgentPluginManager private readonly _pluginManager: IAgentPluginManager,
 	) {
 		super();
+		this.id = _backend.id;
 		this._metadataStore = _instantiationService.createInstance(ClaudeSessionMetadataStore, this.id);
+		void this._refreshModels();
 	}
 
 	// #region Descriptor + auth
 
 	getDescriptor(): IAgentDescriptor {
-		return {
-			provider: this.id,
-			displayName: localize('claudeAgent.displayName', "Claude"),
-			description: localize('claudeAgent.description', "Claude agent backed by the Anthropic Claude Agent SDK"),
-		};
+		return this._backend.getDescriptor();
 	}
 
 	getProtectedResources(): ProtectedResourceMetadata[] {
-		return [GITHUB_COPILOT_PROTECTED_RESOURCE];
-	}
-
-	private _ensureAuthenticated(): IClaudeProxyHandle {
-		const handle = this._proxyHandle;
-		if (!handle) {
-			throw new ProtocolError(
-				AHP_AUTH_REQUIRED,
-				'Authentication is required to use Claude',
-				this.getProtectedResources(),
-			);
-		}
-		return handle;
+		return this._backend.getProtectedResources();
 	}
 
 	async authenticate(resource: string, token: string): Promise<boolean> {
-		if (resource !== GITHUB_COPILOT_PROTECTED_RESOURCE.resource) {
-			return false;
+		const authenticated = await this._backend.authenticate(resource, token);
+		if (authenticated) {
+			void this._refreshModels();
 		}
-		const tokenChanged = this._githubToken !== token;
-		if (!tokenChanged) {
-			this._logService.info('[Claude] Auth token unchanged');
-			return true;
-		}
-		// Acquire the new handle BEFORE committing the token or disposing
-		// the old one. If `start()` throws, leave `_githubToken` and
-		// `_proxyHandle` untouched so the next `authenticate()` call still
-		// sees the token as new and retries — otherwise a transient proxy
-		// startup failure would leave us in a "token recorded, no proxy
-		// running" state and the retry path would short-circuit as
-		// "unchanged" and falsely return true.
-		//
-		// The proxy server's refcount stays >= 1 throughout this swap
-		// because the new handle is acquired before the old one is
-		// disposed; {@link IClaudeProxyService} applies most-recent-token-
-		// wins on subsequent `start()` calls.
-		const newHandle = await this._claudeProxyService.start(token);
-		const oldHandle = this._proxyHandle;
-		this._proxyHandle = newHandle;
-		this._githubToken = token;
-		this._logService.info('[Claude] Auth token updated');
-		oldHandle?.dispose();
-		void this._refreshModels();
-		return true;
+		return authenticated;
 	}
 
 	private async _refreshModels(): Promise<void> {
-		const tokenAtStart = this._githubToken;
-		if (!tokenAtStart) {
-			this._models.set([], undefined);
-			return;
-		}
 		try {
-			const all = await this._copilotApiService.models(tokenAtStart);
-			// Stale-write guard: if `authenticate()` rotated the token
-			// while we were awaiting the model list, a newer refresh has
-			// already published the right value — don't overwrite it.
-			if (this._githubToken !== tokenAtStart) {
+			const models = await this._backend.refreshModels();
+			if (models === undefined) {
 				return;
 			}
-			// Stable sort surfaces the CAPI-flagged chat-default model
-			// first. The picker treats `models[0]` as the de facto
-			// default (modelPicker.ts:144 — `_selectedModel ?? models[0]`)
-			// since `IAgentModelInfo` carries no explicit `isDefault`
-			// bit. Stable comparator returns 0 for equal-priority models
-			// so CAPI's ordering wins on ties.
-			const filtered = all
-				.filter(isClaudeModel)
-				.sort((a, b) => Number(b.is_chat_default) - Number(a.is_chat_default))
-				.map(m => toAgentModelInfo(m, this.id));
-			this._models.set(filtered, undefined);
+			this._models.set(models, undefined);
 		} catch (err) {
-			this._logService.error(err, '[Claude] Failed to refresh models');
-			if (this._githubToken === tokenAtStart) {
-				this._models.set([], undefined);
-			}
+			this._logService.error('[Claude] Failed to refresh models', err);
+			this._models.set([], undefined);
 		}
 	}
 
@@ -329,7 +205,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 	// #region Stubs — implemented in later phases
 
 	async createSession(config: IAgentCreateSessionConfig = {}): Promise<IAgentCreateSessionResult> {
-		this._ensureAuthenticated();
+		this._backend.ensureReady();
 		if (config.fork) {
 			throw new Error('TODO: Phase 6.5: fork requires message-UUID lookup via sdk.getSessionMessages');
 		}
@@ -354,13 +230,14 @@ export class ClaudeAgent extends Disposable implements IAgent {
 			: undefined;
 
 		const permissionMode = this._resolvePermissionMode(config.config);
+		const model = await this._backend.resolveInitialModel(config.model);
 
 		const session = ClaudeAgentSession.createProvisional(
 			sessionId,
 			sessionUri,
 			config.workingDirectory,
 			project,
-			config.model,
+			model,
 			config.agent,
 			config.config,
 			new PendingRequestRegistry<CallToolResult>(),
@@ -404,7 +281,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		if (!session) {
 			throw new Error(`Cannot materialize unknown provisional session: ${sessionId}`);
 		}
-		const proxyHandle = this._ensureAuthenticated();
+		const endpointHandle = await this._backend.acquireEndpoint(sessionId, session.provisionalModel);
 
 		const canUseTool: NonNullable<Options['canUseTool']> = (toolName, input, options) =>
 			handleCanUseTool(
@@ -413,7 +290,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 			);
 
 		try {
-			await session.materialize({ proxyHandle, canUseTool, isResume: false });
+			await session.materialize({ endpointHandle, canUseTool, isResume: false });
 		} catch (err) {
 			this._sessions.deleteAndDispose(sessionId);
 			throw err;
@@ -444,7 +321,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 	 */
 	private async _resumeSession(sessionId: string, sessionUri: URI): Promise<ClaudeAgentSession> {
 		this._logService.info(`[Claude:${sessionId}] _resumeSession — no in-memory state, rebuilding from disk`);
-		const proxyHandle = this._ensureAuthenticated();
+		this._backend.ensureReady();
 		const sdkInfo = await this._sdkService.getSessionInfo(sessionId);
 		if (!sdkInfo) {
 			throw new Error(`Cannot resume unknown session: ${sessionId} (not present in SDK transcript store)`);
@@ -462,6 +339,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		const permissionMode = readClaudePermissionMode(this._configurationService, sessionUri)
 			?? overlay.permissionMode
 			?? 'default';
+		const model = await this._backend.resolveInitialModel(overlay.model);
 		let project: IAgentSessionProjectInfo | undefined;
 		try {
 			project = await projectFromCopilotContext({ cwd: workingDirectory.fsPath }, this._gitService);
@@ -474,7 +352,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 			sessionUri,
 			workingDirectory,
 			project,
-			overlay.model,
+			model,
 			overlay.agent,
 			undefined,
 			new PendingRequestRegistry<CallToolResult>(),
@@ -494,7 +372,8 @@ export class ClaudeAgent extends Disposable implements IAgent {
 			);
 
 		try {
-			await session.materialize({ proxyHandle, canUseTool, isResume: true });
+			const endpointHandle = await this._backend.acquireEndpoint(sessionId, session.provisionalModel);
+			await session.materialize({ endpointHandle, canUseTool, isResume: true });
 		} catch (err) {
 			this._sessions.deleteAndDispose(sessionId);
 			throw err;
@@ -1011,8 +890,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		// ClaudeAgentSession wrappers) MUST die BEFORE the proxy handle
 		// is disposed. After proxy disposal the proxy may rebind on a
 		// different port and a still-running subprocess would silently
-		// lose its endpoint. See `IClaudeProxyHandle` doc in
-		// `claudeProxyService.ts`.
+		// lose its endpoint.
 		//
 		// Step 1: abort every provisional AbortController. These are
 		// the same controllers wired into `Options.abortController` at
@@ -1038,10 +916,31 @@ export class ClaudeAgent extends Disposable implements IAgent {
 			}
 		}
 		super.dispose();
-		this._proxyHandle?.dispose();
-		this._proxyHandle = undefined;
-		this._githubToken = undefined;
+		this._backend.dispose();
 		this._models.set([], undefined);
+	}
+}
+
+export class ClaudeAgent extends ClaudeSdkAgent {
+	constructor(
+		@ILogService logService: ILogService,
+		@ICopilotApiService copilotApiService: ICopilotApiService,
+		@IClaudeProxyService claudeProxyService: IClaudeProxyService,
+		@IClaudeAgentSdkService sdkService: IClaudeAgentSdkService,
+		@IAgentHostGitService gitService: IAgentHostGitService,
+		@IAgentConfigurationService configurationService: IAgentConfigurationService,
+		@IInstantiationService instantiationService: IInstantiationService,
+		@IAgentPluginManager pluginManager: IAgentPluginManager,
+	) {
+		super(
+			new CopilotClaudeAgentBackend(logService, copilotApiService, claudeProxyService),
+			logService,
+			sdkService,
+			gitService,
+			configurationService,
+			instantiationService,
+			pluginManager,
+		);
 	}
 }
 

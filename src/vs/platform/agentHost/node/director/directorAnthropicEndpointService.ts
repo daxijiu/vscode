@@ -73,15 +73,16 @@ export class DirectorAnthropicEndpointService implements IDirectorAnthropicEndpo
 			throw new Error(`${DIRECTOR_ANTHROPIC_ENDPOINT_NAME} has been disposed`);
 		}
 
-		const runtime = await this._ensureRuntime(options);
+		const runtime = await this._ensureRuntime(options.sessionId ? {} : options);
 		if (this._disposed || this._runtime !== runtime) {
 			throw new Error(`${DIRECTOR_ANTHROPIC_ENDPOINT_NAME} has been disposed`);
 		}
 
 		const selection = toProviderSelection(options);
-		runtime.defaultSelection = selection;
 		if (options.sessionId) {
 			runtime.sessionSelections.set(options.sessionId, selection);
+		} else {
+			runtime.defaultSelection = selection;
 		}
 		runtime.refcount++;
 

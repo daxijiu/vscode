@@ -8,7 +8,6 @@ import type { CCAModel } from '@vscode/copilot-api';
 import type * as http from 'http';
 import { once } from 'events';
 import { AddressInfo } from 'net';
-import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { createDecorator } from '../../../instantiation/common/instantiation.js';
 import { ILogService } from '../../../log/common/log.js';
 import {
@@ -26,6 +25,7 @@ import {
 } from './anthropicErrors.js';
 import { tryParseClaudeModelId } from './claudeModelId.js';
 import { parseProxyBearer } from './claudeProxyAuth.js';
+import { IClaudeSdkEndpointHandle } from './claudeSdkEndpoint.js';
 
 // #region Public types
 
@@ -41,7 +41,7 @@ import { parseProxyBearer } from './claudeProxyAuth.js';
  * after `dispose()` the proxy may rebind on a different port and the
  * subprocess would silently lose its endpoint.
  */
-export interface IClaudeProxyHandle extends IDisposable {
+export interface IClaudeProxyHandle extends IClaudeSdkEndpointHandle {
 	/** e.g. `http://127.0.0.1:54321` — no trailing slash. */
 	readonly baseUrl: string;
 	/** 256-bit hex string. Combine with a session id as `Bearer <nonce>.<sessionId>`. */

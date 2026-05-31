@@ -118,6 +118,42 @@ suite('DirectorAnthropicEndpointService', () => {
 		assert.ok(!JSON.stringify(body).includes('director-secret'));
 	});
 
+	test('provider-scoped sessions resolve each request model without stale materialization state', async () => {
+		let providerRequest: Record<string, unknown> | undefined;
+		const service = disposables.add(createService(createAnthropicMultiModelFixtures('https://anthropic.invalid'), new FakeCredentialService(), async (_input, init) => {
+			providerRequest = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			return jsonResponse({
+				id: 'msg_provider',
+				type: 'message',
+				role: 'assistant',
+				model: 'claude-alt',
+				content: [{ type: 'text', text: 'alt selected' }],
+				stop_reason: 'end_turn',
+				usage: { input_tokens: 1, output_tokens: 1 },
+			});
+		}));
+		const handle = disposables.add(await service.start({ providerInstanceId: 'anthropic-provider', sessionId: 'session-1' }));
+
+		const response = await postMessage(handle, {
+			model: 'anthropic-provider:claude-alt',
+			max_tokens: 64,
+			messages: [{ role: 'user', content: 'use alt' }],
+		});
+		const body = await response.json() as Record<string, unknown>;
+
+		assert.deepStrictEqual({
+			status: response.status,
+			responseModel: body.model,
+			providerModel: providerRequest?.model,
+			content: body.content,
+		}, {
+			status: 200,
+			responseModel: 'anthropic-provider:claude-alt',
+			providerModel: 'claude-alt',
+			content: [{ type: 'text', text: 'alt selected' }],
+		});
+	});
+
 	test('passes SDK thinking config through to Anthropic-compatible providers', async () => {
 		let providerRequest: Record<string, unknown> | undefined;
 		const service = disposables.add(createService(createAnthropicFixtures('https://anthropic.invalid'), new FakeCredentialService(), async (_input, init) => {
@@ -207,6 +243,61 @@ suite('DirectorAnthropicEndpointService', () => {
 		assert.strictEqual(response.status, 200);
 		assert.strictEqual(providerUrl, 'https://openai.invalid/v1/chat/completions');
 		assert.deepStrictEqual(body.content, [{ type: 'text', text: 'openai selected' }]);
+	});
+
+	test('session-scoped start does not overwrite shared default selection', async () => {
+		const providerUrls: string[] = [];
+		const service = disposables.add(createService(createMixedFixtures(), new FakeCredentialService(), async (input) => {
+			const providerUrl = input.toString();
+			providerUrls.push(providerUrl);
+			if (providerUrl.includes('openai.invalid')) {
+				return jsonResponse({
+					choices: [{ message: { content: 'openai selected' } }],
+					usage: { prompt_tokens: 2, completion_tokens: 3 },
+				});
+			}
+			return jsonResponse({
+				id: 'msg_provider',
+				type: 'message',
+				role: 'assistant',
+				model: 'claude-test',
+				content: [{ type: 'text', text: 'anthropic selected' }],
+				stop_reason: 'end_turn',
+				usage: { input_tokens: 1, output_tokens: 1 },
+			});
+		}));
+		const defaultHandle = disposables.add(await service.start({ providerInstanceId: 'anthropic-provider', modelId: 'anthropic-provider:claude-test' }));
+		const sessionHandle = disposables.add(await service.start({ providerInstanceId: 'openai-provider', modelId: 'openai-provider:gpt-test', sessionId: 'session-1' }));
+
+		const sessionResponse = await postMessage(sessionHandle, {
+			model: 'gpt-test',
+			max_tokens: 64,
+			messages: [{ role: 'user', content: 'hello' }],
+		});
+		const defaultResponse = await postMessage(defaultHandle, {
+			model: 'claude-test',
+			max_tokens: 64,
+			messages: [{ role: 'user', content: 'hello' }],
+		}, undefined, 'session-2');
+		const sessionBody = await sessionResponse.json() as Record<string, unknown>;
+		const defaultBody = await defaultResponse.json() as Record<string, unknown>;
+
+		assert.deepStrictEqual({
+			sessionStatus: sessionResponse.status,
+			defaultStatus: defaultResponse.status,
+			providerUrls,
+			sessionContent: sessionBody.content,
+			defaultContent: defaultBody.content,
+		}, {
+			sessionStatus: 200,
+			defaultStatus: 200,
+			providerUrls: [
+				'https://openai.invalid/v1/chat/completions',
+				'https://anthropic.invalid/v1/messages',
+			],
+			sessionContent: [{ type: 'text', text: 'openai selected' }],
+			defaultContent: [{ type: 'text', text: 'anthropic selected' }],
+		});
 	});
 
 	test('synthesizes Anthropic SSE from non-streaming provider request when backend does not support endpoint streaming', async () => {
@@ -399,11 +490,11 @@ function createService(fixtures: DirectorProviderBackendHubFixtures, credentialS
 	);
 }
 
-async function postMessage(handle: { readonly baseUrl: string; readonly nonce: string }, body: unknown, signal?: AbortSignal): Promise<Response> {
+async function postMessage(handle: { readonly baseUrl: string; readonly nonce: string }, body: unknown, signal?: AbortSignal, sessionId = 'session-1'): Promise<Response> {
 	return fetch(`${handle.baseUrl}/v1/messages`, {
 		method: 'POST',
 		headers: {
-			authorization: `Bearer ${handle.nonce}.session-1`,
+			authorization: `Bearer ${handle.nonce}.${sessionId}`,
 			'content-type': 'application/json',
 		},
 		body: JSON.stringify(body),
@@ -450,6 +541,46 @@ function createAnthropicFixtures(baseURL: string): DirectorProviderBackendHubFix
 			supportsVision: false,
 			capabilities: { streaming: true, toolCalling: true },
 		}],
+	};
+}
+
+function createAnthropicMultiModelFixtures(baseURL: string): DirectorProviderBackendHubFixtures {
+	return {
+		defaultProviderId: 'anthropic-provider',
+		defaultModelId: 'anthropic-provider:claude-test',
+		providerInstances: [{
+			id: 'anthropic-provider',
+			kind: 'anthropic-compatible',
+			displayName: 'Anthropic Provider',
+			enabled: true,
+			authKind: 'api-key',
+			apiType: 'anthropic-messages',
+			baseURL,
+			defaultModelId: 'anthropic-provider:claude-test',
+			authState: { kind: 'ready' },
+		}],
+		models: [
+			{
+				providerInstanceId: 'anthropic-provider',
+				id: 'anthropic-provider:claude-test',
+				providerModelId: 'claude-test',
+				name: 'Claude Test',
+				maxContextWindow: 200000,
+				maxOutputTokens: 8192,
+				supportsVision: false,
+				capabilities: { streaming: true, toolCalling: true },
+			},
+			{
+				providerInstanceId: 'anthropic-provider',
+				id: 'anthropic-provider:claude-alt',
+				providerModelId: 'claude-alt',
+				name: 'Claude Alt',
+				maxContextWindow: 200000,
+				maxOutputTokens: 8192,
+				supportsVision: false,
+				capabilities: { streaming: true, toolCalling: true },
+			},
+		],
 	};
 }
 

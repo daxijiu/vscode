@@ -185,3 +185,12 @@ Accepted Phase 5 implementation:
 - It resolves provider/model selection through `IDirectorProviderBackendHub`, resolves credentials only through `IDirectorRuntimeCredentialService`, and calls the shared Director provider runtime. It does not import or call `ICopilotApiService`, GitHub Copilot auth, or Copilot CAPI.
 - Anthropic-compatible and OpenAI-compatible backends can produce Anthropic JSON/SSE output for SDK-compatible consumers. Local/custom-http providers remain gated until a compatible runtime contract exists.
 - The existing Copilot-backed `ClaudeProxyService` remains unchanged. Phase 6 wires a Director-backed Claude-like SDK harness to the new endpoint and handles Copilot-logout visibility.
+
+Accepted Phase 6 implementation:
+
+- `director-claude` is an optional AgentHost Claude-like provider registered only when the Claude SDK path exists and the Director agent gate is enabled.
+- The reusable Claude SDK/session pipeline is shared through a backend strategy; legacy `claude` remains Copilot-backed through `ClaudeProxyService`, while `director-claude` starts `IDirectorAnthropicEndpointService` with the current `sessionId`.
+- `director-claude` has no protected resources and `authenticate()` returns false, so it does not trigger GitHub Copilot login.
+- Director-backed Claude models come from `IDirectorProviderBackendHub`; missing-auth models remain visible as `PolicyState.Unconfigured`, while disabled/local/custom-http providers are hidden.
+- `claudeSdkOptions` now consumes a neutral SDK endpoint handle instead of depending on `IClaudeProxyHandle`; endpoint handles are disposed after the SDK session pipeline.
+- API keys/OAuth tokens remain behind Director runtime credential resolution and are not written into model metadata, provider snapshots, AgentHost protocol state, or SDK options logs.

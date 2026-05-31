@@ -7,7 +7,7 @@ import assert from 'assert';
 import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { buildOptions, buildSubprocessEnv } from '../../node/claude/claudeSdkOptions.js';
-import type { IClaudeProxyHandle } from '../../node/claude/claudeProxyService.js';
+import type { IClaudeSdkEndpointHandle } from '../../node/claude/claudeSdkEndpoint.js';
 
 suite('claudeSdkOptions / buildSubprocessEnv', () => {
 
@@ -84,7 +84,7 @@ suite('claudeSdkOptions / buildOptions plugins projection', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	const proxyHandle: IClaudeProxyHandle = {
+	const endpointHandle: IClaudeSdkEndpointHandle = {
 		baseUrl: 'http://127.0.0.1:0',
 		nonce: 'n',
 		dispose: () => { },
@@ -107,7 +107,7 @@ suite('claudeSdkOptions / buildOptions plugins projection', () => {
 	test('non-empty plugins project to Options.plugins as local entries', async () => {
 		const opts = await buildOptions(
 			input([URI.file('/p/a'), URI.file('/p/b')]),
-			proxyHandle,
+			endpointHandle,
 			() => { },
 			() => { },
 		);
@@ -118,12 +118,12 @@ suite('claudeSdkOptions / buildOptions plugins projection', () => {
 	});
 
 	test('empty plugins array omits Options.plugins', async () => {
-		const opts = await buildOptions(input([]), proxyHandle, () => { }, () => { });
+		const opts = await buildOptions(input([]), endpointHandle, () => { }, () => { });
 		assert.strictEqual(opts.plugins, undefined);
 	});
 
 	test('undefined plugins omits Options.plugins', async () => {
-		const opts = await buildOptions(input(undefined), proxyHandle, () => { }, () => { });
+		const opts = await buildOptions(input(undefined), endpointHandle, () => { }, () => { });
 		assert.strictEqual(opts.plugins, undefined);
 	});
 });
